@@ -154,6 +154,7 @@ async function switchNetwork(net: NetworkMode) {
   $("connect-prompt").classList.remove("hidden");
   $("dashboard").classList.add("hidden");
   $("overview-view").classList.add("hidden");
+  $("compare-view").classList.add("hidden");
   $("asset-tabs-bar").style.display = "none";
   switchView("leverage");
   buildPoolTabs();
@@ -314,7 +315,25 @@ document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
 
-type AppView = "overview" | "leverage" | "swap" | "vault";
+type AppView = "overview" | "leverage" | "compare" | "swap" | "vault";
+
+type CompareSortKey = "pool" | "supplyApy" | "borrowApy" | "net5" | "net10" | "cFactor" | "tvl" | "util";
+interface ComparePoolRow {
+  pool: PoolDef;
+  asset: AssetInfo;
+  supplyApy: number;
+  borrowApy: number;
+  net5: number;
+  net10: number;
+  cFactor: number;
+  tvl: number;
+  util: number;
+}
+
+const COMPARE_READ_ACCOUNT = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+let compareRows: ComparePoolRow[] = [];
+let compareSort: { key: CompareSortKey; dir: "asc" | "desc" } = { key: "net10", dir: "desc" };
+let compareLoading = false;
 let activeView: AppView = "leverage";
 
 // ── Expert mode ──────────────────────────────────────────────────────────────
@@ -1756,6 +1775,8 @@ async function disconnect() {
   $("wallet-connected").classList.add("hidden");
   $("connect-prompt").classList.remove("hidden");
   $("dashboard").classList.add("hidden");
+  $("overview-view").classList.add("hidden");
+  $("compare-view").classList.add("hidden");
   $("asset-tabs-bar").style.display = "none";
 }
 
@@ -1766,16 +1787,19 @@ function switchView(view: AppView) {
   // Top nav active states
   const overviewBtn = $("proto-overview");
   const blendBtn = $("proto-blend");
+  const compareBtn = $("proto-compare");
   const swapBtn  = $("proto-swap");
   const vaultBtn = $("proto-vault");
   overviewBtn.classList.toggle("active", view === "overview");
   blendBtn.classList.toggle("active", view === "leverage");
+  compareBtn.classList.toggle("active", view === "compare");
   swapBtn.classList.toggle("active", view === "swap");
   vaultBtn.classList.toggle("active", view === "vault");
 
   // Mobile sidebar active states
   document.getElementById("mobile-proto-overview")?.classList.toggle("active", view === "overview");
   document.getElementById("mobile-proto-blend")?.classList.toggle("active", view === "leverage");
+  document.getElementById("mobile-proto-compare")?.classList.toggle("active", view === "compare");
   document.getElementById("mobile-proto-swap")?.classList.toggle("active", view === "swap");
   document.getElementById("mobile-proto-vault")?.classList.toggle("active", view === "vault");
 
@@ -1788,6 +1812,7 @@ function switchView(view: AppView) {
 
   // Hide all views first
   $("overview-view").classList.add("hidden");
+  $("compare-view").classList.add("hidden");
   $("swap-view").classList.add("hidden");
   $("vault-view").classList.add("hidden");
   $("dashboard").classList.add("hidden");
@@ -1807,6 +1832,9 @@ function switchView(view: AppView) {
     } else {
       $("connect-prompt").classList.remove("hidden");
     }
+  } else if (view === "compare") {
+    $("compare-view").classList.remove("hidden");
+    loadComparePools();
   } else if (view === "swap") {
     $("swap-view").classList.remove("hidden");
     populateSwapAssets();
@@ -2051,12 +2079,14 @@ $("proto-blend").addEventListener("click", (e) => {
     switchView("leverage");
   }
 });
+$("proto-compare").addEventListener("click", () => switchView("compare"));
 $("proto-swap").addEventListener("click",  () => switchView("swap"));
 $("proto-vault").addEventListener("click", () => switchView("vault"));
 
 // Mobile sidebar nav
 document.getElementById("mobile-proto-overview")?.addEventListener("click", () => switchView("overview"));
 document.getElementById("mobile-proto-blend")?.addEventListener("click", () => switchView("leverage"));
+document.getElementById("mobile-proto-compare")?.addEventListener("click", () => switchView("compare"));
 document.getElementById("mobile-proto-swap")?.addEventListener("click", () => switchView("swap"));
 document.getElementById("mobile-proto-vault")?.addEventListener("click", () => switchView("vault"));
 
@@ -2253,6 +2283,128 @@ $("demo-btn").addEventListener("click", () => {
   $("pos-blnd").textContent = "125.3400 BLND";
   renderSelectedAsset();
   toast("Demo mode \u2014 explore the UI without a wallet", "info");
+});
+
+// ── Compare pools (#11) ─────────────────────────────────────────────────────
+
+function getCompareAssetSymbols(): string[] {
+  const pools = getKnownPools();
+  if (pools.length === 0) return [];
+  const symbolLists = pools.map(pool => getPoolAssets(pool).map(asset => asset.symbol));
+  return symbolLists[0].filter(symbol => symbolLists.every(list => list.includes(symbol)));
+}
+
+function populateCompareAssetSelect() {
+  const select = $("compare-asset-select") as HTMLSelectElement;
+  const symbols = getCompareAssetSymbols();
+  const current = select.value;
+  select.innerHTML = symbols.map(symbol => `<option value="${symbol}">${symbol}</option>`).join("");
+  if (symbols.includes(current)) select.value = current;
+  else if (symbols.length > 0) select.value = symbols[0];
+}
+
+function compareNetApy(rs: ReserveStats, leverage: number) {
+  return aprToApy(rs.netSupplyApr * leverage - rs.netBorrowCost * (leverage - 1));
+}
+
+async function loadComparePools() {
+  if (compareLoading) return;
+  compareLoading = true;
+  populateCompareAssetSelect();
+  const select = $("compare-asset-select") as HTMLSelectElement;
+  const symbol = select.value;
+  const status = $("compare-status");
+  const tbody = $("compare-table-body");
+  status.textContent = symbol ? `Loading ${symbol} across Blend pools...` : "No common asset is available across all pools.";
+  tbody.innerHTML = "";
+
+  try {
+    const rows = await Promise.all(getKnownPools().map(async pool => {
+      const asset = getPoolAssets(pool).find(candidate => candidate.symbol === symbol);
+      if (!asset) return null;
+      const reserveStats = await fetchAllReserves(pool, COMPARE_READ_ACCOUNT);
+      const rs = reserveStats.find(item => item.asset.id === asset.id);
+      if (!rs) return null;
+      const util = rs.totalSupply > 0 ? rs.totalBorrow / rs.totalSupply : 0;
+      return {
+        pool,
+        asset,
+        supplyApy: aprToApy(rs.netSupplyApr),
+        borrowApy: aprToApy(rs.netBorrowCost),
+        net5: compareNetApy(rs, 5),
+        net10: compareNetApy(rs, 10),
+        cFactor: rs.cFactor,
+        tvl: rs.totalSupply * rs.priceUsd,
+        util,
+      } satisfies ComparePoolRow;
+    }));
+    compareRows = rows.filter((row): row is ComparePoolRow => row !== null);
+    renderComparePools();
+  } catch (e) {
+    console.warn("Compare pools failed:", e);
+    status.textContent = "Could not load pool comparison data. Try refresh.";
+    tbody.innerHTML = "";
+  } finally {
+    compareLoading = false;
+  }
+}
+
+function sortedCompareRows() {
+  const { key, dir } = compareSort;
+  const direction = dir === "asc" ? 1 : -1;
+  return [...compareRows].sort((a, b) => {
+    const av = key === "pool" ? a.pool.name : a[key];
+    const bv = key === "pool" ? b.pool.name : b[key];
+    if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv) * direction;
+    return ((av as number) - (bv as number)) * direction;
+  });
+}
+
+function renderComparePools() {
+  const tbody = $("compare-table-body");
+  const status = $("compare-status");
+  const rows = sortedCompareRows();
+  const symbol = ($("compare-asset-select") as HTMLSelectElement).value;
+  status.textContent = `${rows.length} pools for ${symbol}. Default sort is Net APY 10x descending.`;
+  tbody.innerHTML = rows.map(row => `
+    <tr data-compare-pool="${row.pool.id}" data-compare-symbol="${row.asset.symbol}">
+      <td class="text-label">${row.pool.name}</td>
+      <td class="text-right ${row.supplyApy >= 0 ? "hf-ok" : "hf-bad"}">${row.supplyApy >= 0 ? "+" : ""}${fmt(row.supplyApy, 2)}%</td>
+      <td class="text-right">${fmt(row.borrowApy, 2)}%</td>
+      <td class="text-right ${row.net5 >= 0 ? "hf-ok" : "hf-bad"}">${row.net5 >= 0 ? "+" : ""}${fmt(row.net5, 2)}%</td>
+      <td class="text-right ${row.net10 >= 0 ? "hf-ok" : "hf-bad"}">${row.net10 >= 0 ? "+" : ""}${fmt(row.net10, 2)}%</td>
+      <td class="text-right">${fmt(row.cFactor * 100, 0)}%</td>
+      <td class="text-right">${row.tvl > 0 ? formatUsd(row.tvl) : "--"}</td>
+      <td class="text-right">${fmt(row.util * 100, 1)}%</td>
+    </tr>`).join("");
+
+  document.querySelectorAll<HTMLTableCellElement>(".compare-table th[data-sort]").forEach(th => {
+    const key = th.dataset.sort as CompareSortKey;
+    th.classList.toggle("sort-asc", compareSort.key === key && compareSort.dir === "asc");
+    th.classList.toggle("sort-desc", compareSort.key === key && compareSort.dir === "desc");
+  });
+
+  tbody.querySelectorAll<HTMLTableRowElement>("tr[data-compare-pool]").forEach(row => {
+    row.addEventListener("click", () => {
+      const pool = getKnownPools().find(candidate => candidate.id === row.dataset.comparePool);
+      if (!pool) return;
+      selectPool(pool);
+      const asset = getPoolAssets(pool).find(candidate => candidate.symbol === row.dataset.compareSymbol);
+      if (asset) selectAsset(asset);
+      switchView("leverage");
+    });
+  });
+}
+
+$("compare-refresh-btn").addEventListener("click", () => loadComparePools());
+($("compare-asset-select") as HTMLSelectElement).addEventListener("change", () => loadComparePools());
+document.querySelectorAll<HTMLTableCellElement>(".compare-table th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort as CompareSortKey;
+    if (compareSort.key === key) compareSort.dir = compareSort.dir === "asc" ? "desc" : "asc";
+    else compareSort = { key, dir: key === "pool" ? "asc" : "desc" };
+    renderComparePools();
+  });
 });
 
 // Init preview with defaults

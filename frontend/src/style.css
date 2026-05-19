@@ -990,6 +990,16 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   margin-bottom: 16px;
 }
 .overview-header h2 { font-size: 20px; font-weight: 800; letter-spacing: -.3px; }
+.compare-controls { display: flex; align-items: center; gap: 8px; }
+.compare-controls label { font-size: 12px; color: var(--text-2); font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.compare-asset-select { width: 130px; padding: 7px 10px; font-size: 13px; }
+.compare-status { color: var(--text-2); font-size: 13px; margin-bottom: 10px; }
+.compare-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--r); }
+.compare-table { min-width: 860px; }
+.compare-table th[data-sort]::after { content: " ↕"; color: var(--text-3); font-size: 10px; }
+.compare-table th.sort-asc::after { content: " ↑"; color: var(--primary); }
+.compare-table th.sort-desc::after { content: " ↓"; color: var(--primary); }
+.compare-table tbody tr { cursor: pointer; }
 
 .overview-totals {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
@@ -1161,6 +1171,7 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   .overview-totals { grid-template-columns: 1fr; }
   .overview-positions { grid-template-columns: 1fr; }
   .metrics-hero { grid-template-columns: 1fr; }
+  .compare-controls { flex-wrap: wrap; justify-content: flex-end; }
   .landing-steps-grid { grid-template-columns: 1fr; }
   .landing-features-grid { grid-template-columns: 1fr; }
 }
