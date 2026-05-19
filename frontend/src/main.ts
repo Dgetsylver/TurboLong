@@ -16,6 +16,7 @@ import {
   Operation,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import posthog from "posthog-js";
 
 import {
   getKnownPools,
@@ -256,6 +257,7 @@ async function fundTestnetWallet() {
     else if (activeView === "vault") await refreshVaultView();
   } catch (e: any) {
     const msg = e?.message ?? String(e);
+    triggerFailedTxReplay("fund-testnet-wallet", e, { network: getActiveNetwork() });
     // If path payment fails (no liquidity), still report trustline success
     if (msg.includes("PATH_PAYMENT") || msg.includes("path")) {
       toast("USDC trustline opened but no DEX liquidity to swap. You may need to acquire USDC manually.", "info");
@@ -335,6 +337,199 @@ const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+
+type TxReplayEvent = {
+  ts: number;
+  type: string;
+  target?: string;
+  detail?: string;
+  view: AppView;
+  network: NetworkMode;
+};
+
+const TX_REPLAY_CONSENT_KEY = "turbolong_failed_tx_replay_consent";
+const TX_REPLAY_BUFFER_MAX = 80;
+const TX_REPLAY_RECORDING_MS = 60_000;
+const STELLAR_ADDRESS_RE = /\b[CGM][A-Z2-7]{55}\b/g;
+const WALLET_FRAGMENT_RE = /\b(?:0x[a-fA-F0-9]{4,}|[CGM][A-Z2-7]{5})[\u2026.]{1,3}[A-Za-z0-9]{4}\b/g;
+const EMAIL_REPLAY_RE = /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g;
+const LONG_SECRET_RE = /\b[A-Za-z0-9+/=_-]{80,}\b/g;
+
+let txReplayEvents: TxReplayEvent[] = [];
+let txReplayInitialized = false;
+let txReplayStopTimer: ReturnType<typeof setTimeout> | null = null;
+
+function txReplayConsentEnabled(): boolean {
+  return localStorage.getItem(TX_REPLAY_CONSENT_KEY) === "1";
+}
+
+function scrubReplayText(value: unknown): string {
+  return String(value ?? "")
+    .replace(STELLAR_ADDRESS_RE, "[stellar-address]")
+    .replace(WALLET_FRAGMENT_RE, "[wallet-address]")
+    .replace(EMAIL_REPLAY_RE, "[email]")
+    .replace(LONG_SECRET_RE, "[redacted]")
+    .slice(0, 240);
+}
+
+function replayTargetLabel(target: EventTarget | null): string {
+  const raw = target instanceof Element
+    ? target.closest("button,a,input,select,textarea,[role='button'],[id]")
+    : null;
+  const el = raw as HTMLElement | null;
+  if (!el) return "document";
+
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : "";
+  const isFormField = el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement;
+  const label = isFormField
+    ? tag
+    : scrubReplayText(el.getAttribute("aria-label") || el.textContent || tag);
+  return `${tag}${id}${label ? `:${label}` : ""}`;
+}
+
+function recordTxReplayEvent(type: string, target?: EventTarget | null, detail?: unknown) {
+  if (!txReplayConsentEnabled()) return;
+  txReplayEvents.push({
+    ts: Date.now(),
+    type,
+    target: target ? replayTargetLabel(target) : undefined,
+    detail: detail == null ? undefined : scrubReplayText(detail),
+    view: activeView,
+    network: getActiveNetwork(),
+  });
+  if (txReplayEvents.length > TX_REPLAY_BUFFER_MAX) {
+    txReplayEvents = txReplayEvents.slice(-TX_REPLAY_BUFFER_MAX);
+  }
+}
+
+function replayEnvValue(name: string, fallback = ""): string {
+  return String(((import.meta as any).env?.[name] ?? fallback)).trim();
+}
+
+function ensureTxReplayPostHog(): boolean {
+  if (!txReplayConsentEnabled()) return false;
+  const key = replayEnvValue("VITE_POSTHOG_KEY");
+  if (!key) return false;
+
+  if (!txReplayInitialized) {
+    posthog.init(key, {
+      api_host: replayEnvValue("VITE_POSTHOG_HOST", "https://us.i.posthog.com"),
+      autocapture: false,
+      capture_pageview: false,
+      disable_session_recording: true,
+      mask_all_element_attributes: true,
+      mask_all_text: true,
+      opt_out_capturing_by_default: true,
+      session_recording: {
+        maskAllInputs: true,
+        maskInputOptions: {
+          color: true,
+          date: true,
+          datetimeLocal: true,
+          email: true,
+          month: true,
+          number: true,
+          password: true,
+          range: true,
+          search: true,
+          tel: true,
+          text: true,
+          time: true,
+          url: true,
+          week: true,
+        },
+      },
+    } as any);
+    txReplayInitialized = true;
+  }
+
+  posthog.opt_in_capturing();
+  return true;
+}
+
+function triggerFailedTxReplay(flow: string, error: unknown, context: Record<string, unknown> = {}) {
+  if (!txReplayConsentEnabled()) return;
+
+  const errorMessage = scrubReplayText(error instanceof Error ? error.message : String(error ?? ""));
+  recordTxReplayEvent("tx_failure", null, `${flow}: ${errorMessage}`);
+
+  const payload = {
+    flow,
+    error_message: errorMessage,
+    view: activeView,
+    network: getActiveNetwork(),
+    pool: selectedPool.name,
+    asset: selectedAsset.symbol,
+    context: Object.fromEntries(
+      Object.entries(context).map(([key, value]) => [
+        key,
+        typeof value === "string" ? scrubReplayText(value) : value,
+      ]),
+    ),
+    breadcrumbs: txReplayEvents.slice(-TX_REPLAY_BUFFER_MAX),
+  };
+
+  if (ensureTxReplayPostHog()) {
+    posthog.startSessionRecording();
+    posthog.capture("failed_tx_replay_triggered", payload);
+    if (txReplayStopTimer) clearTimeout(txReplayStopTimer);
+    txReplayStopTimer = setTimeout(() => posthog.stopSessionRecording(), TX_REPLAY_RECORDING_MS);
+  } else {
+    console.info("[tx-replay] Failed transaction replay retained locally; set VITE_POSTHOG_KEY to upload.", payload);
+  }
+}
+
+function installTxReplayCapture() {
+  document.addEventListener("click", (event) => recordTxReplayEvent("click", event.target), { capture: true });
+  document.addEventListener("input", (event) => recordTxReplayEvent("input", event.target), { capture: true });
+  document.addEventListener("change", (event) => recordTxReplayEvent("change", event.target), { capture: true });
+}
+
+function updateTxReplayToggleBadge() {
+  const btn = document.getElementById("tx-replay-toggle");
+  const badge = btn?.querySelector(".settings-badge");
+  if (badge) badge.textContent = txReplayConsentEnabled() ? "On" : "Off";
+  btn?.classList.toggle("expert-active", txReplayConsentEnabled());
+}
+
+function setTxReplayConsent(enabled: boolean) {
+  if (enabled) {
+    localStorage.setItem(TX_REPLAY_CONSENT_KEY, "1");
+    ensureTxReplayPostHog();
+    toast("Failed transaction replay enabled.", "success");
+  } else {
+    localStorage.removeItem(TX_REPLAY_CONSENT_KEY);
+    txReplayEvents = [];
+    if (txReplayStopTimer) clearTimeout(txReplayStopTimer);
+    if (txReplayInitialized) {
+      posthog.stopSessionRecording();
+      posthog.opt_out_capturing();
+    }
+    toast("Failed transaction replay disabled.", "info");
+  }
+  updateTxReplayToggleBadge();
+}
+
+function installTxReplaySettingsToggle() {
+  const settings = $("settings-dropdown");
+  if (!document.getElementById("tx-replay-toggle")) {
+    const btn = document.createElement("button");
+    btn.id = "tx-replay-toggle";
+    btn.type = "button";
+    btn.className = "settings-dropdown-item";
+    btn.innerHTML = 'Failed Tx Replay <span class="settings-badge">Off</span>';
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setTxReplayConsent(!txReplayConsentEnabled());
+    });
+    settings.insertBefore(btn, $("theme-toggle"));
+  }
+  updateTxReplayToggleBadge();
+  if (txReplayConsentEnabled()) ensureTxReplayPostHog();
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -505,18 +700,25 @@ function removePnlEntry(assetId: string, poolId: string) {
 // ── Sign + submit ─────────────────────────────────────────────────────────────
 
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
-  if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
-  toast(`Sign "${label}" in your wallet\u2026`, "info");
-  const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdrStr, {
-    networkPassphrase: getNetworkPassphrase(),
-    address: userAddress!,
-  });
-  toast(`Submitting "${label}"\u2026`, "info");
-  const hash = await submitSignedXdr(signedTxXdr);
-  if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
-  toast(`"${label}" confirmed!`, "success", hash);
-  addTxToHistory(label, hash, "success");
-  return hash;
+  try {
+    if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
+    recordTxReplayEvent("tx_step_start", null, label);
+    toast(`Sign "${label}" in your wallet\u2026`, "info");
+    const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdrStr, {
+      networkPassphrase: getNetworkPassphrase(),
+      address: userAddress!,
+    });
+    toast(`Submitting "${label}"\u2026`, "info");
+    const hash = await submitSignedXdr(signedTxXdr);
+    if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
+    recordTxReplayEvent("tx_step_success", null, label);
+    toast(`"${label}" confirmed!`, "success", hash);
+    addTxToHistory(label, hash, "success");
+    return hash;
+  } catch (error) {
+    recordTxReplayEvent("tx_step_error", null, label);
+    throw error;
+  }
 }
 
 // ── Pool tabs ─────────────────────────────────────────────────────────────────
@@ -1381,6 +1583,12 @@ async function openPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
+    triggerFailedTxReplay("open-position", e, {
+      pool: selectedPool.name,
+      asset: liveAsset.symbol,
+      initial,
+      leverage,
+    });
     const msg: string = e?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
       toast("Health factor too low \u2014 reduce leverage.", "error");
@@ -1430,6 +1638,10 @@ async function closePosition() {
       } catch (e2: any) {
         const msg2: string = e2?.message ?? "Transaction failed";
         markStepperError(2);
+        triggerFailedTxReplay("close-position-fallback", e2, {
+          pool: selectedPool.name,
+          asset: selectedAsset.symbol,
+        });
         if (msg2.includes("#1207") || msg2.includes("InvalidUtilRate")) {
           toast("Pool utilization too high to withdraw all collateral. Debt was repaid \u2014 try withdrawing later when liquidity improves.", "error");
         } else {
@@ -1440,6 +1652,10 @@ async function closePosition() {
       }
     }
     markStepperError(1);
+    triggerFailedTxReplay("close-position", e, {
+      pool: selectedPool.name,
+      asset: selectedAsset.symbol,
+    });
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
       toast("Pool utilization too high \u2014 not enough liquidity to close. Try again later.", "error");
     } else {
@@ -1464,6 +1680,10 @@ async function repayDebt() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
+    triggerFailedTxReplay("repay-debt", e, {
+      pool: selectedPool.name,
+      asset: selectedAsset.symbol,
+    });
     toast(e?.message ?? "Transaction failed", "error");
   } finally {
     setLoading($("repay-btn") as HTMLButtonElement, false);
@@ -1499,6 +1719,10 @@ async function claimBlnd() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
+    triggerFailedTxReplay("claim-blnd", e, {
+      pool: selectedPool.name,
+      tokenCount: tokenIds.length,
+    });
     toast(e?.message ?? "Transaction failed", "error");
   } finally {
     setLoading($("claim-btn") as HTMLButtonElement, false);
@@ -1539,6 +1763,12 @@ async function adjustLeverage() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
+    triggerFailedTxReplay("adjust-leverage", e, {
+      pool: selectedPool.name,
+      asset: liveAsset.symbol,
+      direction,
+      targetLeverage: targetLev,
+    });
     const msg: string = e?.message ?? "Adjust leverage failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
       toast("Health factor too low — reduce target leverage.", "error");
@@ -1588,6 +1818,12 @@ async function addFundsToPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
+    triggerFailedTxReplay("add-funds", e, {
+      pool: selectedPool.name,
+      asset: liveAsset.symbol,
+      additional,
+      leverage,
+    });
     const msg: string = e?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
       toast("Health factor too low \u2014 reduce leverage.", "error");
@@ -1624,6 +1860,11 @@ async function resupply() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
+    triggerFailedTxReplay("resupply", e, {
+      pool: selectedPool.name,
+      asset: selectedAsset.symbol,
+      amount: bal,
+    });
     toast(e?.message ?? "Resupply failed", "error");
   } finally {
     setLoading($("resupply-btn") as HTMLButtonElement, false);
@@ -1658,6 +1899,7 @@ async function claimAndConvert() {
 
     // Step 2: Swap BLND -> position asset via DEX path payment (classic tx)
     updateTxStep(1, "active");
+    recordTxReplayEvent("tx_step_start", null, `Swap BLND to ${selectedAsset.symbol}`);
     toast(`Swapping ${fmt(blndBalance, 2)} BLND \u2192 ${selectedAsset.symbol}\u2026`, "info");
     const { xdr: swapXdr, estimate } = await buildSwapBlndXdr(
       userAddress,
@@ -1674,6 +1916,7 @@ async function claimAndConvert() {
     toast(`Submitting swap\u2026`, "info");
     const swapHash = await submitClassicXdr(signedTxXdr);
     updateTxStep(1, "done");
+    recordTxReplayEvent("tx_step_success", null, `Swap BLND to ${selectedAsset.symbol}`);
     toast(`Converted ${fmt(blndBalance, 2)} BLND \u2192 ~${estimate} ${selectedAsset.symbol}`, "success");
     addTxToHistory(`Swap BLND \u2192 ${selectedAsset.symbol}`, swapHash, "success");
     hideTxStepper();
@@ -1681,6 +1924,12 @@ async function claimAndConvert() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
+    recordTxReplayEvent("tx_step_error", null, `Claim and convert to ${selectedAsset.symbol}`);
+    triggerFailedTxReplay("claim-and-convert", e, {
+      pool: selectedPool.name,
+      asset: selectedAsset.symbol,
+      slippage: swapSlippage,
+    });
     toast(e?.message ?? "Claim & Convert failed", "error");
   } finally {
     setLoading($("compound-btn") as HTMLButtonElement, false);
@@ -2022,6 +2271,9 @@ function toggleTheme() {
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
 document.getElementById("mobile-theme-toggle")?.addEventListener("click", toggleTheme);
+
+installTxReplayCapture();
+installTxReplaySettingsToggle();
 
 // Settings dropdown toggle
 $("settings-btn").addEventListener("click", (e) => {
@@ -2647,11 +2899,19 @@ $("vault-deposit-btn").addEventListener("click", async () => {
     ($("vault-deposit-btn") as HTMLButtonElement).textContent = "Depositing...";
 
     const xdr = await buildVaultDepositXdr(vault, userAddress, amount);
+    recordTxReplayEvent("tx_step_start", null, `Vault deposit ${vault.assetSymbol}`);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
     await submitSignedXdr(signedTxXdr);
+    recordTxReplayEvent("tx_step_success", null, `Vault deposit ${vault.assetSymbol}`);
     await refreshVaultView();
     ($("vault-deposit-input") as HTMLInputElement).value = "";
   } catch (err: any) {
+    recordTxReplayEvent("tx_step_error", null, `Vault deposit ${vault.assetSymbol}`);
+    triggerFailedTxReplay("vault-deposit", err, {
+      vault: vault.name,
+      asset: vault.assetSymbol,
+      amount,
+    });
     alert("Deposit failed: " + (err.message || err));
   } finally {
     ($("vault-deposit-btn") as HTMLButtonElement).disabled = false;
@@ -2676,11 +2936,19 @@ $("vault-withdraw-btn").addEventListener("click", async () => {
     ($("vault-withdraw-btn") as HTMLButtonElement).textContent = "Withdrawing...";
 
     const xdr = await buildVaultWithdrawXdr(vault, userAddress, amount);
+    recordTxReplayEvent("tx_step_start", null, `Vault withdraw ${vault.assetSymbol}`);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
     await submitSignedXdr(signedTxXdr);
+    recordTxReplayEvent("tx_step_success", null, `Vault withdraw ${vault.assetSymbol}`);
     await refreshVaultView();
     ($("vault-withdraw-input") as HTMLInputElement).value = "";
   } catch (err: any) {
+    recordTxReplayEvent("tx_step_error", null, `Vault withdraw ${vault.assetSymbol}`);
+    triggerFailedTxReplay("vault-withdraw", err, {
+      vault: vault.name,
+      asset: vault.assetSymbol,
+      amount,
+    });
     alert("Withdraw failed: " + (err.message || err));
   } finally {
     ($("vault-withdraw-btn") as HTMLButtonElement).disabled = false;
@@ -2698,10 +2966,17 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     ($("vault-rebalance-btn") as HTMLButtonElement).textContent = "Rebalancing...";
 
     const xdr = await buildVaultRebalanceXdr(vault, userAddress);
+    recordTxReplayEvent("tx_step_start", null, `Vault rebalance ${vault.name}`);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
     await submitSignedXdr(signedTxXdr);
+    recordTxReplayEvent("tx_step_success", null, `Vault rebalance ${vault.name}`);
     await refreshVaultView();
   } catch (err: any) {
+    recordTxReplayEvent("tx_step_error", null, `Vault rebalance ${vault.name}`);
+    triggerFailedTxReplay("vault-rebalance", err, {
+      vault: vault.name,
+      asset: vault.assetSymbol,
+    });
     alert("Rebalance failed: " + (err.message || err));
   } finally {
     ($("vault-rebalance-btn") as HTMLButtonElement).disabled = false;
