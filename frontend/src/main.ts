@@ -2276,10 +2276,66 @@ interface OverviewVaultPosition {
   stats: VaultStats | null;
 }
 
+type OverviewPositionSortKey = "asset" | "leverage" | "hf" | "pnl";
+type OverviewPositionView = "compact" | "expanded";
+type OverviewPositionSortDir = "asc" | "desc";
+
+interface OverviewPositionPrefs {
+  sortKey: OverviewPositionSortKey;
+  sortDir: OverviewPositionSortDir;
+  view: OverviewPositionView;
+}
+
+interface OverviewBlendRow extends OverviewBlendPosition {
+  poolName: string;
+  netApr: number;
+  netApy: number;
+  unrealizedPnl: number | null;
+  unrealizedPnlPct: number | null;
+}
+
+const OVERVIEW_POSITION_PREFS_KEY = "turbolong_overview_position_prefs";
+const OVERVIEW_POSITION_PREFS_DEFAULT: OverviewPositionPrefs = {
+  sortKey: "asset",
+  sortDir: "asc",
+  view: "compact",
+};
+
+function loadOverviewPositionPrefs(): OverviewPositionPrefs {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_POSITION_PREFS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const sortKey = ["asset", "leverage", "hf", "pnl"].includes(parsed.sortKey) ? parsed.sortKey : OVERVIEW_POSITION_PREFS_DEFAULT.sortKey;
+    const sortDir = parsed.sortDir === "desc" ? "desc" : "asc";
+    const view = parsed.view === "expanded" ? "expanded" : "compact";
+    return { sortKey, sortDir, view };
+  } catch {
+    return { ...OVERVIEW_POSITION_PREFS_DEFAULT };
+  }
+}
+
+let overviewPositionPrefs = loadOverviewPositionPrefs();
+
+function saveOverviewPositionPrefs() {
+  localStorage.setItem(OVERVIEW_POSITION_PREFS_KEY, JSON.stringify(overviewPositionPrefs));
+}
+
 let _overviewLoading = false;
 
 async function loadOverview() {
   if (!userAddress || _overviewLoading) return;
+
+  if (demoMode) {
+    const demoBlendPositions = Array.from(positions.byAsset.values()).map(pos => ({
+      pool: selectedPool,
+      asset: pos.asset,
+      pos,
+      reserves,
+    }));
+    renderOverview(demoBlendPositions, []);
+    return;
+  }
+
   _overviewLoading = true;
 
   const blendPositions: OverviewBlendPosition[] = [];
@@ -2323,6 +2379,82 @@ async function loadOverview() {
   _overviewLoading = false;
 }
 
+function getOverviewBlendRows(blendPos: OverviewBlendPosition[]): OverviewBlendRow[] {
+  return blendPos.map(bp => {
+    const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
+    const batchNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
+    const pnl = getPnlEntry(bp.asset.id, bp.pool.id);
+    const unrealizedPnl = pnl ? bp.pos.equity - pnl.deposit : null;
+    const unrealizedPnlPct = pnl && pnl.deposit > 0 ? (unrealizedPnl! / pnl.deposit) * 100 : null;
+    const poolName = getKnownPools().find(p => p.id === bp.pool.id)?.name ?? bp.pool.name;
+    return {
+      ...bp,
+      poolName,
+      netApr: batchNetApr,
+      netApy: aprToApy(batchNetApr),
+      unrealizedPnl,
+      unrealizedPnlPct,
+    };
+  });
+}
+
+function compareOverviewBlendRows(a: OverviewBlendRow, b: OverviewBlendRow): number {
+  const dir = overviewPositionPrefs.sortDir === "asc" ? 1 : -1;
+  let result = 0;
+
+  if (overviewPositionPrefs.sortKey === "asset") {
+    result = `${a.asset.symbol} ${a.poolName}`.localeCompare(`${b.asset.symbol} ${b.poolName}`);
+  } else if (overviewPositionPrefs.sortKey === "leverage") {
+    result = a.pos.leverage - b.pos.leverage;
+  } else if (overviewPositionPrefs.sortKey === "hf") {
+    const aHf = isFinite(a.pos.hf) ? a.pos.hf : Number.MAX_SAFE_INTEGER;
+    const bHf = isFinite(b.pos.hf) ? b.pos.hf : Number.MAX_SAFE_INTEGER;
+    result = aHf - bHf;
+  } else {
+    if (a.unrealizedPnl === null && b.unrealizedPnl === null) result = 0;
+    else if (a.unrealizedPnl === null) return 1;
+    else if (b.unrealizedPnl === null) return -1;
+    else result = a.unrealizedPnl - b.unrealizedPnl;
+  }
+
+  if (result === 0) {
+    result = `${a.asset.symbol} ${a.poolName}`.localeCompare(`${b.asset.symbol} ${b.poolName}`);
+  }
+  return result * dir;
+}
+
+function sortedOverviewBlendRows(blendPos: OverviewBlendPosition[]): OverviewBlendRow[] {
+  return getOverviewBlendRows(blendPos).sort(compareOverviewBlendRows);
+}
+
+function overviewSortHeader(key: OverviewPositionSortKey, label: string, align: "" | "text-right" = ""): string {
+  const active = overviewPositionPrefs.sortKey === key;
+  const ariaSort = active ? (overviewPositionPrefs.sortDir === "asc" ? "ascending" : "descending") : "none";
+  const arrow = active ? (overviewPositionPrefs.sortDir === "asc" ? "\u2191" : "\u2193") : "";
+  return `<th class="${align}" aria-sort="${ariaSort}">
+    <button type="button" class="overview-sort-btn ${active ? "active" : ""}" data-overview-sort="${key}">
+      <span>${label}</span><span class="overview-sort-arrow">${arrow}</span>
+    </button>
+  </th>`;
+}
+
+function formatOverviewPnl(row: OverviewBlendRow): { text: string; cls: string; title: string } {
+  if (row.unrealizedPnl === null) {
+    return {
+      text: "--",
+      cls: "",
+      title: "No deposit baseline saved for this position yet.",
+    };
+  }
+  const sign = row.unrealizedPnl >= 0 ? "+" : "";
+  const pct = row.unrealizedPnlPct === null ? "" : ` / ${sign}${fmt(row.unrealizedPnlPct, 1)}%`;
+  return {
+    text: `${sign}${fmt(row.unrealizedPnl, 2)} ${row.asset.symbol}${pct}`,
+    cls: row.unrealizedPnl >= 0 ? "hf-ok" : "hf-bad",
+    title: `Unrealized P&L since the saved deposit baseline for ${row.asset.symbol}.`,
+  };
+}
+
 function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVaultPosition[]) {
   const container = $("ov-protocols");
   const emptyEl = $("ov-empty");
@@ -2355,40 +2487,89 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
 
   let html = "";
 
-  // Blend positions as data table
-  if (blendPos.length > 0) {
+  const blendRows = sortedOverviewBlendRows(blendPos);
+
+  // Blend positions as sortable compact table or expanded cards
+  if (blendRows.length > 0) {
     html += `<div class="overview-protocol-section">
-      <div class="overview-protocol-header">
-        <span class="overview-protocol-dot overview-protocol-dot-blend"></span>
-        Blend Protocol
-      </div>
-      <table class="overview-table">
+      <div class="overview-protocol-header overview-protocol-header-with-controls">
+        <span class="overview-protocol-title">
+          <span class="overview-protocol-dot overview-protocol-dot-blend"></span>
+          Blend Protocol
+        </span>
+        <span class="overview-position-controls" role="group" aria-label="Position view">
+          <button type="button" class="overview-view-toggle ${overviewPositionPrefs.view === "compact" ? "active" : ""}" data-overview-view="compact">Compact</button>
+          <button type="button" class="overview-view-toggle ${overviewPositionPrefs.view === "expanded" ? "active" : ""}" data-overview-view="expanded">Expanded</button>
+        </span>
+      </div>`;
+
+    if (overviewPositionPrefs.view === "compact") {
+      html += `<table class="overview-table overview-position-table">
         <thead><tr>
-          <th>Asset</th><th>Pool</th><th class="text-right">Equity</th>
-          <th class="text-right">Leverage</th><th class="text-right">HF</th>
-          <th class="text-right">Net APY</th><th class="text-right">Debt</th>
+          ${overviewSortHeader("asset", "Asset")}
+          <th>Pool</th><th class="text-right">Equity</th>
+          ${overviewSortHeader("leverage", "Leverage", "text-right")}
+          ${overviewSortHeader("hf", "HF", "text-right")}
+          <th class="text-right">Net APY</th>
+          ${overviewSortHeader("pnl", "P&L", "text-right")}
+          <th class="text-right">Debt</th>
         </tr></thead><tbody>`;
 
-    for (const bp of blendPos) {
-      const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
-      const price = rs?.priceUsd ?? 0;
-      const batchNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
-      const netApy = aprToApy(batchNetApr);
-      const hfColor = bp.pos.hf > 1.1 ? "hf-ok" : bp.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
-      const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
-      const batchTip = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(batchNetApr, 2)}%`;
+      for (const row of blendRows) {
+        const hfColor = row.pos.hf > 1.1 ? "hf-ok" : row.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
+        const batchTip = `Approximate APY - Blend does not auto-compound. Actual net APR: ${fmt(row.netApr, 2)}%`;
+        const pnl = formatOverviewPnl(row);
 
-      html += `<tr data-nav-pool="${bp.pool.id}" data-nav-asset="${bp.asset.id}">
-        <td class="text-label">${bp.asset.symbol}</td>
-        <td style="color:var(--text-2);font-family:var(--sans)">${pool.name}</td>
-        <td class="text-right">${fmt(bp.pos.equity, 2)} ${bp.asset.symbol}</td>
-        <td class="text-right">${fmt(bp.pos.leverage, 1)}&times;</td>
-        <td class="text-right ${hfColor}">${isFinite(bp.pos.hf) ? fmt(bp.pos.hf, 3) : "\u221E"}</td>
-        <td class="text-right ${netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</td>
-        <td class="text-right">${fmt(bp.pos.debt, 2)} ${bp.asset.symbol}</td>
-      </tr>`;
+        html += `<tr data-nav-pool="${row.pool.id}" data-nav-asset="${row.asset.id}">
+          <td class="text-label">${row.asset.symbol}</td>
+          <td style="color:var(--text-2);font-family:var(--sans)">${row.poolName}</td>
+          <td class="text-right">${fmt(row.pos.equity, 2)} ${row.asset.symbol}</td>
+          <td class="text-right">${fmt(row.pos.leverage, 1)}&times;</td>
+          <td class="text-right ${hfColor}">${isFinite(row.pos.hf) ? fmt(row.pos.hf, 3) : "\u221E"}</td>
+          <td class="text-right ${row.netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${row.netApy >= 0 ? "+" : ""}${fmt(row.netApy, 2)}%</td>
+          <td class="text-right ${pnl.cls}" title="${pnl.title}">${pnl.text}</td>
+          <td class="text-right">${fmt(row.pos.debt, 2)} ${row.asset.symbol}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    } else {
+      html += `<div class="overview-positions overview-positions-expanded">`;
+      for (const row of blendRows) {
+        const hfColor = row.pos.hf > 1.1 ? "hf-ok" : row.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
+        const pnl = formatOverviewPnl(row);
+
+        html += `<div class="overview-pos-card overview-blend-card" data-nav-pool="${row.pool.id}" data-nav-asset="${row.asset.id}">
+          <div class="overview-pos-card-top">
+            <span class="overview-pos-card-symbol">${row.asset.symbol}</span>
+            <span class="overview-pos-card-pool">${row.poolName}</span>
+          </div>
+          <div class="overview-pos-card-grid">
+            <div class="overview-pos-card-metric">
+              <span class="overview-pos-card-label">Equity</span>
+              <span class="overview-pos-card-value">${fmt(row.pos.equity, 2)} ${row.asset.symbol}</span>
+            </div>
+            <div class="overview-pos-card-metric">
+              <span class="overview-pos-card-label">Leverage</span>
+              <span class="overview-pos-card-value">${fmt(row.pos.leverage, 1)}&times;</span>
+            </div>
+            <div class="overview-pos-card-metric">
+              <span class="overview-pos-card-label">HF</span>
+              <span class="overview-pos-card-value ${hfColor}">${isFinite(row.pos.hf) ? fmt(row.pos.hf, 3) : "\u221E"}</span>
+            </div>
+            <div class="overview-pos-card-metric">
+              <span class="overview-pos-card-label">P&L</span>
+              <span class="overview-pos-card-value ${pnl.cls}" title="${pnl.title}">${pnl.text}</span>
+            </div>
+          </div>
+          <div class="overview-card-secondary">
+            <span>Net APY</span>
+            <span class="${row.netApy > 0 ? "hf-ok" : "hf-bad"}">${row.netApy >= 0 ? "+" : ""}${fmt(row.netApy, 2)}%</span>
+          </div>
+        </div>`;
+      }
+      html += `</div>`;
     }
-    html += `</tbody></table></div>`;
+    html += `</div>`;
   }
 
   // Vault positions (keep as cards since there's usually only 1)
@@ -2424,8 +2605,33 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
 
   container.innerHTML = html;
 
-  // Wire up click navigation for Blend table rows
-  container.querySelectorAll<HTMLElement>("tr[data-nav-pool]").forEach(row => {
+  // Wire up sort and view controls
+  container.querySelectorAll<HTMLButtonElement>("[data-overview-sort]").forEach(btn => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const key = btn.dataset.overviewSort as OverviewPositionSortKey;
+      if (overviewPositionPrefs.sortKey === key) {
+        overviewPositionPrefs.sortDir = overviewPositionPrefs.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        overviewPositionPrefs.sortKey = key;
+        overviewPositionPrefs.sortDir = "asc";
+      }
+      saveOverviewPositionPrefs();
+      renderOverview(blendPos, vaultPos);
+    });
+  });
+
+  container.querySelectorAll<HTMLButtonElement>("[data-overview-view]").forEach(btn => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      overviewPositionPrefs.view = btn.dataset.overviewView === "expanded" ? "expanded" : "compact";
+      saveOverviewPositionPrefs();
+      renderOverview(blendPos, vaultPos);
+    });
+  });
+
+  // Wire up click navigation for Blend rows and cards
+  container.querySelectorAll<HTMLElement>("[data-nav-pool][data-nav-asset]").forEach(row => {
     row.addEventListener("click", () => {
       const poolId = row.dataset.navPool!;
       const assetId = row.dataset.navAsset!;

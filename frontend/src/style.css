@@ -1002,9 +1002,30 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   margin-bottom: 10px; font-size: 13px; font-weight: 700;
   color: var(--text-2); text-transform: uppercase; letter-spacing: .5px;
 }
+.overview-protocol-header-with-controls {
+  justify-content: space-between;
+  gap: 12px;
+}
+.overview-protocol-title {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
 .overview-protocol-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .overview-protocol-dot-blend { background: var(--success); box-shadow: 0 0 6px var(--success); }
 .overview-protocol-dot-vault { background: var(--blnd); box-shadow: 0 0 6px var(--blnd); }
+.overview-position-controls {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px; border: 1px solid var(--border);
+  border-radius: var(--r-xs); background: var(--surface);
+  text-transform: none; letter-spacing: 0;
+}
+.overview-view-toggle {
+  border: 0; background: transparent; color: var(--text-3);
+  border-radius: 4px; padding: 4px 8px;
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+.overview-view-toggle:hover { color: var(--text); }
+.overview-view-toggle.active { background: var(--tab-active-bg); color: var(--text); }
 
 /* Overview data table */
 .overview-table {
@@ -1017,6 +1038,17 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   white-space: nowrap;
 }
 .overview-table th:hover { color: var(--text-2); }
+.overview-sort-btn {
+  display: inline-flex; align-items: center; justify-content: inherit; gap: 4px;
+  width: 100%; padding: 0; border: 0; background: transparent;
+  color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit;
+  cursor: pointer;
+}
+.overview-sort-btn.active { color: var(--text); }
+.overview-table th.text-right .overview-sort-btn { justify-content: flex-end; }
+.overview-sort-arrow {
+  min-width: 10px; font-size: 10px; line-height: 1;
+}
 .overview-table td {
   padding: 10px 12px; border-bottom: 1px solid var(--border);
   font-family: var(--mono); font-weight: 500;
@@ -1049,6 +1081,12 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .overview-pos-card-metric { display: flex; flex-direction: column; gap: 1px; }
 .overview-pos-card-label { color: var(--text-3); font-size: 10px; text-transform: uppercase; letter-spacing: .3px; font-weight: 600; }
 .overview-pos-card-value { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+.overview-card-secondary {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  color: var(--text-3); font-size: 12px;
+}
+.overview-card-secondary span:last-child { font-family: var(--mono); font-weight: 700; }
 
 .overview-vault-card {
   background: var(--surface); border: 1px solid var(--border);
