@@ -51,6 +51,7 @@ import {
   type AssetPosition,
   type UserPositions,
   projectRates,
+  netAprBreakdown,
 } from "./blend.ts";
 
 import {
@@ -334,6 +335,21 @@ const $ = (id: string) => document.getElementById(id)!;
 const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+const signedPct = (n: number, d = 2) => `${n >= 0 ? "+" : ""}${fmt(n, d)}%`;
+
+function rateComponentRows(breakdown: ReturnType<typeof netAprBreakdown>): string {
+  return `
+    <div><span>Supply rate</span><strong>${signedPct(aprToApy(breakdown.supplyApr))}</strong></div>
+    <div><span>BLND supply</span><strong>${signedPct(breakdown.blndSupplyApr)}</strong></div>
+    <div><span>BLND borrow</span><strong>${signedPct(breakdown.blndBorrowApr)}</strong></div>
+    <div><span>Borrow cost</span><strong>-${fmt(breakdown.borrowApr, 2)}%</strong></div>
+    <div><span>Fee drag</span><strong>-${fmt(breakdown.feeDragApr, 2)}%</strong></div>`;
+}
+
+function renderRateComponentRows(containerId: string, breakdown: ReturnType<typeof netAprBreakdown>) {
+  const container = $(containerId);
+  if (container) container.innerHTML = rateComponentRows(breakdown);
+}
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
@@ -718,7 +734,7 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const steps: { lev: number; apy: number }[] = [];
   for (let l = 1.0; l <= maxLev; l += 0.2) {
     const p = projectRates(rs, equity * l - oldSupply, equity * (l - 1) - oldBorrow);
-    steps.push({ lev: l, apy: aprToApy(p.netSupplyApr * l - p.netBorrowCost * (l - 1)) });
+    steps.push({ lev: l, apy: aprToApy(netAprBreakdown(p, l).netApr) });
   }
   if (steps.length < 2) { container.innerHTML = ""; return; }
   const minApy = Math.min(0, ...steps.map(s => s.apy));
@@ -728,7 +744,7 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const y = (apy: number) => padT + (1 - (apy - minApy) / rangeApy) * (H - padT - padB);
   const points = steps.map(s => `${x(s.lev).toFixed(1)},${y(s.apy).toFixed(1)}`).join(" ");
   const curProj = projectRates(rs, equity * currentLev - oldSupply, equity * (currentLev - 1) - oldBorrow);
-  const curApy = aprToApy(curProj.netSupplyApr * currentLev - curProj.netBorrowCost * (currentLev - 1));
+  const curApy = aprToApy(netAprBreakdown(curProj, currentLev).netApr);
   const zeroY = y(0);
 
   // Position the label above or below the dot to avoid clipping
@@ -757,7 +773,7 @@ function renderSelectedAsset() {
 
   // Clear skeletons (#3)
   ["stat-cfactor","stat-max-lev","stat-liquidity","stat-util","stat-price",
-   "supply-interest-apr","supply-blnd-apr","supply-net-apr","borrow-interest-apr","borrow-blnd-apr","borrow-net-cost"]
+   "asset-net-apy","supply-interest-apr","supply-blnd-apr","supply-net-apr","borrow-interest-apr","borrow-blnd-apr","borrow-net-cost"]
     .forEach(clearSkeleton);
 
   updateLeverageSlider(rs.cFactor, rs.lFactor);
@@ -779,6 +795,16 @@ function renderSelectedAsset() {
   utilBar.style.background = util > 0.90 ? "var(--danger)" : util > 0.75 ? "var(--warning)" : "var(--success)";
 
   $("stat-price").textContent      = rs.priceUsd > 0 ? `$${fmt(rs.priceUsd, 4)}` : "\u2014";
+
+  const assetBreakdown = netAprBreakdown(rs, 1);
+  const assetNetApy = aprToApy(assetBreakdown.netApr);
+  const assetNetApyEl = $("asset-net-apy");
+  assetNetApyEl.textContent = signedPct(assetNetApy);
+  assetNetApyEl.className = `net-apy-value mono ${assetNetApy > 0 ? "hf-ok" : "hf-bad"}`;
+  renderRateComponentRows("asset-rate-components", assetBreakdown);
+  const assetNetTip = $("asset-net-apy-tip");
+  if (assetNetTip) assetNetTip.setAttribute("data-tip",
+    `Net APY = supply + BLND emissions - borrow cost - fee drag. Actual net APR: ${fmt(assetBreakdown.netApr, 2)}%`);
 
   renderAprLine("supply-interest-apr", rs.interestSupplyApr, false);
   renderAprLine("supply-blnd-apr",     rs.blndSupplyApr,     false, true);
@@ -838,19 +864,26 @@ function renderPortfolioSummary() {
   container.innerHTML = "";
   for (const [assetId, pos] of positions.byAsset) {
     const rs = reserves.find(r => r.asset.id === assetId);
-    const cardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
-    const netApy = aprToApy(cardNetApr);
+    const cardBreakdown = rs ? netAprBreakdown(rs, pos.leverage) : null;
+    const netApy = cardBreakdown ? aprToApy(cardBreakdown.netApr) : 0;
     const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
     const card = document.createElement("div");
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
-    card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
+    card.title = cardBreakdown
+      ? `Net APY = supply + BLND emissions - borrow cost - fee drag. Actual net APR: ${fmt(cardBreakdown.netApr, 2)}%`
+      : "Net APY unavailable";
     card.innerHTML = `
       <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
-        <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span class="portfolio-card-net-apy ${netApy > 0 ? "hf-ok" : "hf-bad"}">${signedPct(netApy)}</span>
+        <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7 \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        ${cardBreakdown ? `<details class="portfolio-rate-details">
+          <summary>Components</summary>
+          <div class="rate-components-grid">${rateComponentRows(cardBreakdown)}</div>
+        </details>` : ""}
       </span>`;
+    card.querySelector("details")?.addEventListener("click", ev => ev.stopPropagation());
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
       if (asset) selectAsset(asset);
@@ -992,8 +1025,8 @@ function renderPosition() {
   const netAprEl = $("pos-net-apr");
   const heroApyEl = $("hero-net-apy");
   if (rs && pos.leverage > 0) {
-    const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
-    const netApy = aprToApy(posNetApr);
+    const posBreakdown = netAprBreakdown(rs, pos.leverage);
+    const netApy = aprToApy(posBreakdown.netApr);
     const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
     netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     netAprEl.className   = `metric-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
@@ -1001,7 +1034,7 @@ function renderPosition() {
     heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     heroApyEl.className   = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
     // Tooltips with actual APR
-    const aprTip = `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(posNetApr, 2)}%`;
+    const aprTip = `Net APY = supply + BLND emissions - borrow cost - fee drag. Actual net APR: ${fmt(posBreakdown.netApr, 2)}%`;
     const posTip = $("pos-net-apr-tip");
     if (posTip) posTip.setAttribute("data-tip", aprTip);
     const heroTip = $("hero-net-apy-tip");
@@ -1211,13 +1244,13 @@ function updatePreview() {
 
   if (rs) {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
-    const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
-    const netApy = aprToApy(netApr);
+    const previewBreakdown = netAprBreakdown(proj, lev);
+    const netApy = aprToApy(previewBreakdown.netApr);
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Net APY = supply + BLND emissions - borrow cost - fee drag. Actual net APR: ${fmt(previewBreakdown.netApr, 2)}%`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -2236,8 +2269,12 @@ $("demo-btn").addEventListener("click", () => {
   // Load mock reserves and positions
   reserves = assets.map(a => ({
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
-    blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
+    blndSupplyApr: 2.1, blndBorrowApr: 1.5, grossSupplyApr: 5.25, feeDragApr: 1.05,
+    netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1000000000000n, dRate: 1000000000000n, bSupply: 10000000000000n, dSupply: 6500000000000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: { rBase: 300000, rOne: 400000, rTwo: 1200000, rThree: 50000000, utilOpt: 5000000, irMod: 1000000, backstopFP: 2000000 },
   }));
   positions = { byAsset: new Map() };
   // One sample position
@@ -2372,11 +2409,13 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
     for (const bp of blendPos) {
       const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
       const price = rs?.priceUsd ?? 0;
-      const batchNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
-      const netApy = aprToApy(batchNetApr);
+      const batchBreakdown = rs ? netAprBreakdown(rs, bp.pos.leverage) : null;
+      const netApy = batchBreakdown ? aprToApy(batchBreakdown.netApr) : 0;
       const hfColor = bp.pos.hf > 1.1 ? "hf-ok" : bp.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
       const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
-      const batchTip = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(batchNetApr, 2)}%`;
+      const batchTip = batchBreakdown
+        ? `Net APY = supply + BLND emissions - borrow cost - fee drag. Actual net APR: ${fmt(batchBreakdown.netApr, 2)}%`
+        : "Net APY unavailable";
 
       html += `<tr data-nav-pool="${bp.pool.id}" data-nav-asset="${bp.asset.id}">
         <td class="text-label">${bp.asset.symbol}</td>

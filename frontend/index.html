@@ -307,7 +307,17 @@
               </div>
 
               <!-- APR breakdown -->
-              <div class="apr-grid">
+              <div class="net-apy-card">
+                <div>
+                  <span class="net-apy-label">Net APY <span class="tooltip" id="asset-net-apy-tip" data-tip="">?</span></span>
+                  <span class="net-apy-value mono" id="asset-net-apy">--</span>
+                </div>
+                <details class="rate-components">
+                  <summary>Rate components</summary>
+                  <div class="rate-components-grid" id="asset-rate-components"></div>
+                </details>
+              </div>
+              <div class="apr-grid hidden" aria-hidden="true">
                 <div class="apr-card">
                   <div class="apr-card-label">Supply</div>
                   <div class="apr-row">
