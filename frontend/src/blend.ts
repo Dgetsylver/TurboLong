@@ -32,6 +32,11 @@ export const SUPPLY_COLLATERAL  = 2;
 export const WITHDRAW_COLLATERAL = 3;
 export const REPAY  = 5;
 export const BORROW = 4;
+export const BEGINNER_MAX_LEVERAGE = 2;
+
+export interface BuildPositionOptions {
+  beginnerMode?: boolean;
+}
 
 // Null account: valid on any network, sequence=0 — used for read-only simulations
 const NULL_ACCOUNT = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
@@ -330,6 +335,10 @@ function buildRequest(assetId: string, amount: bigint, requestType: number): xdr
 
 function buildRequestsVec(items: xdr.ScVal[]): xdr.ScVal {
   return xdr.ScVal.scvVec(items);
+}
+
+function clampBuilderLeverage(leverage: number, options?: BuildPositionOptions): number {
+  return options?.beginnerMode ? Math.min(leverage, BEGINNER_MAX_LEVERAGE) : leverage;
 }
 
 // ── RPC retry helper ──────────────────────────────────────────────────────────
@@ -902,11 +911,13 @@ export async function buildOpenPositionXdr(
   asset: AssetInfo,
   initialStroops: bigint,
   leverage: number,
+  options?: BuildPositionOptions,
 ): Promise<string> {
+  const safeLeverage  = clampBuilderLeverage(leverage, options);
   const cFactorBn    = BigInt(Math.round(asset.cFactor * SCALAR_F));
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const requests     = buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
+  const requests     = buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, safeLeverage));
 
   const acc = await server.getAccount(userAddress);
   const tx  = new TransactionBuilder(acc, {
@@ -1106,7 +1117,9 @@ export async function buildIncreaseLeverageXdr(
   asset: AssetInfo,
   pos: AssetPosition,
   targetLev: number,
+  options?: BuildPositionOptions,
 ): Promise<string> {
+  targetLev = clampBuilderLeverage(targetLev, options);
   if (pos.equity <= 0) throw new Error("No equity in position");
   const targetCollateral = pos.equity * targetLev;
   const additionalBorrow = targetCollateral - pos.collateral;
@@ -1168,7 +1181,9 @@ export async function buildDecreaseLeverageXdr(
   asset: AssetInfo,
   pos: AssetPosition,
   targetLev: number,
+  options?: BuildPositionOptions,
 ): Promise<string> {
+  targetLev = clampBuilderLeverage(targetLev, options);
   if (pos.equity <= 0) throw new Error("No equity in position");
   const targetDebt = pos.equity * (targetLev - 1);
   const debtReduction = pos.debt - targetDebt;
