@@ -32,6 +32,7 @@
       <div class="nav-links">
         <a href="#how" class="nav-link">How It Works</a>
         <a href="#features" class="nav-link">Features</a>
+        <a href="#activity" class="nav-link">Activity</a>
       </div>
       <a href="https://app.turbolong.com" class="btn btn-primary">Launch App</a>
     </nav>
@@ -126,6 +127,34 @@
       </div>
     </section>
 
+    <!-- On-chain Activity -->
+    <section class="activity-section" id="activity" data-activity-widget>
+      <div class="activity-header">
+        <span class="activity-eyebrow">On-chain activity</span>
+        <h2>Strategy Activity</h2>
+        <p>Recent Stellar Expert activity for the deployed testnet leveraged USDC strategy contract.</p>
+      </div>
+      <div class="activity-widget">
+        <div class="activity-toolbar">
+          <span>Leveraged USDC testnet strategy</span>
+          <a href="https://stellar.expert/explorer/testnet/contract/CDOETIUHCETALQMBMYUXGFJFA34KDTV74AMHTWXJLY2XUVNZ23JDLJZA" target="_blank" rel="noopener">Open Stellar Expert</a>
+        </div>
+        <div class="activity-frame-shell">
+          <iframe
+            id="stellar-expert-activity"
+            title="Stellar Expert activity for the Turbolong testnet strategy"
+            src="https://stellar.expert/explorer/testnet/contract/CDOETIUHCETALQMBMYUXGFJFA34KDTV74AMHTWXJLY2XUVNZ23JDLJZA"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+          ></iframe>
+          <div class="activity-fallback" id="activity-fallback" hidden>
+            <span>Stellar Expert activity is unavailable in this view.</span>
+            <a href="https://stellar.expert/explorer/testnet/contract/CDOETIUHCETALQMBMYUXGFJFA34KDTV74AMHTWXJLY2XUVNZ23JDLJZA" target="_blank" rel="noopener">Open Stellar Expert</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Risk Disclosure -->
     <section class="risk-section">
       <div class="risk-banner">
@@ -152,6 +181,28 @@
     </footer>
 
   </div>
+  <script>
+    (() => {
+      const frame = document.getElementById("stellar-expert-activity");
+      const fallback = document.getElementById("activity-fallback");
+      if (!frame || !fallback) return;
+
+      let loaded = false;
+      const showFallback = () => {
+        if (loaded) return;
+        frame.hidden = true;
+        fallback.hidden = false;
+      };
+
+      frame.addEventListener("load", () => {
+        loaded = true;
+        fallback.hidden = true;
+        frame.hidden = false;
+      });
+      frame.addEventListener("error", showFallback);
+      window.setTimeout(showFallback, 5000);
+    })();
+  </script>
   <!-- Cloudflare Web Analytics (free) — replace token after enabling in CF dashboard -->
   <!-- <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "YOUR_CF_ANALYTICS_TOKEN"}'></script> -->
 </body>
