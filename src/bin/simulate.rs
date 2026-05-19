@@ -130,6 +130,28 @@ fn which_stellar() -> String {
 
 // ── Interest rate model ───────────────────────────────────────────────────────
 
+fn rates_for_util(cfg: &ReserveConfig, ir_mod: f64, bstop_rate: f64, util: f64) -> (f64, f64) {
+    let util = util.clamp(0.0, 1.0);
+    let util_target = cfg.util     as f64 / SCALAR_7;
+    let max_util    = cfg.max_util as f64 / SCALAR_7;
+    let r_base      = cfg.r_base   as f64 / SCALAR_7;
+    let r_one       = cfg.r_one    as f64 / SCALAR_7;
+    let r_two       = cfg.r_two    as f64 / SCALAR_7;
+    let r_three     = cfg.r_three  as f64 / SCALAR_7;
+
+    let base_rate = if util <= util_target {
+        r_base + r_one * util / util_target.max(f64::EPSILON)
+    } else if util <= max_util {
+        r_base + r_one + r_two * (util - util_target) / (max_util - util_target).max(f64::EPSILON)
+    } else {
+        r_base + r_one + r_two + r_three * (util - max_util) / (1.0 - max_util).max(f64::EPSILON)
+    };
+
+    let borrow_apr = base_rate * ir_mod;
+    let supply_apr = borrow_apr * util * (1.0 - bstop_rate);
+    (supply_apr, borrow_apr)
+}
+
 fn compute_rates(cfg: &ReserveConfig, data: &ReserveData, bstop_rate: f64) -> (f64, f64, f64) {
     let b_rate   = data.b_rate.parse::<i128>().unwrap() as f64 / SCALAR_12;
     let d_rate   = data.d_rate.parse::<i128>().unwrap() as f64 / SCALAR_12;
@@ -146,24 +168,7 @@ fn compute_rates(cfg: &ReserveConfig, data: &ReserveData, bstop_rate: f64) -> (f
         0.0
     };
 
-    let util_target = cfg.util     as f64 / SCALAR_7;
-    let max_util    = cfg.max_util as f64 / SCALAR_7;
-    let r_base      = cfg.r_base   as f64 / SCALAR_7;
-    let r_one       = cfg.r_one    as f64 / SCALAR_7;
-    let r_two       = cfg.r_two    as f64 / SCALAR_7;
-    let r_three     = cfg.r_three  as f64 / SCALAR_7;
-
-    let base_rate = if util <= util_target {
-        r_base + r_one * util / util_target
-    } else if util <= max_util {
-        r_base + r_one + r_two * (util - util_target) / (max_util - util_target)
-    } else {
-        r_base + r_one + r_two + r_three * (util - max_util) / (1.0 - max_util)
-    };
-
-    let borrow_apr = base_rate * ir_mod;
-    let supply_apr = borrow_apr * util * (1.0 - bstop_rate);
-
+    let (supply_apr, borrow_apr) = rates_for_util(cfg, ir_mod, bstop_rate, util);
     (util, supply_apr, borrow_apr)
 }
 
@@ -315,7 +320,12 @@ fn main() {
         let hf       = if borrowed > 0.0 { (supplied * c_factor) / borrowed } else { f64::INFINITY };
         let hf_str   = if borrowed > 0.0 { format!("{:.4}", hf) } else { "     ∞".to_string() };
 
-        let net_yield = supply_apr * supplied - borrow_apr * borrowed;
+        let post_supply = pool_supplied_usdc + supplied;
+        let post_borrow = pool_borrowed_usdc + borrowed;
+        let post_util   = if post_supply > 0.0 { (post_borrow / post_supply).min(1.0) } else { 0.0 };
+        let (projected_supply_apr, projected_borrow_apr) = rates_for_util(cfg, ir_mod, bstop_rate, post_util);
+
+        let net_yield = projected_supply_apr * supplied - projected_borrow_apr * borrowed;
         let net_apy   = net_yield / initial * 100.0;
 
         let blnd_yr   = supplied * blnd_per_usdc_supply + borrowed * blnd_per_usdc_borrow;
@@ -332,7 +342,11 @@ fn main() {
     // Theoretical ∞ row
     let max_sup      = initial * max_lev;
     let max_bor      = max_sup - initial;
-    let max_net_apy  = (supply_apr * max_sup - borrow_apr * max_bor) / initial * 100.0;
+    let max_post_supply = pool_supplied_usdc + max_sup;
+    let max_post_borrow = pool_borrowed_usdc + max_bor;
+    let max_post_util = if max_post_supply > 0.0 { (max_post_borrow / max_post_supply).min(1.0) } else { 0.0 };
+    let (max_supply_apr, max_borrow_apr) = rates_for_util(cfg, ir_mod, bstop_rate, max_post_util);
+    let max_net_apy  = (max_supply_apr * max_sup - max_borrow_apr * max_bor) / initial * 100.0;
     let max_blnd_yr  = max_sup * blnd_per_usdc_supply + max_bor * blnd_per_usdc_borrow;
     let max_cap_warn = if max_sup > pool_supplied_usdc + cap_room { "CAP" } else { "" };
 
