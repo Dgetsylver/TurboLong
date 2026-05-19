@@ -5,6 +5,7 @@
  *   POST /subscribe       — register an alert subscription
  *   GET  /verify?token=   — verify email
  *   GET  /unsubscribe?token= — remove subscription
+ *   POST /unsubscribe?token= — RFC 8058 one-click unsubscribe
  *
  * Cron (every 15 min):
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
@@ -113,11 +114,13 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   // Send verification email
   const base = workerUrl(request);
   const verifyUrl = `${base}/verify?token=${verifyToken}`;
+  const unsubscribeUrl = `${base}/unsubscribe?token=${unsubToken}`;
 
   const result = await sendVerificationEmail(
     { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
     email,
     verifyUrl,
+    unsubscribeUrl,
   );
 
   if (!result.ok) {
@@ -158,16 +161,22 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 async function handleUnsubscribe(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
+  const oneClick = request.method === "POST";
 
-  if (!token) return htmlResponse("<h2>Missing token.</h2>", 400);
+  if (!token) {
+    return oneClick ? new Response(null, { status: 400 }) : htmlResponse("<h2>Missing token.</h2>", 400);
+  }
 
   const result = await env.DB.prepare(
     "DELETE FROM subscriptions WHERE unsub_token = ?1"
   ).bind(token).run();
 
   if (!result.meta.changes) {
+    if (oneClick) return new Response(null, { status: 404 });
     return htmlResponse("<h2>Subscription not found or already removed.</h2>", 404);
   }
+
+  if (oneClick) return new Response(null, { status: 204 });
 
   return htmlResponse(`
 <!DOCTYPE html>
@@ -276,6 +285,9 @@ export default {
         return handleVerify(request, env);
 
       case "/unsubscribe":
+        if (request.method !== "GET" && request.method !== "POST") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
         return handleUnsubscribe(request, env);
 
       default:

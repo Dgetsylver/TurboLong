@@ -12,7 +12,11 @@ interface SendResult {
   error?: string;
 }
 
-async function sendEmail(env: Env, to: string, subject: string, html: string): Promise<SendResult> {
+interface SendOptions {
+  headers?: Record<string, string>;
+}
+
+async function sendEmail(env: Env, to: string, subject: string, html: string, opts: SendOptions = {}): Promise<SendResult> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -24,6 +28,7 @@ async function sendEmail(env: Env, to: string, subject: string, html: string): P
       to: [to],
       subject,
       html,
+      ...(opts.headers ? { headers: opts.headers } : {}),
     }),
   });
 
@@ -34,7 +39,14 @@ async function sendEmail(env: Env, to: string, subject: string, html: string): P
   return { ok: true };
 }
 
-export async function sendVerificationEmail(env: Env, to: string, verifyUrl: string): Promise<SendResult> {
+function oneClickUnsubscribeHeaders(unsubscribeUrl: string): Record<string, string> {
+  return {
+    "List-Unsubscribe": `<${unsubscribeUrl}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
+}
+
+export async function sendVerificationEmail(env: Env, to: string, verifyUrl: string, unsubscribeUrl: string): Promise<SendResult> {
   const html = `
 <!DOCTYPE html>
 <html>
@@ -43,11 +55,13 @@ export async function sendVerificationEmail(env: Env, to: string, verifyUrl: str
   <h2 style="margin: 0 0 16px;">Verify your Turbolong alert</h2>
   <p style="line-height: 1.6; color: #555;">Click the button below to verify your email and activate APY alerts.</p>
   <a href="${verifyUrl}" style="display: inline-block; margin: 20px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Verify Subscription</a>
-  <p style="font-size: 13px; color: #888; margin-top: 24px;">If you didn't subscribe, ignore this email.</p>
+  <p style="font-size: 13px; color: #888; margin-top: 24px;">If you didn't subscribe, you can ignore this email or <a href="${unsubscribeUrl}" style="color: #888;">cancel the subscription</a>.</p>
 </body>
 </html>`.trim();
 
-  return sendEmail(env, to, "Verify your Turbolong alert subscription", html);
+  return sendEmail(env, to, "Verify your Turbolong alert subscription", html, {
+    headers: oneClickUnsubscribeHeaders(unsubscribeUrl),
+  });
 }
 
 export async function sendApyAlert(
@@ -98,5 +112,6 @@ export async function sendApyAlert(
     to,
     `\u26A0 Negative APY: ${assetSymbol} at ${leverage}x on ${poolName}`,
     html,
+    { headers: oneClickUnsubscribeHeaders(unsubscribeUrl) },
   );
 }
