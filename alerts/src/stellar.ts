@@ -64,37 +64,13 @@ export const POOL_NAMES: Record<string, string> = {};
 for (const p of POOLS) POOL_NAMES[p.id] = p.name;
 
 // ── Soroban XDR helpers ──────────────────────────────────────────────────────
-// Minimal XDR encoding/decoding — avoids pulling in the full Stellar SDK.
+// Minimal XDR encoding/decoding avoids pulling the full Stellar SDK into Worker CI.
 
-/** Encode a Stellar address as an ScVal (ScAddress::Account or ::Contract). */
-function addressToScVal(addr: string): string {
-  // We use the JSON representation that soroban-rpc accepts
-  return JSON.stringify({ type: "Address", value: addr });
-}
-
-/** Build a simulateTransaction JSON-RPC request body. */
-function buildSimulateBody(contractId: string, method: string, args: any[]): object {
-  return {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "simulateTransaction",
-    params: {
-      transaction: buildInvokeXdr(contractId, method, args),
-    },
-  };
-}
-
-// We need proper XDR encoding. Since we can't use the SDK in a worker easily,
-// we'll use the soroban-rpc's native JSON interface via stellar-sdk-like encoding.
-// Actually, the simplest approach: build a minimal transaction envelope in base64.
-
-// For a Cloudflare Worker, we'll use a simpler approach: fetch raw contract data
-// via getContractData or use the soroban-rpc simulateTransaction with proper XDR.
-// Let's use a lightweight XDR approach.
-
-import { encodeInvokeTransaction, decodeSimResult, decodeXdrValue } from "./xdr.ts";
+import { encodeInvokeTransaction, decodeSimResult } from "./xdr.ts";
 
 export interface ReserveRates {
+  cFactor: number;
+  lFactor: number;
   netSupplyApr: number;
   netBorrowCost: number;
   interestSupplyApr: number;
@@ -182,6 +158,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const rThree_fp  = reserveRaw.config?.r_three   ?? 50_000_000;
     const utilOpt_fp = reserveRaw.config?.util       ?? 5_000_000;
     const irMod_fp   = reserveRaw.data?.ir_mod != null ? Number(BigInt(reserveRaw.data.ir_mod)) : 1_000_000;
+    const cFactor    = reserveRaw.config?.c_factor != null ? Number(reserveRaw.config.c_factor) / SCALAR : 1;
+    const lFactor    = reserveRaw.config?.l_factor != null ? Number(reserveRaw.config.l_factor) / SCALAR : 1;
 
     const curUtil_fp  = Math.round(util * SCALAR);
     const FIXED_95PCT = 9_500_000;
@@ -218,6 +196,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
 
     return {
+      cFactor,
+      lFactor,
       netSupplyApr:     interestSupplyApr + blndSupplyApr,
       netBorrowCost:    interestBorrowApr - blndBorrowApr,
       interestSupplyApr,
@@ -234,4 +214,9 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
 /** Compute net APY at a given leverage. */
 export function computeNetApy(rates: ReserveRates, leverage: number): number {
   return rates.netSupplyApr * leverage - rates.netBorrowCost * (leverage - 1);
+}
+
+/** Compute theoretical health factor for a looped position at a given leverage. */
+export function computeHealthFactor(rates: ReserveRates, leverage: number): number {
+  return leverage <= 1 ? Infinity : (rates.cFactor * leverage) / ((leverage - 1) / rates.lFactor);
 }

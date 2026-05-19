@@ -9,8 +9,12 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   unsub_token TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   last_alerted_at TEXT,
+  last_liquidation_alerted_at TEXT,
   UNIQUE(email, pool_id, asset_symbol, leverage_bracket)
 );
 
 CREATE INDEX IF NOT EXISTS idx_subs_pool_asset_lev
   ON subscriptions(pool_id, asset_symbol, leverage_bracket);
+
+CREATE INDEX IF NOT EXISTS idx_subs_liquidation_alerts
+  ON subscriptions(pool_id, asset_symbol, leverage_bracket, last_liquidation_alerted_at);

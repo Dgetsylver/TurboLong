@@ -100,3 +100,53 @@ export async function sendApyAlert(
     html,
   );
 }
+
+export async function sendLiquidationImminentAlert(
+  env: Env,
+  to: string,
+  opts: {
+    poolName: string;
+    assetSymbol: string;
+    leverage: number;
+    healthFactor: number;
+    threshold: number;
+    netApy: number;
+    unsubscribeUrl: string;
+    appUrl: string;
+  },
+): Promise<SendResult> {
+  const { poolName, assetSymbol, leverage, healthFactor, threshold, netApy, unsubscribeUrl, appUrl } = opts;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
+  <h1 style="margin: 0 0 8px; color: #B00020; font-size: 24px;">LIQUIDATION IMMINENT</h1>
+  <p style="font-size: 14px; color: #555; margin: 0 0 20px;">${assetSymbol} at ${leverage}x on ${poolName}</p>
+
+  <div style="background: #fff4f4; border: 1px solid #ffd3d3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+    <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+      <tr><td style="padding: 4px 0; color: #555;">Current health factor</td><td style="padding: 4px 0; text-align: right; font-weight: 700; color: #B00020;">${healthFactor.toFixed(3)}</td></tr>
+      <tr><td style="padding: 4px 0; color: #555;">Emergency threshold</td><td style="padding: 4px 0; text-align: right; font-weight: 600;">${threshold.toFixed(2)}</td></tr>
+      <tr><td style="padding: 4px 0; color: #555;">Net APY at ${leverage}x</td><td style="padding: 4px 0; text-align: right; font-weight: 600;">${netApy.toFixed(2)}%</td></tr>
+    </table>
+  </div>
+
+  <p style="line-height: 1.6; color: #555;">This leverage bracket is below the emergency health-factor threshold. Consider reducing leverage, repaying debt, adding collateral, or closing the position.</p>
+
+  <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #B00020; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 700;">Open Turbolong</a>
+
+  <p style="font-size: 12px; color: #aaa; margin-top: 32px;">
+    <a href="${unsubscribeUrl}" style="color: #aaa;">Unsubscribe</a> from this alert.
+  </p>
+</body>
+</html>`.trim();
+
+  return sendEmail(
+    env,
+    to,
+    `LIQUIDATION IMMINENT: ${assetSymbol} at ${leverage}x on ${poolName}`,
+    html,
+  );
+}

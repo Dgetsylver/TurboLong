@@ -10,14 +10,15 @@
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
  */
 
-import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
+import { sendVerificationEmail, sendApyAlert, sendLiquidationImminentAlert } from "./email.ts";
 
 interface Env {
   DB: D1Database;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   FRONTEND_ORIGIN: string;
+  LIQUIDATION_WEBHOOK_URL?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ function corsHeaders(env: Env): Record<string, string> {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const LIQUIDATION_HF_THRESHOLD = 1.05;
 
 /** Known pool IDs for validation. */
 const KNOWN_POOL_IDS = new Set(POOLS.flatMap(p => [p.id]));
@@ -66,6 +68,41 @@ function generateToken(): string {
 function workerUrl(request: Request): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
+}
+
+let liquidationColumnChecked = false;
+
+async function ensureLiquidationRateLimitColumn(env: Env): Promise<void> {
+  if (liquidationColumnChecked) return;
+  try {
+    await env.DB.prepare(
+      "ALTER TABLE subscriptions ADD COLUMN last_liquidation_alerted_at TEXT"
+    ).run();
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (!msg.toLowerCase().includes("duplicate column")) {
+      throw e;
+    }
+  }
+  liquidationColumnChecked = true;
+}
+
+async function postLiquidationWebhook(
+  env: Env,
+  payload: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
+  if (!env.LIQUIDATION_WEBHOOK_URL) return { ok: false, skipped: true };
+  try {
+    const res = await fetch(env.LIQUIDATION_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return { ok: false, error: `Webhook ${res.status}: ${await res.text()}` };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) };
+  }
 }
 
 // ── Route handlers ───────────────────────────────────────────────────────────
@@ -182,8 +219,84 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 
 // ── Cron handler ─────────────────────────────────────────────────────────────
 
+async function sendLiquidationAlerts(
+  env: Env,
+  opts: {
+    poolId: string;
+    poolName: string;
+    assetSymbol: string;
+    leverage: number;
+    healthFactor: number;
+    netApy: number;
+  },
+): Promise<void> {
+  const subs = await env.DB.prepare(`
+    SELECT id, email, unsub_token
+    FROM subscriptions
+    WHERE pool_id = ?1
+      AND asset_symbol = ?2
+      AND leverage_bracket = ?3
+      AND verified = 1
+      AND (
+        last_liquidation_alerted_at IS NULL
+        OR last_liquidation_alerted_at < datetime('now', '-6 hours')
+      )
+  `).bind(opts.poolId, opts.assetSymbol, opts.leverage).all();
+
+  if (!subs.results?.length) return;
+
+  console.log(`[cron] LIQUIDATION IMMINENT: alerting ${subs.results.length} subscriber(s) for ${opts.assetSymbol}@${opts.leverage}x on ${opts.poolName}; HF=${opts.healthFactor.toFixed(3)}`);
+
+  for (const sub of subs.results) {
+    const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+    const webhookPayload = {
+      type: "liquidation_imminent",
+      subscriptionId: sub.id,
+      poolId: opts.poolId,
+      poolName: opts.poolName,
+      assetSymbol: opts.assetSymbol,
+      leverage: opts.leverage,
+      healthFactor: opts.healthFactor,
+      threshold: LIQUIDATION_HF_THRESHOLD,
+      netApy: opts.netApy,
+      appUrl: env.FRONTEND_ORIGIN,
+    };
+
+    const [emailResult, webhookResult] = await Promise.all([
+      sendLiquidationImminentAlert(
+        { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+        sub.email as string,
+        {
+          poolName: opts.poolName,
+          assetSymbol: opts.assetSymbol,
+          leverage: opts.leverage,
+          healthFactor: opts.healthFactor,
+          threshold: LIQUIDATION_HF_THRESHOLD,
+          netApy: opts.netApy,
+          unsubscribeUrl: unsubUrl,
+          appUrl: env.FRONTEND_ORIGIN,
+        },
+      ),
+      postLiquidationWebhook(env, webhookPayload),
+    ]);
+
+    if (emailResult.ok || webhookResult.ok) {
+      await env.DB.prepare(
+        "UPDATE subscriptions SET last_liquidation_alerted_at = datetime('now') WHERE id = ?1"
+      ).bind(sub.id).run();
+    }
+    if (!emailResult.ok) {
+      console.error(`[cron] Failed to send liquidation email to ${sub.email}:`, emailResult.error);
+    }
+    if (!webhookResult.ok && !webhookResult.skipped) {
+      console.error(`[cron] Failed to post liquidation webhook for subscription ${sub.id}:`, webhookResult.error);
+    }
+  }
+}
+
 async function handleCron(env: Env): Promise<void> {
   console.log("[cron] APY alert check starting...");
+  await ensureLiquidationRateLimitColumn(env);
 
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
@@ -202,6 +315,18 @@ async function handleCron(env: Env): Promise<void> {
 
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
+        const healthFactor = computeHealthFactor(rates, bracket);
+
+        if (healthFactor < LIQUIDATION_HF_THRESHOLD) {
+          await sendLiquidationAlerts(env, {
+            poolId: pool.id,
+            poolName: pool.name,
+            assetSymbol: asset.symbol,
+            leverage: bracket,
+            healthFactor,
+            netApy,
+          });
+        }
 
         if (netApy >= 0) continue; // APY is positive, no alert needed
 
