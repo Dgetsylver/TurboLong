@@ -8,7 +8,8 @@
  *   4. Withdraw
  *
  * Usage:
- *   npx tsx scripts/test_strategy.ts
+ *   TESTNET_SECRET=S... npx tsx scripts/test_strategy.ts
+ *   # or put TESTNET_SECRET=S... in .env.local / scripts/.env.local
  */
 
 import {
@@ -26,6 +27,7 @@ import {
   nativeToScVal,
   scValToNative,
 } from "@stellar/stellar-sdk";
+import * as fs from "fs";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,8 +40,36 @@ const RPC_URL     = "https://soroban-testnet.stellar.org";
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const PASSPHRASE  = Networks.TESTNET;
 
-const SECRET  = "SCX6RZDDWLKWLSUEKDROH3PCXDPAVVJ355YA4FEHQB3MJMA6K762E527";
-const keypair = Keypair.fromSecret(SECRET);
+function loadEnvLocal() {
+  for (const file of [".env.local", "scripts/.env.local"]) {
+    if (!fs.existsSync(file)) continue;
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
+      if (!match || process.env[match[1]]) continue;
+      process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
+    }
+  }
+}
+
+function getTestnetKeypair(): Keypair {
+  loadEnvLocal();
+  const secret = process.env.TESTNET_SECRET?.trim();
+  if (!secret) {
+    console.error("Missing TESTNET_SECRET. Add it to your shell env or local .env.local file; never commit secret keys.");
+    process.exit(1);
+  }
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    console.error("Invalid TESTNET_SECRET. Expected a Stellar secret seed beginning with S.");
+    process.exit(1);
+  }
+}
+
+const keypair = getTestnetKeypair();
 const account = keypair.publicKey();
 
 const server  = new SorobanRpc.Server(RPC_URL);
