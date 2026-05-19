@@ -24,6 +24,11 @@ import {
   getActiveNetwork,
   getHorizonUrl,
   getBlndId,
+  getBlndPriceOverride,
+  getCachedBlndPrice,
+  setBlndPriceOverride,
+  resetBlndPriceOverride,
+  applyBlndPriceToReserveStats,
   setNetwork,
   fetchAllReserves,
   fetchUserPositions,
@@ -817,6 +822,85 @@ function renderAprLine(id: string, val: number, isCost: boolean, isBlnd = false,
 
 // ── Pool-wide health factor ───────────────────────────────────────────────────
 
+const BLND_PRICE_OVERRIDE_KEY = "turbolong_blnd_price_override_usd";
+
+function ensureBlndPriceOverrideControls() {
+  if ($("blnd-price-override")) return;
+  const aprGrid = document.querySelector(".apr-grid");
+  if (!aprGrid) return;
+
+  const panel = document.createElement("div");
+  panel.id = "blnd-price-override";
+  panel.className = "apr-card";
+  panel.style.gridColumn = "1 / -1";
+  panel.innerHTML = `
+    <div class="apr-card-label">BLND price assumption</div>
+    <div class="apr-row">
+      <span class="apr-key">USD price</span>
+      <span id="blnd-price-source" class="apr-val apr-dim">Default</span>
+    </div>
+    <div class="apr-row" style="gap:8px;align-items:center">
+      <input id="blnd-price-input" class="input mono" type="number" min="0" step="0.0001" placeholder="Auto" style="width:120px;text-align:right;padding:6px 8px" />
+      <button id="blnd-price-reset" type="button" class="btn btn-ghost btn-sm">Reset</button>
+    </div>`;
+  aprGrid.insertAdjacentElement("afterend", panel);
+
+  $("blnd-price-input").addEventListener("input", handleBlndPriceInput);
+  $("blnd-price-reset").addEventListener("click", () => {
+    resetBlndPriceOverride();
+    localStorage.removeItem(BLND_PRICE_OVERRIDE_KEY);
+    ($("blnd-price-input") as HTMLInputElement).value = "";
+    applyBlndPriceOverrideToCurrentReserves();
+  });
+}
+
+function refreshBlndPriceOverrideControls() {
+  ensureBlndPriceOverrideControls();
+  const source = $("blnd-price-source");
+  const input = $("blnd-price-input") as HTMLInputElement | null;
+  const override = getBlndPriceOverride();
+  const cached = getCachedBlndPrice();
+  if (input && cached && cached > 0) input.placeholder = fmt(cached, 4);
+  if (!source) return;
+  source.textContent = override && override > 0
+    ? `Override $${fmt(override, 4)}`
+    : cached && cached > 0
+      ? `Default $${fmt(cached, 4)}`
+      : "Default";
+}
+
+function applyBlndPriceOverrideToCurrentReserves() {
+  reserves = reserves.map(rs => applyBlndPriceToReserveStats(rs));
+  refreshBlndPriceOverrideControls();
+  renderSelectedAsset();
+}
+
+function handleBlndPriceInput() {
+  const input = $("blnd-price-input") as HTMLInputElement;
+  const raw = input.value.trim();
+  if (!raw) {
+    resetBlndPriceOverride();
+    localStorage.removeItem(BLND_PRICE_OVERRIDE_KEY);
+    applyBlndPriceOverrideToCurrentReserves();
+    return;
+  }
+  const price = parseFloat(raw);
+  if (!Number.isFinite(price) || price <= 0) return;
+  setBlndPriceOverride(price);
+  localStorage.setItem(BLND_PRICE_OVERRIDE_KEY, String(price));
+  applyBlndPriceOverrideToCurrentReserves();
+}
+
+function initBlndPriceOverride() {
+  ensureBlndPriceOverrideControls();
+  const saved = parseFloat(localStorage.getItem(BLND_PRICE_OVERRIDE_KEY) ?? "");
+  if (Number.isFinite(saved) && saved > 0) {
+    setBlndPriceOverride(saved);
+    ($("blnd-price-input") as HTMLInputElement).value = String(saved);
+  }
+  refreshBlndPriceOverrideControls();
+}
+
 function computePoolHF(): number {
   let weightedCollateral = 0;
   let totalDebt          = 0;
@@ -1321,8 +1405,10 @@ async function loadAll() {
   skeletonIds.forEach(setSkeleton);
 
   try {
-    reserves  = await fetchAllReserves(selectedPool, userAddress);
+    reserves  = (await fetchAllReserves(selectedPool, userAddress))
+      .map(rs => applyBlndPriceToReserveStats(rs));
     positions = await fetchUserPositions(selectedPool, userAddress, reserves);
+    refreshBlndPriceOverrideControls();
 
     // Balance for selected asset
     const bal = await fetchAssetBalance(userAddress, selectedAsset.id);
@@ -2238,7 +2324,8 @@ $("demo-btn").addEventListener("click", () => {
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
-  }));
+  })).map(rs => applyBlndPriceToReserveStats(rs as ReserveStats));
+  refreshBlndPriceOverrideControls();
   positions = { byAsset: new Map() };
   // One sample position
   const sampleAsset = assets[0];
@@ -2259,6 +2346,7 @@ $("demo-btn").addEventListener("click", () => {
 updatePreview();
 renderTxHistory();
 renderPoolFooter();
+initBlndPriceOverride();
 initTooltips();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────

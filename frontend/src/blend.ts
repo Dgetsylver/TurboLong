@@ -367,12 +367,53 @@ async function simulate(op: xdr.Operation): Promise<any> {
 // ── BLND price from CoinGecko ─────────────────────────────────────────────────
 
 let _blndPriceCache: number | null = null;
+let _blndPriceOverride: number | null = null;
+
+export function getBlndPriceOverride(): number | null {
+  return _blndPriceOverride;
+}
+
+export function getCachedBlndPrice(): number | null {
+  return _blndPriceCache;
+}
+
+export function getEffectiveBlndPrice(): number {
+  return _blndPriceOverride ?? _blndPriceCache ?? 0;
+}
+
+export function setBlndPriceOverride(price: number) {
+  _blndPriceOverride = Number.isFinite(price) && price > 0 ? price : null;
+}
+
+export function resetBlndPriceOverride() {
+  _blndPriceOverride = null;
+}
+
+export function applyBlndPriceToReserveStats(rs: ReserveStats, blndPrice = getEffectiveBlndPrice()): ReserveStats {
+  if (typeof rs.supplyEps !== "bigint" || typeof rs.borrowEps !== "bigint") return rs;
+
+  const totalSupplyUsd = rs.totalSupply * rs.priceUsd;
+  const totalBorrowUsd = rs.totalBorrow * rs.priceUsd;
+  const supplyBlndYr = Number(rs.supplyEps) * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
+  const borrowBlndYr = Number(rs.borrowEps) * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
+  const blndSupplyApr = totalSupplyUsd > 0 ? (supplyBlndYr * blndPrice / totalSupplyUsd) * 100 : 0;
+  const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
+
+  return {
+    ...rs,
+    blndSupplyApr,
+    blndBorrowApr,
+    netSupplyApr: rs.interestSupplyApr + blndSupplyApr,
+    netBorrowCost: rs.interestBorrowApr - blndBorrowApr,
+  };
+}
 
 /**
  * Fetch BLND price. Goes straight to CoinGecko since no pool oracle lists BLND.
  * The pool parameter is accepted for API consistency but currently unused.
  */
 export async function fetchBlndPrice(pool: PoolDef, userAddress: string): Promise<number> {
+  if (_blndPriceOverride !== null) return _blndPriceOverride;
   if (_blndPriceCache !== null) return _blndPriceCache;
 
   // CoinGecko free API
@@ -584,6 +625,16 @@ export interface ProjectedRates {
  * @param addBorrow Additional tokens borrowed (user's deposit × (leverage − 1))
  */
 export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: number): ProjectedRates {
+  if (!rs.rateConfig) {
+    return {
+      interestSupplyApr: rs.interestSupplyApr,
+      interestBorrowApr: rs.interestBorrowApr,
+      blndSupplyApr: rs.blndSupplyApr,
+      blndBorrowApr: rs.blndBorrowApr,
+      netSupplyApr: rs.netSupplyApr,
+      netBorrowCost: rs.netBorrowCost,
+    };
+  }
   const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
   const FIXED_95PCT = 9_500_000;
 
@@ -617,7 +668,7 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
   const projSupplyUsd = projSupply * rs.priceUsd;
   const projBorrowUsd = projBorrow * rs.priceUsd;
 
-  const bp = _blndPriceCache ?? 0;
+  const bp = getEffectiveBlndPrice();
   const blndSupplyApr = projSupplyUsd > 0 ? (supplyBlndYr * bp / projSupplyUsd) * 100 : 0;
   const blndBorrowApr = projBorrowUsd > 0 ? (borrowBlndYr * bp / projBorrowUsd) * 100 : 0;
 
