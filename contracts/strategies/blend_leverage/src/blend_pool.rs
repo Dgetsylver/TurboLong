@@ -11,7 +11,7 @@ use crate::{
         REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
         REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
     },
-    leverage::{compute_step, loop_step_count},
+    leverage::{compute_step, loop_step_count, MAX_LOOP_PAIRS},
     soroswap::internal_swap_exact_tokens_for_tokens,
     storage::Config,
 };
@@ -55,7 +55,7 @@ pub fn submit_leverage_loop(
     let mut balance = initial_amount;
 
     for i in 0..count {
-        let is_final = i == config.target_loops.min(20);
+        let is_final = i == config.target_loops.min(MAX_LOOP_PAIRS);
         let (supply, borrow) = compute_step(balance, config.c_factor, is_final);
         balance = borrow;
 
@@ -327,7 +327,7 @@ pub fn submit_deleverage(
     let mut layers: Vec<i128> = Vec::new(e);
     let mut orig_balance = pre_b; // approximate with total collateral
     for i in 0..count {
-        let is_final = i == config.target_loops.min(20);
+        let is_final = i == config.target_loops.min(MAX_LOOP_PAIRS);
         let (_, borrow) = compute_step(orig_balance, config.c_factor, is_final);
         if borrow > 0 {
             layers.push_back(borrow);
