@@ -2739,23 +2739,132 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 
-document.addEventListener("keydown", (e) => {
-  // Ignore shortcuts when typing in inputs
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+const SHORTCUTS = [
+  { key: "L", action: "Focus leverage slider" },
+  { key: "C", action: "Close selected position" },
+  { key: "R", action: "Refresh current view" },
+  { key: "Esc", action: "Close menus and modals" },
+  { key: "?", action: "Show keyboard shortcuts" },
+];
 
-  // R = refresh
-  if (e.key === "r" || e.key === "R") {
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+function closeFloatingUi() {
+  $("pool-dropdown").classList.add("hidden");
+  $("settings-dropdown").classList.add("hidden");
+  $("alert-modal-overlay").classList.add("hidden");
+  $("shortcut-help-overlay")?.classList.add("hidden");
+  closeDrawer();
+}
+
+function openLeverageSliderShortcut() {
+  if (!userAddress && !demoMode) {
+    toast("Connect a wallet or open Demo Mode first", "info");
+    return;
+  }
+  if (activeView !== "leverage") switchView("leverage");
+  const slider = $("leverage-slider") as HTMLInputElement;
+  slider.scrollIntoView({ block: "center", behavior: "smooth" });
+  slider.focus({ preventScroll: true });
+}
+
+function closeSelectedPositionShortcut() {
+  if (activeView !== "leverage") switchView("leverage");
+  const btn = $("close-btn") as HTMLButtonElement;
+  if (btn.disabled) {
+    toast("No selected position is ready to close", "info");
+    return;
+  }
+  btn.click();
+}
+
+function ensureShortcutHelpModal() {
+  if ($("shortcut-help-overlay")) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "shortcut-help-overlay";
+  overlay.className = "alert-modal-overlay hidden";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "shortcut-help-title");
+
+  const rows = SHORTCUTS.map(item => `
+    <div style="display:grid;grid-template-columns:64px 1fr;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+      <kbd class="mono" style="justify-self:start;padding:3px 8px;border:1px solid var(--border);border-radius:var(--r-xs);background:var(--input-bg);font-size:12px">${item.key}</kbd>
+      <span style="color:var(--text-2);font-size:13px">${item.action}</span>
+    </div>`).join("");
+
+  overlay.innerHTML = `
+    <div class="alert-modal" style="max-width:440px">
+      <button id="shortcut-help-close" class="alert-modal-close" aria-label="Close shortcut help">&times;</button>
+      <h3 id="shortcut-help-title">Keyboard Shortcuts</h3>
+      <div style="margin-top:14px">${rows}</div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  $("shortcut-help-close").addEventListener("click", () => closeShortcutHelp());
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeShortcutHelp();
+  });
+}
+
+function openShortcutHelp() {
+  ensureShortcutHelpModal();
+  $("settings-dropdown").classList.add("hidden");
+  $("shortcut-help-overlay").classList.remove("hidden");
+  $("shortcut-help-close").focus();
+}
+
+function closeShortcutHelp() {
+  $("shortcut-help-overlay")?.classList.add("hidden");
+}
+
+function initShortcutSettingsItem() {
+  const menu = $("settings-dropdown");
+  if ($("shortcut-help-menu")) return;
+  const btn = document.createElement("button");
+  btn.id = "shortcut-help-menu";
+  btn.className = "settings-dropdown-item";
+  btn.type = "button";
+  btn.innerHTML = 'Keyboard Shortcuts <span class="settings-badge">?</span>';
+  btn.addEventListener("click", () => openShortcutHelp());
+  menu.appendChild(btn);
+}
+
+initShortcutSettingsItem();
+
+document.addEventListener("keydown", (e) => {
+  if (isTextEntryTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeFloatingUi();
+    return;
+  }
+
+  if (e.key === "?") {
+    e.preventDefault();
+    openShortcutHelp();
+    return;
+  }
+
+  const key = e.key.toLowerCase();
+  if (key === "l") {
+    e.preventDefault();
+    openLeverageSliderShortcut();
+  } else if (key === "c") {
+    e.preventDefault();
+    closeSelectedPositionShortcut();
+  } else if (key === "r") {
+    e.preventDefault();
     if (activeView === "leverage" && userAddress) loadAll();
     else if (activeView === "overview" && userAddress) loadOverview();
     else if (activeView === "vault") refreshVaultView();
-  }
-  // Escape = close modals/dropdowns
-  if (e.key === "Escape") {
-    $("pool-dropdown").classList.add("hidden");
-    $("settings-dropdown").classList.add("hidden");
-    $("alert-modal-overlay").classList.add("hidden");
-    closeDrawer();
   }
 });
 
