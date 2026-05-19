@@ -338,6 +338,143 @@ const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
+type YieldExplainerSnapshot = {
+  rs: ReserveStats;
+  lev: number;
+  equity: number;
+  supply: number;
+  borrow: number;
+  oldSupply: number;
+  oldBorrow: number;
+  proj: ReturnType<typeof projectRates>;
+  netApr: number;
+  netApy: number;
+  spread: number;
+  hf: number;
+  days: number;
+};
+
+function readNumericInput(id: string): number {
+  const input = document.getElementById(id) as HTMLInputElement | null;
+  const val = parseFloat(input?.value ?? "");
+  return Number.isFinite(val) ? val : 0;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, ch => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]!));
+}
+
+function formatSignedPct(value: number): string {
+  return `${value >= 0 ? "+" : ""}${fmt(value, 2)}%`;
+}
+
+function formatYieldDays(days: number): string {
+  if (!Number.isFinite(days)) return "Never from interest spread alone";
+  if (days > 3650) return ">10 years";
+  return `~${Math.round(days)} days`;
+}
+
+function getProjectedRatesForExplainer(
+  rs: ReserveStats,
+  addSupply: number,
+  addBorrow: number,
+): ReturnType<typeof projectRates> {
+  try {
+    return projectRates(rs, addSupply, addBorrow);
+  } catch {
+    return {
+      interestSupplyApr: rs.interestSupplyApr,
+      interestBorrowApr: rs.interestBorrowApr,
+      blndSupplyApr: rs.blndSupplyApr,
+      blndBorrowApr: rs.blndBorrowApr,
+      netSupplyApr: rs.netSupplyApr,
+      netBorrowCost: rs.netBorrowCost,
+    };
+  }
+}
+
+function getYieldExplainerSnapshot(): YieldExplainerSnapshot | null {
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  if (!rs) return null;
+
+  const lev = readNumericInput("leverage-slider") || 1.0;
+  const pos = positions.byAsset.get(selectedAsset.id);
+  const equity = (actionMode === "adjust" && pos) ? pos.equity
+    : actionMode === "add-funds" ? readNumericInput("add-funds-input")
+    : readNumericInput("initial-input");
+  const supply = equity * lev;
+  const borrow = equity * (lev - 1);
+  const oldSupply = (actionMode === "adjust" && pos) ? pos.collateral : 0;
+  const oldBorrow = (actionMode === "adjust" && pos) ? pos.debt : 0;
+  const proj = getProjectedRatesForExplainer(rs, supply - oldSupply, borrow - oldBorrow);
+  const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
+  const netApy = aprToApy(netApr);
+  const spread = proj.interestBorrowApr - proj.interestSupplyApr;
+  const hf = hfForLeverage(lev, rs.cFactor, rs.lFactor);
+  const days = spread > 0 && isFinite(hf) && hf > 1
+    ? Math.log(hf) / (spread / 100) * 365
+    : Infinity;
+
+  return { rs, lev, equity, supply, borrow, oldSupply, oldBorrow, proj, netApr, netApy, spread, hf, days };
+}
+
+function openYieldExplainer() {
+  const snap = getYieldExplainerSnapshot();
+  const body = $("yield-explainer-body");
+  const liveHtml = snap ? `
+    <h4>Live estimate</h4>
+    <div class="yield-live-grid">
+      <div class="yield-live-card"><span class="yield-live-label">Pool / asset</span><span class="yield-live-value">${escapeHtml(selectedPool.name)} / ${escapeHtml(snap.rs.asset.symbol)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Leverage</span><span class="yield-live-value">${snap.lev.toFixed(2)}x</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Equity input</span><span class="yield-live-value">${fmt(snap.equity, 2)} ${escapeHtml(snap.rs.asset.symbol)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Projected supply</span><span class="yield-live-value">${fmt(snap.supply, 2)} ${escapeHtml(snap.rs.asset.symbol)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Projected borrow</span><span class="yield-live-value">${fmt(snap.borrow, 2)} ${escapeHtml(snap.rs.asset.symbol)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Health factor</span><span class="yield-live-value">${isFinite(snap.hf) ? fmt(snap.hf, 4) : "Infinity"}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Net supply APR</span><span class="yield-live-value">${formatSignedPct(snap.proj.netSupplyApr)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Net borrow cost APR</span><span class="yield-live-value">${formatSignedPct(snap.proj.netBorrowCost)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Projected net APR</span><span class="yield-live-value">${formatSignedPct(snap.netApr)}</span></div>
+      <div class="yield-live-card"><span class="yield-live-label">Displayed net APY</span><span class="yield-live-value">${formatSignedPct(snap.netApy)}</span></div>
+    </div>
+    <p>The current preview calls <code>projectRates(rs, supply - oldSupply, borrow - oldBorrow)</code> so adjustments only add the net change to pool totals.</p>
+  ` : `
+    <p>Connect a wallet or open demo mode so the app can load Blend reserve data. The formula below is the same one used by the APY preview once rates are available.</p>
+  `;
+
+  body.innerHTML = `
+    ${liveHtml}
+    <h4>Breakdown</h4>
+    <div class="yield-formula">
+      netSupplyApr = interestSupplyApr + blndSupplyApr<br>
+      netBorrowCost = interestBorrowApr - blndBorrowApr<br>
+      projectedNetApr = (netSupplyApr * leverage) - (netBorrowCost * (leverage - 1))<br>
+      displayedNetApy = (e^(projectedNetApr / 100) - 1) * 100
+    </div>
+    <p>Supply interest is the lending rate. BLND supply emissions are added as a linear APR estimate. Borrow interest is the debt cost, and BLND borrow emissions reduce that displayed cost while emissions remain active.</p>
+    <p>BLND emissions are not automatically compounded by Blend. The app compounds the projected net APR into a displayed APY as a UI approximation, while tooltips keep the underlying net APR visible.</p>
+    <h4>Worst case framing</h4>
+    <ul>
+      <li>Borrow APR can rise quickly when utilization moves through a high-utilization kink.</li>
+      <li>Supply APY and BLND emissions can fall, pause, or end after a position is opened.</li>
+      <li>Higher leverage magnifies any negative spread between supply return and borrow cost.</li>
+      <li>Oracle moves, liquidity changes, contract risk, and transaction timing can make realized outcomes worse than this estimate.</li>
+    </ul>
+    <h4>Liquidation mechanics</h4>
+    <p>Health factor compares weighted collateral with debt. At or below 1.0, the position can be liquidated. The days-to-liquidation estimate uses the interest-only spread of borrow APR minus supply APR and ignores BLND emissions, price-path changes, oracle moves, liquidity, and future rate changes.</p>
+    ${snap ? `<p>Current interest-only liquidation estimate: <strong>${formatYieldDays(snap.days)}</strong> using a spread of ${formatSignedPct(snap.spread)}.</p>` : ""}
+  `;
+  $("yield-explainer-overlay").classList.remove("hidden");
+}
+
+function closeYieldExplainer() {
+  $("yield-explainer-overlay").classList.add("hidden");
+}
+
 function setSkeleton(id: string) {
   const el = $(id);
   el.textContent = "\u00A0\u00A0\u00A0\u00A0\u00A0";
@@ -849,9 +986,10 @@ function renderPortfolioSummary() {
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% <button type="button" class="yield-link yield-link-inline" data-yield-link>Yield math</button> \u00B7 HF ${fmt(pos.hf, 2)}</span>
       </span>`;
-    card.addEventListener("click", () => {
+    card.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("[data-yield-link]")) return;
       const asset = assets.find(a => a.id === assetId);
       if (asset) selectAsset(asset);
     });
@@ -2366,7 +2504,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
         <thead><tr>
           <th>Asset</th><th>Pool</th><th class="text-right">Equity</th>
           <th class="text-right">Leverage</th><th class="text-right">HF</th>
-          <th class="text-right">Net APY</th><th class="text-right">Debt</th>
+          <th class="text-right">Net APY <button type="button" class="yield-link yield-link-inline" data-yield-link>Yield math</button></th><th class="text-right">Debt</th>
         </tr></thead><tbody>`;
 
     for (const bp of blendPos) {
@@ -2384,7 +2522,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
         <td class="text-right">${fmt(bp.pos.equity, 2)} ${bp.asset.symbol}</td>
         <td class="text-right">${fmt(bp.pos.leverage, 1)}&times;</td>
         <td class="text-right ${hfColor}">${isFinite(bp.pos.hf) ? fmt(bp.pos.hf, 3) : "\u221E"}</td>
-        <td class="text-right ${netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</td>
+        <td class="text-right ${netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% <button type="button" class="yield-link yield-link-inline" data-yield-link>Yield math</button></td>
         <td class="text-right">${fmt(bp.pos.debt, 2)} ${bp.asset.symbol}</td>
       </tr>`;
     }
@@ -2426,7 +2564,8 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
 
   // Wire up click navigation for Blend table rows
   container.querySelectorAll<HTMLElement>("tr[data-nav-pool]").forEach(row => {
-    row.addEventListener("click", () => {
+    row.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("[data-yield-link]")) return;
       const poolId = row.dataset.navPool!;
       const assetId = row.dataset.navAsset!;
       const pool = getKnownPools().find(p => p.id === poolId);
@@ -2755,7 +2894,27 @@ document.addEventListener("keydown", (e) => {
     $("pool-dropdown").classList.add("hidden");
     $("settings-dropdown").classList.add("hidden");
     $("alert-modal-overlay").classList.add("hidden");
+    closeYieldExplainer();
     closeDrawer();
+  }
+});
+
+// ── Yield explainer ─────────────────────────────────────────────────────────
+
+document.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement | null;
+  const link = target?.closest("[data-yield-link]");
+  if (!link) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openYieldExplainer();
+});
+
+$("yield-explainer-close").addEventListener("click", closeYieldExplainer);
+
+$("yield-explainer-overlay").addEventListener("click", (e) => {
+  if (e.target === $("yield-explainer-overlay")) {
+    closeYieldExplainer();
   }
 });
 
