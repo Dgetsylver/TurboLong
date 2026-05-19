@@ -487,21 +487,21 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
       // ir_mod may be returned as BigInt (i128) or number (u32)
       const irMod_fp   = reserveRaw ? Number(BigInt(reserveRaw.data.ir_mod)) : 1_000_000;
 
-      const curUtil_fp = Math.round(util * SCALAR_F);
-      const FIXED_95PCT = 9_500_000;
+      const curUtil_fp = Math.round(Math.min(1, util) * SCALAR_F);
+      const maxUtil_fp = Math.round(maxUtilActual * SCALAR_F);
       const BACKSTOP_FP = pool.backstopFP;
 
       let baseRate_fp: number;
       if (curUtil_fp <= utilOpt_fp) {
         // Branch 1: below or at target utilisation
-        baseRate_fp = rBase_fp + Math.ceil(rOne_fp * curUtil_fp / utilOpt_fp);
-      } else if (curUtil_fp <= FIXED_95PCT) {
-        // Branch 2: target < util ≤ 95%
-        const slope = Math.ceil((curUtil_fp - utilOpt_fp) * SCALAR_F / (FIXED_95PCT - utilOpt_fp));
+        baseRate_fp = rBase_fp + Math.ceil(rOne_fp * curUtil_fp / Math.max(1, utilOpt_fp));
+      } else if (curUtil_fp <= maxUtil_fp) {
+        // Branch 2: target < util <= reserve max_util
+        const slope = Math.ceil((curUtil_fp - utilOpt_fp) * SCALAR_F / Math.max(1, maxUtil_fp - utilOpt_fp));
         baseRate_fp = rBase_fp + rOne_fp + Math.ceil(rTwo_fp * slope / SCALAR_F);
       } else {
-        // Branch 3: util > 95% — steep r_three slope
-        const slope = Math.ceil((curUtil_fp - FIXED_95PCT) * SCALAR_F / (SCALAR_F - FIXED_95PCT));
+        // Branch 3: util > reserve max_util - steep r_three slope
+        const slope = Math.ceil((curUtil_fp - maxUtil_fp) * SCALAR_F / Math.max(1, SCALAR_F - maxUtil_fp));
         baseRate_fp = rBase_fp + rOne_fp + rTwo_fp + Math.ceil(rThree_fp * slope / SCALAR_F);
       }
 
@@ -573,6 +573,9 @@ export interface ProjectedRates {
   blndBorrowApr:     number;
   netSupplyApr:      number;
   netBorrowCost:     number;
+  projectedUtil:     number;
+  projectedSupply:   number;
+  projectedBorrow:   number;
 }
 
 /**
@@ -585,22 +588,22 @@ export interface ProjectedRates {
  */
 export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: number): ProjectedRates {
   const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
-  const FIXED_95PCT = 9_500_000;
+  const maxUtilFp = Math.round((rs.asset.maxUtil || 0.95) * SCALAR_F);
 
-  const projSupply = rs.totalSupply + addSupply;
-  const projBorrow = rs.totalBorrow + addBorrow;
-  const projUtil   = projSupply > 0 ? projBorrow / projSupply : 0;
+  const projSupply = Math.max(0, rs.totalSupply + addSupply);
+  const projBorrow = Math.max(0, rs.totalBorrow + addBorrow);
+  const projUtil   = projSupply > 0 ? Math.min(1, projBorrow / projSupply) : 0;
   const utilFp     = Math.round(projUtil * SCALAR_F);
 
   // 3-kink interest rate model
   let baseRate: number;
   if (utilFp <= utilOpt) {
-    baseRate = rBase + Math.ceil(rOne * utilFp / utilOpt);
-  } else if (utilFp <= FIXED_95PCT) {
-    const slope = Math.ceil((utilFp - utilOpt) * SCALAR_F / (FIXED_95PCT - utilOpt));
+    baseRate = rBase + Math.ceil(rOne * utilFp / Math.max(1, utilOpt));
+  } else if (utilFp <= maxUtilFp) {
+    const slope = Math.ceil((utilFp - utilOpt) * SCALAR_F / Math.max(1, maxUtilFp - utilOpt));
     baseRate = rBase + rOne + Math.ceil(rTwo * slope / SCALAR_F);
   } else {
-    const slope = Math.ceil((utilFp - FIXED_95PCT) * SCALAR_F / (SCALAR_F - FIXED_95PCT));
+    const slope = Math.ceil((utilFp - maxUtilFp) * SCALAR_F / Math.max(1, SCALAR_F - maxUtilFp));
     baseRate = rBase + rOne + rTwo + Math.ceil(rThree * slope / SCALAR_F);
   }
 
@@ -628,6 +631,9 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
     blndBorrowApr,
     netSupplyApr:  interestSupplyApr + blndSupplyApr,
     netBorrowCost: interestBorrowApr - blndBorrowApr,
+    projectedUtil: projUtil,
+    projectedSupply: projSupply,
+    projectedBorrow: projBorrow,
   };
 }
 

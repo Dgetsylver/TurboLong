@@ -1213,11 +1213,21 @@ function updatePreview() {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
-    $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
+    const currentNetApr = rs.netSupplyApr * lev - rs.netBorrowCost * (lev - 1);
+    const currentNetApy = aprToApy(currentNetApr);
+    const currentUtil = rs.totalSupply > 0 ? rs.totalBorrow / rs.totalSupply : 0;
+    $("prev-current-net-apr").textContent = `${fmt(currentNetApy, 2)}%`;
+    $("prev-current-net-apr").className   = currentNetApy > 0 ? "apr-great" : "apr-bad";
+    $("prev-pool-util").textContent       = `${fmt(currentUtil * 100, 1)}% -> ${fmt(proj.projectedUtil * 100, 1)}%`;
+    $("prev-pool-util").className         = proj.projectedUtil > 0.90 ? "hf-bad" : proj.projectedUtil > 0.75 ? "hf-warn" : "hf-ok";
+    $("prev-net-label").textContent       = actionMode === "open" ? "Projected APY after deposit"
+      : actionMode === "add-funds" ? "Projected APY after add"
+      : "Projected APY after change";
+    $("prev-net-apr").textContent = `${fmt(netApy, 2)}% on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Current net APY uses the pool snapshot before your loop. Projected APY re-runs the rate curve after adding ${fmt(proj.projectedSupply - rs.totalSupply, 2)} ${rs.asset.symbol} supplied and ${fmt(proj.projectedBorrow - rs.totalBorrow, 2)} ${rs.asset.symbol} borrowed. Approximate projected APR: ${fmt(netApr, 2)}%.`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -1236,6 +1246,12 @@ function updatePreview() {
 
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
+  } else {
+    $("prev-current-net-apr").textContent = "\u2014";
+    $("prev-current-net-apr").className = "";
+    $("prev-pool-util").textContent = "\u2014";
+    $("prev-pool-util").className = "";
+    $("prev-net-label").textContent = "Projected APY after deposit";
   }
 
   // Risk zone labels (#9)
@@ -1707,7 +1723,7 @@ function showConnected() {
 
 async function connect() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
     if (!networkOk) {
@@ -1729,7 +1745,7 @@ async function connect() {
 /** Re-open wallet modal to switch to a different account without a full page reload. */
 async function switchWallet() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     if (result.address === userAddress) return;
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
@@ -2238,6 +2254,12 @@ $("demo-btn").addEventListener("click", () => {
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n, bSupply: 1_000_000_000_000n, dSupply: 650_000_000_000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: {
+      rBase: 0, rOne: 500_000, rTwo: 2_000_000, rThree: 150_000_000,
+      utilOpt: Math.round(a.maxUtil * 10_000_000), irMod: 10_000_000, backstopFP: selectedPool.backstopFP,
+    },
   }));
   positions = { byAsset: new Map() };
   // One sample position
