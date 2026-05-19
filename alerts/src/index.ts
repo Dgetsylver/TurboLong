@@ -42,7 +42,7 @@ function htmlResponse(html: string, status = 200): Response {
 function corsHeaders(env: Env): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
 }
@@ -66,6 +66,78 @@ function generateToken(): string {
 function workerUrl(request: Request): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
+}
+
+const SNAPSHOT_RETENTION_DAYS = 365;
+const DEFAULT_SNAPSHOT_WINDOW_DAYS = 7;
+const MAX_SNAPSHOT_LIMIT = 5000;
+
+function parsePositiveInt(value: string | null, fallback: number, max: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function parseWindowDays(value: string | null): number {
+  if (!value) return DEFAULT_SNAPSHOT_WINDOW_DAYS;
+  const match = value.trim().toLowerCase().match(/^(\d+)(d|w|m|y)?$/);
+  if (!match) return DEFAULT_SNAPSHOT_WINDOW_DAYS;
+
+  const amount = Number(match[1]);
+  const unit = match[2] ?? "d";
+  const days = unit === "y"
+    ? amount * 365
+    : unit === "m"
+      ? amount * 30
+      : unit === "w"
+        ? amount * 7
+        : amount;
+  return Math.max(1, Math.min(days, SNAPSHOT_RETENTION_DAYS));
+}
+
+async function pruneOldRateSnapshots(env: Env): Promise<void> {
+  await env.DB.prepare(
+    "DELETE FROM rate_snapshots WHERE captured_at < datetime('now', ?1)"
+  ).bind(`-${SNAPSHOT_RETENTION_DAYS} days`).run();
+}
+
+async function insertRateSnapshot(
+  env: Env,
+  pool: typeof POOLS[number],
+  asset: typeof POOLS[number]["assets"][number],
+  rates: ReserveRates,
+): Promise<void> {
+  await env.DB.prepare(`
+    INSERT INTO rate_snapshots (
+      pool_id,
+      pool_name,
+      asset_id,
+      asset_symbol,
+      supply_rate,
+      borrow_rate,
+      interest_supply_rate,
+      interest_borrow_rate,
+      blnd_supply_rate,
+      blnd_borrow_rate,
+      util,
+      blnd_eps
+    )
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+  `).bind(
+    pool.id,
+    pool.name,
+    asset.id,
+    asset.symbol,
+    rates.netSupplyApr,
+    rates.netBorrowCost,
+    rates.interestSupplyApr,
+    rates.interestBorrowApr,
+    rates.blndSupplyApr,
+    rates.blndBorrowApr,
+    rates.utilization,
+    rates.supplyEps + rates.borrowEps,
+  ).run();
 }
 
 // ── Route handlers ───────────────────────────────────────────────────────────
@@ -180,10 +252,74 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 </html>`);
 }
 
+async function handleRateSnapshots(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const windowDays = parseWindowDays(url.searchParams.get("window"));
+  const limit = parsePositiveInt(url.searchParams.get("limit"), 500, MAX_SNAPSHOT_LIMIT);
+  const poolId = url.searchParams.get("pool_id")?.trim();
+  const assetSymbol = url.searchParams.get("asset_symbol")?.trim().toUpperCase();
+  const assetId = url.searchParams.get("asset_id")?.trim();
+
+  const binds: (string | number)[] = [`-${windowDays} days`];
+  let sql = `
+    SELECT
+      pool_id,
+      pool_name,
+      asset_id,
+      asset_symbol,
+      supply_rate,
+      borrow_rate,
+      interest_supply_rate,
+      interest_borrow_rate,
+      blnd_supply_rate,
+      blnd_borrow_rate,
+      util,
+      blnd_eps,
+      captured_at
+    FROM rate_snapshots
+    WHERE captured_at >= datetime('now', ?1)
+  `;
+
+  if (poolId) {
+    binds.push(poolId);
+    sql += ` AND pool_id = ?${binds.length}`;
+  }
+  if (assetSymbol) {
+    binds.push(assetSymbol);
+    sql += ` AND asset_symbol = ?${binds.length}`;
+  }
+  if (assetId) {
+    binds.push(assetId);
+    sql += ` AND asset_id = ?${binds.length}`;
+  }
+
+  binds.push(limit);
+  sql += ` ORDER BY captured_at ASC LIMIT ?${binds.length}`;
+
+  const result = await env.DB.prepare(sql).bind(...binds).all();
+  return jsonResponse({
+    ok: true,
+    window_days: windowDays,
+    limit,
+    filters: {
+      pool_id: poolId ?? null,
+      asset_symbol: assetSymbol ?? null,
+      asset_id: assetId ?? null,
+    },
+    snapshots: result.results ?? [],
+  }, 200, env);
+}
+
 // ── Cron handler ─────────────────────────────────────────────────────────────
 
 async function handleCron(env: Env): Promise<void> {
   console.log("[cron] APY alert check starting...");
+
+  try {
+    await pruneOldRateSnapshots(env);
+  } catch (e) {
+    console.error("[cron] Failed to prune old rate snapshots:", e);
+  }
 
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
@@ -198,6 +334,12 @@ async function handleCron(env: Env): Promise<void> {
       if (!rates) {
         console.warn(`[cron] No rates returned for ${asset.symbol} on ${pool.name}`);
         continue;
+      }
+
+      try {
+        await insertRateSnapshot(env, pool, asset, rates);
+      } catch (e) {
+        console.error(`[cron] Failed to snapshot rates for ${asset.symbol} on ${pool.name}:`, e);
       }
 
       for (const bracket of LEVERAGE_BRACKETS) {
@@ -277,6 +419,12 @@ export default {
 
       case "/unsubscribe":
         return handleUnsubscribe(request, env);
+
+      case "/rate-snapshots":
+        if (request.method !== "GET") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
+        return handleRateSnapshots(request, env);
 
       default:
         return jsonResponse({ error: "Not found" }, 404);

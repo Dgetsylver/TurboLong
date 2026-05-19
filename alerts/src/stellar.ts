@@ -66,24 +66,6 @@ for (const p of POOLS) POOL_NAMES[p.id] = p.name;
 // ── Soroban XDR helpers ──────────────────────────────────────────────────────
 // Minimal XDR encoding/decoding — avoids pulling in the full Stellar SDK.
 
-/** Encode a Stellar address as an ScVal (ScAddress::Account or ::Contract). */
-function addressToScVal(addr: string): string {
-  // We use the JSON representation that soroban-rpc accepts
-  return JSON.stringify({ type: "Address", value: addr });
-}
-
-/** Build a simulateTransaction JSON-RPC request body. */
-function buildSimulateBody(contractId: string, method: string, args: any[]): object {
-  return {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "simulateTransaction",
-    params: {
-      transaction: buildInvokeXdr(contractId, method, args),
-    },
-  };
-}
-
 // We need proper XDR encoding. Since we can't use the SDK in a worker easily,
 // we'll use the soroban-rpc's native JSON interface via stellar-sdk-like encoding.
 // Actually, the simplest approach: build a minimal transaction envelope in base64.
@@ -101,6 +83,9 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  utilization: number;
+  supplyEps: number;
+  borrowEps: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -224,6 +209,9 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      utilization: util,
+      supplyEps,
+      borrowEps,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
