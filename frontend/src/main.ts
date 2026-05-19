@@ -336,6 +336,26 @@ const fmt  = (n: number, d = 2) =>
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
+// ── Safe Max settings ─────────────────────────────────────────────────────────
+
+const SAFE_MAX_HF_FLOOR_KEY = "safeMaxHfFloor";
+const DEFAULT_SAFE_MAX_HF_FLOOR = 1.2;
+
+function sanitizeSafeMaxFloor(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SAFE_MAX_HF_FLOOR;
+  return Math.min(10, Math.max(MIN_HF_NORMAL, Math.round(value * 1000) / 1000));
+}
+
+let safeMaxHfFloor = sanitizeSafeMaxFloor(
+  parseFloat(localStorage.getItem(SAFE_MAX_HF_FLOOR_KEY) ?? String(DEFAULT_SAFE_MAX_HF_FLOOR))
+);
+
+function renderSafeMaxFloorInput() {
+  const input = $("safe-max-floor") as HTMLInputElement;
+  input.value = safeMaxHfFloor.toFixed(2);
+  input.min = MIN_HF_NORMAL.toFixed(2);
+}
+
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
 function setSkeleton(id: string) {
@@ -610,6 +630,8 @@ function updateLeverageSlider(c: number, l: number = 1) {
   slider.max = numIn.max = String(leverageable ? maxLev : 1.0);
   slider.step = numIn.step = "0.1";
   slider.disabled = numIn.disabled = !leverageable;
+  const safeMaxBtn = document.getElementById("safe-max-btn") as HTMLButtonElement | null;
+  if (safeMaxBtn) safeMaxBtn.disabled = !leverageable;
   const cur = parseFloat(slider.value);
   const clamped = Math.min(parseFloat(slider.max), Math.max(1.0, cur));
   if (clamped !== cur) { slider.value = String(clamped); numIn.value = String(clamped); }
@@ -1166,6 +1188,40 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 }
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
+
+function saveSafeMaxFloorFromInput() {
+  const input = $("safe-max-floor") as HTMLInputElement;
+  const parsed = parseFloat(input.value);
+  const next = sanitizeSafeMaxFloor(parsed);
+  safeMaxHfFloor = next;
+  localStorage.setItem(SAFE_MAX_HF_FLOOR_KEY, String(next));
+  renderSafeMaxFloorInput();
+  updatePreview();
+}
+
+function applySafeMaxLeverage() {
+  const slider = $("leverage-slider") as HTMLInputElement;
+  const numIn = $("leverage-input") as HTMLInputElement;
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  const c = rs ? rs.cFactor : selectedAsset.cFactor;
+  const l = rs?.lFactor ?? 1;
+  const floor = Math.max(safeMaxHfFloor, minHF());
+  const sliderMax = parseFloat(slider.max) || 1.0;
+  const rawMax = Math.min(sliderMax, maxLeverageFor(c, l, floor));
+  const steppedMax = Math.floor(rawMax * 10) / 10;
+  const next = Math.max(1.0, steppedMax);
+
+  if (!Number.isFinite(next) || next <= 1.0) {
+    slider.value = numIn.value = "1.0";
+    updatePreview();
+    toast(`HF floor ${fmt(floor, 2)} only allows 1.0x leverage.`, "info");
+    return;
+  }
+
+  slider.value = numIn.value = next.toFixed(1);
+  updatePreview();
+  toast(`Safe Max set to ${next.toFixed(1)}x for HF floor ${fmt(floor, 2)}.`, "success");
+}
 
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
@@ -2023,12 +2079,21 @@ function toggleTheme() {
 $("theme-toggle").addEventListener("click", toggleTheme);
 document.getElementById("mobile-theme-toggle")?.addEventListener("click", toggleTheme);
 
+renderSafeMaxFloorInput();
+$("safe-max-floor").addEventListener("change", saveSafeMaxFloorFromInput);
+$("safe-max-floor").addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter") {
+    (e.target as HTMLInputElement).blur();
+  }
+});
+
 // Settings dropdown toggle
 $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   $("settings-dropdown").classList.toggle("hidden");
   $("pool-dropdown").classList.add("hidden");
 });
+$("settings-dropdown").addEventListener("click", (e) => e.stopPropagation());
 
 // Network toggle
 $("network-toggle").addEventListener("click", () => {
@@ -2201,6 +2266,7 @@ async function refreshAddFundsBalance() {
 }
 
 ($("leverage-slider") as HTMLInputElement).addEventListener("input",  updatePreview);
+$("safe-max-btn").addEventListener("click", applySafeMaxLeverage);
 // Live preview while typing (no clamping so user can type multi-digit numbers like "10")
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;

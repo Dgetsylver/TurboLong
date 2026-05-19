@@ -55,6 +55,10 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <label class="settings-field" for="safe-max-floor">
+            <span>Safe Max HF</span>
+            <input type="number" id="safe-max-floor" class="settings-number mono" min="1.01" max="10" step="0.01" value="1.20" />
+          </label>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -396,6 +400,7 @@
                   <input type="range" id="leverage-slider" min="1.1" max="12.9" step="0.1" value="2.0" class="slider" />
                   <input type="number" id="leverage-input" class="input mono leverage-num-input" min="1.1" max="12.9" step="0.1" value="2.0" />
                   <span class="slider-value-x mono">&times;</span>
+                  <button type="button" id="safe-max-btn" class="btn btn-ghost btn-sm safe-max-btn">Safe Max</button>
                 </div>
                 <div class="slider-zones" id="slider-zones">
                   <span class="slider-zone zone-conservative" data-zone="conservative">Conservative</span>
