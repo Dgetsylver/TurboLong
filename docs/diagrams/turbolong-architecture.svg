@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Turbolong architecture</title>
+  <desc id="desc">User connects a Stellar wallet, uses the Turbolong frontend, submits a Soroban transaction to a Blend pool, and receives b-token and d-token accounting for supplied collateral and borrowed debt.</desc>
+  <style>
+    .bg { fill: transparent; }
+    .node { fill: #ffffff; stroke: #5b6b84; stroke-width: 2; }
+    .accent { fill: #eef6ff; stroke: #2563eb; }
+    .pool { fill: #ecfdf3; stroke: #16803c; }
+    .token { fill: #fff7ed; stroke: #d97706; }
+    .title { fill: #172033; font: 700 20px Arial, sans-serif; }
+    .label { fill: #172033; font: 600 15px Arial, sans-serif; }
+    .small { fill: #4b5563; font: 12px Arial, sans-serif; }
+    .arrow { stroke: #475569; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    .return { stroke: #d97706; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead-orange); }
+    @media (prefers-color-scheme: dark) {
+      .node { fill: #111827; stroke: #94a3b8; }
+      .accent { fill: #0f1f39; stroke: #60a5fa; }
+      .pool { fill: #082f1a; stroke: #4ade80; }
+      .token { fill: #3a2609; stroke: #f59e0b; }
+      .title, .label { fill: #e5edf7; }
+      .small { fill: #b7c2d0; }
+      .arrow { stroke: #93a4b8; }
+      .return { stroke: #fbbf24; }
+    }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#475569" />
+    </marker>
+    <marker id="arrowhead-orange" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#d97706" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="420" />
+  <text class="title" x="48" y="42">Turbolong leverage-loop architecture</text>
+  <text class="small" x="48" y="66">Wallet-signed frontend flow into Blend pool accounting</text>
+
+  <rect class="node" x="52" y="134" width="150" height="88" rx="12" />
+  <text class="label" x="127" y="168" text-anchor="middle">User</text>
+  <text class="small" x="127" y="192" text-anchor="middle">selects pool, asset,</text>
+  <text class="small" x="127" y="210" text-anchor="middle">amount, leverage</text>
+
+  <rect class="node" x="262" y="134" width="160" height="88" rx="12" />
+  <text class="label" x="342" y="168" text-anchor="middle">Stellar wallet</text>
+  <text class="small" x="342" y="192" text-anchor="middle">signs Soroban XDR</text>
+  <text class="small" x="342" y="210" text-anchor="middle">and checks network</text>
+
+  <rect class="accent" x="482" y="118" width="186" height="120" rx="14" />
+  <text class="label" x="575" y="154" text-anchor="middle">Turbolong frontend</text>
+  <text class="small" x="575" y="180" text-anchor="middle">previews HF, net APY,</text>
+  <text class="small" x="575" y="198" text-anchor="middle">fees, liquidity, and</text>
+  <text class="small" x="575" y="216" text-anchor="middle">transaction steps</text>
+
+  <rect class="accent" x="728" y="118" width="190" height="120" rx="14" />
+  <text class="label" x="823" y="154" text-anchor="middle">Soroban submit</text>
+  <text class="small" x="823" y="180" text-anchor="middle">approve, supply,</text>
+  <text class="small" x="823" y="198" text-anchor="middle">borrow, resupply,</text>
+  <text class="small" x="823" y="216" text-anchor="middle">close or rebalance</text>
+
+  <rect class="pool" x="980" y="118" width="170" height="120" rx="14" />
+  <text class="label" x="1065" y="154" text-anchor="middle">Blend pool</text>
+  <text class="small" x="1065" y="180" text-anchor="middle">validates reserves,</text>
+  <text class="small" x="1065" y="198" text-anchor="middle">rates, collateral,</text>
+  <text class="small" x="1065" y="216" text-anchor="middle">and debt balances</text>
+
+  <rect class="token" x="730" y="304" width="170" height="70" rx="12" />
+  <text class="label" x="815" y="333" text-anchor="middle">b_token</text>
+  <text class="small" x="815" y="354" text-anchor="middle">supplied collateral shares</text>
+
+  <rect class="token" x="980" y="304" width="170" height="70" rx="12" />
+  <text class="label" x="1065" y="333" text-anchor="middle">d_token</text>
+  <text class="small" x="1065" y="354" text-anchor="middle">borrowed debt shares</text>
+
+  <path class="arrow" d="M202 178 H262" />
+  <path class="arrow" d="M422 178 H482" />
+  <path class="arrow" d="M668 178 H728" />
+  <path class="arrow" d="M918 178 H980" />
+
+  <path class="return" d="M1065 238 V276 C1065 292 1040 304 1018 304" />
+  <path class="return" d="M1065 238 V276 C1065 292 900 304 865 304" />
+
+  <text class="small" x="235" y="160" text-anchor="middle">connect</text>
+  <text class="small" x="452" y="160" text-anchor="middle">signed intent</text>
+  <text class="small" x="698" y="160" text-anchor="middle">build XDR</text>
+  <text class="small" x="948" y="160" text-anchor="middle">submit tx</text>
+  <text class="small" x="948" y="286" text-anchor="middle">position accounting</text>
+</svg>
