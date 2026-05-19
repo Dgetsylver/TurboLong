@@ -68,6 +68,24 @@ import {
   type UserVaultPosition,
 } from "./defindex.ts";
 
+type PlausibleOptions = {
+  props?: Record<string, string | number | boolean>;
+  interactive?: boolean;
+};
+
+type PlausibleFn = ((eventName: string, options?: PlausibleOptions) => void) & { q?: unknown[] };
+
+declare global {
+  interface Window {
+    plausible?: PlausibleFn;
+    doNotTrack?: string;
+  }
+
+  interface Navigator {
+    msDoNotTrack?: string;
+  }
+}
+
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
 StellarWalletsKit.init({
@@ -335,6 +353,47 @@ const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+const ANALYTICS_DOMAIN = "turbolong.com";
+
+function doNotTrackEnabled(): boolean {
+  return navigator.doNotTrack === "1" || navigator.msDoNotTrack === "1" || window.doNotTrack === "1";
+}
+
+function ensurePlausibleQueue() {
+  if (window.plausible) return;
+  const queued = ((eventName: string, options?: PlausibleOptions) => {
+    queued.q = queued.q || [];
+    queued.q.push([eventName, options]);
+  }) as PlausibleFn;
+  window.plausible = queued;
+}
+
+function initPrivacyAnalytics() {
+  if (doNotTrackEnabled()) return;
+  ensurePlausibleQueue();
+  if (!document.querySelector('script[data-turbolong-analytics="plausible"]')) {
+    const script = document.createElement("script");
+    script.defer = true;
+    script.src = "https://plausible.io/js/script.manual.js";
+    script.dataset.domain = ANALYTICS_DOMAIN;
+    script.dataset.turbolongAnalytics = "plausible";
+    document.head.appendChild(script);
+  }
+  trackFunnelEvent("App Loaded", { surface: "app" }, false);
+}
+
+function trackFunnelEvent(eventName: string, props: Record<string, string | number | boolean> = {}, interactive = true) {
+  if (doNotTrackEnabled()) return;
+  ensurePlausibleQueue();
+  window.plausible?.(eventName, {
+    interactive,
+    props: {
+      surface: "app",
+      network: getActiveNetwork(),
+      ...props,
+    },
+  });
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -1378,6 +1437,12 @@ async function openPosition() {
     await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
+    trackFunnelEvent("Deposit Submitted", {
+      flow: "leverage",
+      pool: selectedPool.name,
+      asset: liveAsset.symbol,
+      leverage,
+    });
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1585,6 +1650,12 @@ async function addFundsToPosition() {
     const newDeposit = (existingPnl?.deposit ?? 0) + additional;
     savePnlEntry(liveAsset.id, selectedPool.id, newDeposit);
     ($("add-funds-input") as HTMLInputElement).value = "";
+    trackFunnelEvent("Deposit Submitted", {
+      flow: "add_funds",
+      pool: selectedPool.name,
+      asset: liveAsset.symbol,
+      leverage,
+    });
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1721,6 +1792,7 @@ async function connect() {
     buildAssetTabs();
     renderPoolFooter();
     await loadAll();
+    trackFunnelEvent("Connect Wallet", { flow: "wallet" });
   } catch (e: any) {
     if (e?.message !== "User closed the modal") toast("Failed to connect wallet", "error");
   }
@@ -2260,6 +2332,7 @@ updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+initPrivacyAnalytics();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 
@@ -2649,6 +2722,11 @@ $("vault-deposit-btn").addEventListener("click", async () => {
     const xdr = await buildVaultDepositXdr(vault, userAddress, amount);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
     await submitSignedXdr(signedTxXdr);
+    trackFunnelEvent("Deposit Submitted", {
+      flow: "vault",
+      pool: "DeFindex",
+      asset: vault.assetSymbol,
+    });
     await refreshVaultView();
     ($("vault-deposit-input") as HTMLInputElement).value = "";
   } catch (err: any) {
