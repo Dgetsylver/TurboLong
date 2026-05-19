@@ -13,11 +13,14 @@
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
 import { sendVerificationEmail, sendApyAlert } from "./email.ts";
 
-interface Env {
+export interface Env {
   DB: D1Database;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   FRONTEND_ORIGIN: string;
+  SUBSCRIBE_RATE_LIMIT_WINDOW_SECONDS?: string;
+  SUBSCRIBE_RATE_LIMIT_EMAIL_MAX?: string;
+  SUBSCRIBE_RATE_LIMIT_IP_MAX?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -49,6 +52,146 @@ function corsHeaders(env: Env): Record<string, string> {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+export interface SubscribeRateLimitConfig {
+  windowSeconds: number;
+  emailMax: number;
+  ipMax: number;
+}
+
+type SubscribeRateLimitScope = "email" | "ip";
+
+export interface SubscribeRateLimitDecision {
+  allowed: boolean;
+  retryAfterSeconds: number;
+  scope?: SubscribeRateLimitScope;
+}
+
+export const DEFAULT_SUBSCRIBE_RATE_LIMIT_CONFIG: SubscribeRateLimitConfig = {
+  windowSeconds: 60 * 60,
+  emailMax: 5,
+  ipMax: 20,
+};
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function getSubscribeRateLimitConfig(env: Env): SubscribeRateLimitConfig {
+  return {
+    windowSeconds: parsePositiveInteger(
+      env.SUBSCRIBE_RATE_LIMIT_WINDOW_SECONDS,
+      DEFAULT_SUBSCRIBE_RATE_LIMIT_CONFIG.windowSeconds,
+    ),
+    emailMax: parsePositiveInteger(
+      env.SUBSCRIBE_RATE_LIMIT_EMAIL_MAX,
+      DEFAULT_SUBSCRIBE_RATE_LIMIT_CONFIG.emailMax,
+    ),
+    ipMax: parsePositiveInteger(
+      env.SUBSCRIBE_RATE_LIMIT_IP_MAX,
+      DEFAULT_SUBSCRIBE_RATE_LIMIT_CONFIG.ipMax,
+    ),
+  };
+}
+
+export function decideSubscribeRateLimit(
+  emailAttempts: number,
+  ipAttempts: number,
+  config: SubscribeRateLimitConfig,
+): SubscribeRateLimitDecision {
+  if (emailAttempts >= config.emailMax) {
+    return { allowed: false, retryAfterSeconds: config.windowSeconds, scope: "email" };
+  }
+  if (ipAttempts >= config.ipMax) {
+    return { allowed: false, retryAfterSeconds: config.windowSeconds, scope: "ip" };
+  }
+  return { allowed: true, retryAfterSeconds: config.windowSeconds };
+}
+
+function rateLimitResponse(decision: SubscribeRateLimitDecision, env: Env): Response {
+  const target = decision.scope === "ip" ? "this network" : "this email";
+  return new Response(JSON.stringify({
+    ok: false,
+    error: `Too many subscribe attempts for ${target}. Try again later.`,
+    rate_limit: {
+      scope: decision.scope,
+      retry_after_seconds: decision.retryAfterSeconds,
+    },
+  }), {
+    status: 429,
+    headers: {
+      "Content-Type": "application/json",
+      "Retry-After": String(decision.retryAfterSeconds),
+      ...corsHeaders(env),
+    },
+  });
+}
+
+function requestIp(request: Request): string {
+  const cfIp = request.headers.get("CF-Connecting-IP")?.trim();
+  if (cfIp) return cfIp;
+
+  const forwarded = request.headers.get("X-Forwarded-For")
+    ?.split(",")
+    .map(value => value.trim())
+    .find(Boolean);
+  return forwarded || "unknown";
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function countRecentAttempts(
+  env: Env,
+  column: "email" | "ip_hash",
+  value: string,
+  sinceSeconds: number,
+): Promise<number> {
+  const count = await env.DB.prepare(`
+    SELECT COUNT(*) AS count
+    FROM subscribe_attempts
+    WHERE ${column} = ?1
+      AND created_at >= ?2
+  `).bind(value, sinceSeconds).first("count");
+  return Number(count ?? 0);
+}
+
+async function enforceSubscribeRateLimit(
+  request: Request,
+  env: Env,
+  email: string,
+): Promise<SubscribeRateLimitDecision> {
+  const config = getSubscribeRateLimitConfig(env);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const sinceSeconds = nowSeconds - config.windowSeconds;
+  const ipHash = await sha256Hex(requestIp(request));
+
+  await env.DB.prepare(
+    "DELETE FROM subscribe_attempts WHERE created_at < ?1"
+  ).bind(sinceSeconds).run();
+
+  const [emailAttempts, ipAttempts] = await Promise.all([
+    countRecentAttempts(env, "email", email, sinceSeconds),
+    countRecentAttempts(env, "ip_hash", ipHash, sinceSeconds),
+  ]);
+
+  const decision = decideSubscribeRateLimit(emailAttempts, ipAttempts, config);
+  if (!decision.allowed) return decision;
+
+  await env.DB.prepare(`
+    INSERT INTO subscribe_attempts (email, ip_hash, created_at)
+    VALUES (?1, ?2, ?3)
+  `).bind(email, ipHash, nowSeconds).run();
+
+  return decision;
+}
+
 /** Known pool IDs for validation. */
 const KNOWN_POOL_IDS = new Set(POOLS.flatMap(p => [p.id]));
 
@@ -78,7 +221,8 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: false, error: "Invalid JSON" }, 400, env);
   }
 
-  const { email, pool_id, asset_symbol, leverage_bracket } = body;
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const { pool_id, asset_symbol, leverage_bracket } = body;
 
   // Validate
   if (!email || !EMAIL_RE.test(email)) {
@@ -93,6 +237,18 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   const lev = Number(leverage_bracket);
   if (!LEVERAGE_BRACKETS.includes(lev)) {
     return jsonResponse({ ok: false, error: "Invalid leverage bracket. Must be one of: " + LEVERAGE_BRACKETS.join(", ") }, 400, env);
+  }
+
+  let rateLimitDecision: SubscribeRateLimitDecision;
+  try {
+    rateLimitDecision = await enforceSubscribeRateLimit(request, env, email);
+  } catch (e: any) {
+    console.error("Subscribe rate-limit check failed:", e);
+    return jsonResponse({ ok: false, error: "Rate-limit check failed" }, 500, env);
+  }
+
+  if (!rateLimitDecision.allowed) {
+    return rateLimitResponse(rateLimitDecision, env);
   }
 
   const verifyToken = generateToken();

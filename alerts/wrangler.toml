@@ -13,4 +13,8 @@ database_id = "<run `npm run db:create` and paste the ID here>"
 [vars]
 RESEND_FROM = "alerts@turbolong.com"
 FRONTEND_ORIGIN = "https://app.turbolong.com"
+# Subscribe throttling defaults: 5 attempts per email and 20 attempts per IP per hour.
+SUBSCRIBE_RATE_LIMIT_WINDOW_SECONDS = "3600"
+SUBSCRIBE_RATE_LIMIT_EMAIL_MAX = "5"
+SUBSCRIBE_RATE_LIMIT_IP_MAX = "20"
 # RESEND_API_KEY: set via `wrangler secret put RESEND_API_KEY`
