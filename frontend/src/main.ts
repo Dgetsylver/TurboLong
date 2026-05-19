@@ -12,6 +12,7 @@ import { Networks }          from "@creit-tech/stellar-wallets-kit/types";
 import { estimateSwap }      from "@stellar-broker/client";
 import {
   Asset,
+  BASE_FEE,
   Horizon,
   Operation,
   TransactionBuilder,
@@ -335,6 +336,60 @@ const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+
+const STROOPS_PER_XLM = 10_000_000;
+const BASE_FEE_STROOPS = BigInt(BASE_FEE);
+const BLEND_SUBMIT_FEE_STROOPS = BASE_FEE_STROOPS * 10n;
+const VAULT_REBALANCE_FEE_STROOPS = 10_000_000n;
+
+function formatFeeEstimate(stroops: bigint): string {
+  const xlm = Number(stroops) / STROOPS_PER_XLM;
+  return `${stroops.toLocaleString("en-US")} stroops (${xlm.toFixed(7)} XLM)`;
+}
+
+function setFeeEstimate(
+  id: string,
+  anchorId: string,
+  stroops: bigint,
+  detail: string,
+  visible = true,
+  inline = false,
+) {
+  const anchor = $(anchorId);
+  let el = document.getElementById(id) as HTMLElement | null;
+  if (!el) {
+    el = document.createElement("span");
+    el.id = id;
+    el.className = "fee-estimate mono";
+    anchor.insertAdjacentElement("afterend", el);
+  }
+  el.textContent = `Est. fee ${formatFeeEstimate(stroops)} · ${detail}`;
+  el.title = "Estimated maximum network fee shown before signing. Soroban resource simulation may reduce the actual charged fee.";
+  el.style.cssText = inline
+    ? "display:inline-flex;align-items:center;margin-left:8px;font-size:12px;color:var(--text-3);"
+    : "display:block;margin-top:6px;font-size:12px;color:var(--text-3);";
+  el.classList.toggle("hidden", !visible);
+}
+
+function updateFeeEstimates() {
+  const actionUsesApprove = actionMode === "open" || actionMode === "add-funds";
+  const actionFee = actionUsesApprove ? BASE_FEE_STROOPS + BLEND_SUBMIT_FEE_STROOPS : BLEND_SUBMIT_FEE_STROOPS;
+  const actionDetail = actionUsesApprove ? "2 tx / 2 ops: approve + submit" : "1 tx / 1 op: submit_with_allowance";
+  setFeeEstimate("action-fee-estimate", "add-funds-btn", actionFee, actionDetail);
+
+  const hasPosition = positions.byAsset.has(selectedAsset.id);
+  setFeeEstimate("close-fee-estimate", "close-btn", BLEND_SUBMIT_FEE_STROOPS, "1 tx / 1 op: close submit", hasPosition, true);
+
+  const vault = getActiveVault();
+  setFeeEstimate(
+    "vault-rebalance-fee-estimate",
+    "vault-rebalance-btn",
+    VAULT_REBALANCE_FEE_STROOPS,
+    "1 tx / 1 op: rebalance budget",
+    Boolean(vault.vaultId),
+    true,
+  );
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -1304,6 +1359,8 @@ function updatePreview() {
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
       : "Add Funds";
   }
+
+  updateFeeEstimates();
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
@@ -1818,6 +1875,7 @@ function switchView(view: AppView) {
   closeDrawer();
   // Close pool dropdown
   $("pool-dropdown").classList.add("hidden");
+  updateFeeEstimates();
 }
 
 // ── Mobile sidebar drawer (#5) ───────────────────────────────────────────
@@ -2499,6 +2557,7 @@ async function refreshVaultView() {
     $("vault-hf").textContent = "--";
     $("vault-strategy-pos").classList.add("hidden");
     $("vault-hf-bar-wrap").classList.add("hidden");
+    updateFeeEstimates();
     return;
   }
 
@@ -2617,6 +2676,7 @@ async function refreshVaultView() {
       $("vault-user-pos").classList.add("hidden");
     }
   }
+  updateFeeEstimates();
 }
 
 // Vault deposit max — use cached wallet balance
