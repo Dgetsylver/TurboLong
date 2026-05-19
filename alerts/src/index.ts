@@ -10,8 +10,8 @@
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
  */
 
-import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
+import { sendVerificationEmail, sendApyAlert, sendHfAlert } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -78,7 +78,7 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: false, error: "Invalid JSON" }, 400, env);
   }
 
-  const { email, pool_id, asset_symbol, leverage_bracket } = body;
+  const { email, pool_id, asset_symbol, leverage_bracket, hf_threshold } = body;
 
   // Validate
   if (!email || !EMAIL_RE.test(email)) {
@@ -94,17 +94,21 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   if (!LEVERAGE_BRACKETS.includes(lev)) {
     return jsonResponse({ ok: false, error: "Invalid leverage bracket. Must be one of: " + LEVERAGE_BRACKETS.join(", ") }, 400, env);
   }
+  const hfThreshold = hf_threshold == null || hf_threshold === "" ? 1.05 : Number(hf_threshold);
+  if (!Number.isFinite(hfThreshold) || hfThreshold < 1 || hfThreshold > 5) {
+    return jsonResponse({ ok: false, error: "Invalid HF threshold. Must be between 1.00 and 5.00." }, 400, env);
+  }
 
   const verifyToken = generateToken();
   const unsubToken  = generateToken();
 
   try {
     await env.DB.prepare(`
-      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, hf_threshold, verify_token, unsub_token)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, verified = 0
-    `).bind(email, pool_id, asset_symbol, lev, verifyToken, unsubToken).run();
+        SET hf_threshold = ?5, verify_token = ?6, unsub_token = ?7, verified = 0
+    `).bind(email, pool_id, asset_symbol, lev, hfThreshold, verifyToken, unsubToken).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
     return jsonResponse({ ok: false, error: "Database error" }, 500, env);
@@ -150,7 +154,7 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 <head><meta charset="utf-8"><title>Verified</title></head>
 <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 60px 20px;">
   <h2 style="color: #2DE8A3;">Subscription Verified!</h2>
-  <p>You'll receive an alert when your position's net APY turns negative.</p>
+  <p>You'll receive alerts when net APY turns negative or health factor crosses your threshold.</p>
 </body>
 </html>`);
 }
@@ -202,49 +206,95 @@ async function handleCron(env: Env): Promise<void> {
 
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
+        const healthFactor = computeHealthFactor(rates, bracket);
 
-        if (netApy >= 0) continue; // APY is positive, no alert needed
+        if (netApy < 0) {
+          console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
 
-        console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
+          // Find verified subscribers who haven't been alerted in the last 24h
+          const subs = await env.DB.prepare(`
+            SELECT id, email, unsub_token
+            FROM subscriptions
+            WHERE pool_id = ?1
+              AND asset_symbol = ?2
+              AND leverage_bracket = ?3
+              AND verified = 1
+              AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
+          `).bind(pool.id, asset.symbol, bracket).all();
 
-        // Find verified subscribers who haven't been alerted in the last 24h
-        const subs = await env.DB.prepare(`
-          SELECT id, email, unsub_token
-          FROM subscriptions
-          WHERE pool_id = ?1
-            AND asset_symbol = ?2
-            AND leverage_bracket = ?3
-            AND verified = 1
-            AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
-        `).bind(pool.id, asset.symbol, bracket).all();
+          if (subs.results?.length) {
+            console.log(`[cron] Alerting ${subs.results.length} subscriber(s) for ${asset.symbol}@${bracket}x on ${pool.name}`);
 
-        if (!subs.results?.length) continue;
+            for (const sub of subs.results) {
+              const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+              const result = await sendApyAlert(
+                { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+                sub.email as string,
+                {
+                  poolName: pool.name,
+                  assetSymbol: asset.symbol,
+                  leverage: bracket,
+                  netApy,
+                  supplyApr: rates.netSupplyApr,
+                  borrowCost: rates.netBorrowCost,
+                  unsubscribeUrl: unsubUrl,
+                  appUrl: env.FRONTEND_ORIGIN,
+                },
+              );
 
-        console.log(`[cron] Alerting ${subs.results.length} subscriber(s) for ${asset.symbol}@${bracket}x on ${pool.name}`);
+              if (result.ok) {
+                await env.DB.prepare(
+                  "UPDATE subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+                ).bind(sub.id).run();
+              } else {
+                console.error(`[cron] Failed to send alert to ${sub.email}:`, result.error);
+              }
+            }
+          }
+        }
 
-        for (const sub of subs.results) {
-          const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
-          const result = await sendApyAlert(
-            { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
-            sub.email as string,
-            {
-              poolName: pool.name,
-              assetSymbol: asset.symbol,
-              leverage: bracket,
-              netApy,
-              supplyApr: rates.netSupplyApr,
-              borrowCost: rates.netBorrowCost,
-              unsubscribeUrl: unsubUrl,
-              appUrl: env.FRONTEND_ORIGIN,
-            },
-          );
+        if (Number.isFinite(healthFactor)) {
+          const hfSubs = await env.DB.prepare(`
+            SELECT id, email, unsub_token, hf_threshold
+            FROM subscriptions
+            WHERE pool_id = ?1
+              AND asset_symbol = ?2
+              AND leverage_bracket = ?3
+              AND verified = 1
+              AND hf_threshold IS NOT NULL
+              AND ?4 <= hf_threshold
+              AND (last_hf_alerted_at IS NULL OR last_hf_alerted_at < datetime('now', '-24 hours'))
+          `).bind(pool.id, asset.symbol, bracket, healthFactor).all();
 
-          if (result.ok) {
-            await env.DB.prepare(
-              "UPDATE subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
-            ).bind(sub.id).run();
-          } else {
-            console.error(`[cron] Failed to send alert to ${sub.email}:`, result.error);
+          if (!hfSubs.results?.length) continue;
+
+          console.log(`[cron] HF breach: ${asset.symbol} at ${bracket}x on ${pool.name} = ${healthFactor.toFixed(3)}; alerting ${hfSubs.results.length} subscriber(s)`);
+
+          for (const sub of hfSubs.results) {
+            const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+            const threshold = Number(sub.hf_threshold);
+            const result = await sendHfAlert(
+              { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+              sub.email as string,
+              {
+                poolName: pool.name,
+                assetSymbol: asset.symbol,
+                leverage: bracket,
+                healthFactor,
+                threshold,
+                netApy,
+                unsubscribeUrl: unsubUrl,
+                appUrl: env.FRONTEND_ORIGIN,
+              },
+            );
+
+            if (result.ok) {
+              await env.DB.prepare(
+                "UPDATE subscriptions SET last_hf_alerted_at = datetime('now') WHERE id = ?1"
+              ).bind(sub.id).run();
+            } else {
+              console.error(`[cron] Failed to send HF alert to ${sub.email}:`, result.error);
+            }
           }
         }
       }

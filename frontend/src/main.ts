@@ -2772,6 +2772,8 @@ $("alert-bell-btn").addEventListener("click", () => {
   const brackets = [2, 3, 5, 8, 10];
   const closest = brackets.reduce((a, b) => Math.abs(b - curLev) < Math.abs(a - curLev) ? b : a);
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);
+  const thresholdInput = $("alert-hf-threshold") as HTMLInputElement;
+  if (!thresholdInput.value) thresholdInput.value = "1.05";
 
   $("alert-modal-overlay").classList.remove("hidden");
 });
@@ -2794,6 +2796,11 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const hfThreshold = Number(($("alert-hf-threshold") as HTMLInputElement).value);
+  if (!Number.isFinite(hfThreshold) || hfThreshold < 1 || hfThreshold > 2) {
+    toast("HF threshold must be between 1.00 and 2.00.", "error");
+    return;
+  }
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Subscribing...";
@@ -2807,6 +2814,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
         pool_id: selectedPool.id,
         asset_symbol: selectedAsset.symbol,
         leverage_bracket: leverageBracket,
+        hf_threshold: hfThreshold,
       }),
     });
 
