@@ -1,8 +1,8 @@
 /**
- * Email delivery via Resend API.
+ * Alert delivery via email and webhook channels.
  */
 
-interface Env {
+interface EmailEnv {
   RESEND_API_KEY: string;
   RESEND_FROM: string;
 }
@@ -12,7 +12,29 @@ interface SendResult {
   error?: string;
 }
 
-async function sendEmail(env: Env, to: string, subject: string, html: string): Promise<SendResult> {
+export type AlertChannel = "email" | "slack" | "discord";
+
+export interface NotificationTarget {
+  channel: AlertChannel;
+  destination: string;
+}
+
+interface ApyAlertOptions {
+  poolName: string;
+  assetSymbol: string;
+  leverage: number;
+  netApy: number;
+  supplyApr: number;
+  borrowCost: number;
+  unsubscribeUrl: string;
+  appUrl: string;
+}
+
+export type Notification =
+  | { kind: "verification"; verifyUrl?: string }
+  | { kind: "apy-alert"; opts: ApyAlertOptions };
+
+async function sendEmail(env: EmailEnv, to: string, subject: string, html: string): Promise<SendResult> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -34,7 +56,25 @@ async function sendEmail(env: Env, to: string, subject: string, html: string): P
   return { ok: true };
 }
 
-export async function sendVerificationEmail(env: Env, to: string, verifyUrl: string): Promise<SendResult> {
+async function postWebhook(url: string, payload: object): Promise<SendResult> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    return { ok: false, error: `Webhook ${res.status}: ${text}` };
+  }
+  return { ok: true };
+}
+
+function formatPercent(value: number): string {
+  return `${value.toFixed(2)}%`;
+}
+
+async function sendVerificationEmail(env: EmailEnv, to: string, verifyUrl: string): Promise<SendResult> {
   const html = `
 <!DOCTYPE html>
 <html>
@@ -50,22 +90,86 @@ export async function sendVerificationEmail(env: Env, to: string, verifyUrl: str
   return sendEmail(env, to, "Verify your Turbolong alert subscription", html);
 }
 
-export async function sendApyAlert(
-  env: Env,
-  to: string,
-  opts: {
-    poolName: string;
-    assetSymbol: string;
-    leverage: number;
-    netApy: number;
-    supplyApr: number;
-    borrowCost: number;
-    unsubscribeUrl: string;
-    appUrl: string;
-  },
-): Promise<SendResult> {
-  const { poolName, assetSymbol, leverage, netApy, supplyApr, borrowCost, unsubscribeUrl, appUrl } = opts;
+function verificationWebhookPayload(channel: Exclude<AlertChannel, "email">): object {
+  const text = "Turbolong alert channel verified. This test confirms webhook delivery is working.";
 
+  if (channel === "slack") {
+    return {
+      text,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "*Turbolong alert channel verified*" } },
+        { type: "section", text: { type: "mrkdwn", text: "Webhook delivery is working for this subscription." } },
+      ],
+    };
+  }
+
+  return {
+    content: text,
+    embeds: [
+      {
+        title: "Turbolong alert channel verified",
+        description: "Webhook delivery is working for this subscription.",
+        color: 3008675,
+      },
+    ],
+  };
+}
+
+function apyWebhookPayload(channel: Exclude<AlertChannel, "email">, opts: ApyAlertOptions): object {
+  const { poolName, assetSymbol, leverage, netApy, supplyApr, borrowCost, unsubscribeUrl, appUrl } = opts;
+  const title = "Negative APY Alert";
+  const summary = `${assetSymbol} at ${leverage}x on ${poolName} is now ${formatPercent(netApy)}.`;
+
+  if (channel === "slack") {
+    return {
+      text: `${title}: ${summary}`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `*${title}*\n${summary}` } },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*Net supply APR*\n${formatPercent(supplyApr)}` },
+            { type: "mrkdwn", text: `*Net borrow cost*\n${formatPercent(borrowCost)}` },
+            { type: "mrkdwn", text: `*Net APY*\n${formatPercent(netApy)}` },
+            { type: "mrkdwn", text: `*Leverage*\n${leverage}x` },
+          ],
+        },
+        { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open Turbolong" }, url: appUrl }] },
+        { type: "context", elements: [{ type: "mrkdwn", text: `<${unsubscribeUrl}|Unsubscribe from this alert>` }] },
+      ],
+    };
+  }
+
+  return {
+    content: `${title}: ${summary}`,
+    embeds: [
+      {
+        title,
+        description: summary,
+        color: 16731498,
+        fields: [
+          { name: "Net supply APR", value: formatPercent(supplyApr), inline: true },
+          { name: "Net borrow cost", value: formatPercent(borrowCost), inline: true },
+          { name: "Net APY", value: formatPercent(netApy), inline: true },
+          { name: "Leverage", value: `${leverage}x`, inline: true },
+        ],
+        url: appUrl,
+      },
+    ],
+    components: [
+      {
+        type: 1,
+        components: [
+          { type: 2, style: 5, label: "Open Turbolong", url: appUrl },
+          { type: 2, style: 5, label: "Unsubscribe", url: unsubscribeUrl },
+        ],
+      },
+    ],
+  };
+}
+
+async function sendApyEmail(env: EmailEnv, to: string, opts: ApyAlertOptions): Promise<SendResult> {
+  const { poolName, assetSymbol, leverage, netApy, supplyApr, borrowCost, unsubscribeUrl, appUrl } = opts;
   const html = `
 <!DOCTYPE html>
 <html>
@@ -99,4 +203,20 @@ export async function sendApyAlert(
     `\u26A0 Negative APY: ${assetSymbol} at ${leverage}x on ${poolName}`,
     html,
   );
+}
+
+export async function notify(env: EmailEnv, target: NotificationTarget, notification: Notification): Promise<SendResult> {
+  if (target.channel === "email") {
+    if (notification.kind === "verification") {
+      if (!notification.verifyUrl) return { ok: false, error: "Missing verification URL" };
+      return sendVerificationEmail(env, target.destination, notification.verifyUrl);
+    }
+    return sendApyEmail(env, target.destination, notification.opts);
+  }
+
+  if (notification.kind === "verification") {
+    return postWebhook(target.destination, verificationWebhookPayload(target.channel));
+  }
+
+  return postWebhook(target.destination, apyWebhookPayload(target.channel, notification.opts));
 }
