@@ -429,6 +429,18 @@
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
                   </div>
                 </div>
+                <div class="stress-panel" id="stress-panel">
+                  <div class="stress-panel-head">
+                    <span>Utilization stress test <span class="tooltip" data-tip="Shows how the current leverage choice behaves if pool utilization moves to each scenario. Rates are recomputed with projectRates.">?</span></span>
+                    <strong id="stress-current-util" class="mono">—</strong>
+                  </div>
+                  <div class="stress-custom-row">
+                    <label for="stress-util-slider">Custom</label>
+                    <input type="range" id="stress-util-slider" class="stress-slider" min="50" max="99" step="1" value="97" />
+                    <strong id="stress-custom-label" class="mono">97%</strong>
+                  </div>
+                  <div class="stress-scenarios" id="stress-scenarios"></div>
+                </div>
                 <p class="hf-warning hidden" id="hf-warning">&#9888; HF too low — liquidation risk. Reduce leverage.</p>
                 <p class="hf-warning hidden" id="liquidity-warning"></p>
               </div>
