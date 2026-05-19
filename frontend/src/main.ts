@@ -2772,6 +2772,7 @@ $("alert-bell-btn").addEventListener("click", () => {
   const brackets = [2, 3, 5, 8, 10];
   const closest = brackets.reduce((a, b) => Math.abs(b - curLev) < Math.abs(a - curLev) ? b : a);
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);
+  ($("alert-summary-hour") as HTMLSelectElement).value = String(new Date().getUTCHours());
 
   $("alert-modal-overlay").classList.remove("hidden");
 });
@@ -2786,6 +2787,14 @@ $("alert-modal-overlay").addEventListener("click", (e) => {
   }
 });
 
+function updateDailySummaryOptions() {
+  const enabled = ($("alert-daily-summary") as HTMLInputElement).checked;
+  $("alert-daily-options").classList.toggle("hidden", !enabled);
+}
+
+($("alert-daily-summary") as HTMLInputElement).addEventListener("change", updateDailySummaryOptions);
+updateDailySummaryOptions();
+
 $("alert-subscribe-btn").addEventListener("click", async () => {
   const email = ($("alert-email") as HTMLInputElement).value.trim();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -2794,6 +2803,11 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const dailySummary = ($("alert-daily-summary") as HTMLInputElement).checked;
+  const summaryUtcHour = Number(($("alert-summary-hour") as HTMLSelectElement).value);
+  const pos = positions.byAsset.get(selectedAsset.id);
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  const equityUsd = pos && rs ? pos.equity * rs.priceUsd : null;
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Subscribing...";
@@ -2807,15 +2821,21 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
         pool_id: selectedPool.id,
         asset_symbol: selectedAsset.symbol,
         leverage_bracket: leverageBracket,
+        daily_summary: dailySummary,
+        summary_utc_hour: summaryUtcHour,
+        wallet_address: dailySummary ? userAddress : null,
+        equity_usd: dailySummary ? equityUsd : null,
       }),
     });
 
     const data = await res.json() as any;
 
     if (data.ok) {
-      toast("Check your email to verify your alert subscription.", "success");
+      toast(dailySummary ? "Check your email to verify alerts and daily summary." : "Check your email to verify your alert subscription.", "success");
       $("alert-modal-overlay").classList.add("hidden");
       ($("alert-email") as HTMLInputElement).value = "";
+      ($("alert-daily-summary") as HTMLInputElement).checked = false;
+      updateDailySummaryOptions();
     } else {
       toast(data.error || "Subscription failed.", "error");
     }
