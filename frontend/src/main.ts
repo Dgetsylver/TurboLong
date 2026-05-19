@@ -89,6 +89,13 @@ let positions:   UserPositions   = { byAsset: new Map() };
 let selectedPool: PoolDef        = getKnownPools()[0]; // default: Etherfuse
 let assets: AssetInfo[]          = getPoolAssets(selectedPool);
 let selectedAsset: AssetInfo     = assets[2]; // default: CETES (index 2 in Etherfuse)
+let testnetBannerDismissed = false;
+
+function updateTestnetBanner(resetDismissed = false) {
+  if (resetDismissed) testnetBannerDismissed = false;
+  const isTestnet = getActiveNetwork() === "testnet";
+  $("testnet-banner").classList.toggle("hidden", !isTestnet || testnetBannerDismissed);
+}
 
 // ── Network switching ────────────────────────────────────────────────────────
 
@@ -128,7 +135,7 @@ async function switchNetwork(net: NetworkMode) {
   const btn = $("network-toggle");
   btn.textContent = net === "testnet" ? "Testnet" : "Mainnet";
   btn.classList.toggle("testnet-active", net === "testnet");
-  $("testnet-banner").classList.toggle("hidden", net !== "testnet");
+  updateTestnetBanner(true);
   ($("fund-testnet-btn") as HTMLButtonElement).disabled = false;
   ($("fund-testnet-btn") as HTMLButtonElement).textContent = "Fund Wallet";
 
@@ -1763,6 +1770,8 @@ async function disconnect() {
 
 function switchView(view: AppView) {
   activeView = view;
+  updateTestnetBanner(true);
+
   // Top nav active states
   const overviewBtn = $("proto-overview");
   const blendBtn = $("proto-blend");
@@ -2038,6 +2047,10 @@ $("network-toggle").addEventListener("click", () => {
 
 // Fund testnet wallet
 $("fund-testnet-btn").addEventListener("click", fundTestnetWallet);
+$("testnet-banner-dismiss").addEventListener("click", () => {
+  testnetBannerDismissed = true;
+  updateTestnetBanner();
+});
 
 // Protocol nav (desktop top nav)
 $("proto-overview").addEventListener("click", () => switchView("overview"));
@@ -2724,7 +2737,7 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     selectedAsset = assets[0];
     $("network-toggle").textContent = "Testnet";
     $("network-toggle").classList.add("testnet-active");
-    $("testnet-banner").classList.remove("hidden");
+    updateTestnetBanner(true);
   }
 
   const saved = localStorage.getItem("walletAddress");
