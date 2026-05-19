@@ -47,6 +47,7 @@
         <button class="nav-btn" id="proto-overview">Dashboard</button>
         <button class="nav-btn active" id="proto-blend">Trade <span class="nav-caret">&#9662;</span></button>
         <div id="pool-dropdown" class="pool-dropdown hidden"></div>
+        <button class="nav-btn" id="proto-compare">Compare</button>
         <button class="nav-btn" id="proto-vault">Vault</button>
         <button class="nav-btn" id="proto-swap">Swap</button>
       </div>
@@ -95,6 +96,12 @@
               <span class="protocol-dot protocol-dot-soon"></span>
               More Protocols
               <span class="coming-soon-badge">Soon</span>
+            </button>
+          </div>
+          <div class="protocol-section">
+            <button class="protocol-btn" id="mobile-proto-compare">
+              <span class="protocol-icon">&#8646;</span>
+              Compare Pools
             </button>
           </div>
           <div class="protocol-section">
@@ -262,6 +269,36 @@
           <div id="ov-protocols"></div>
 
           <p class="overview-empty hidden" id="ov-empty">No active positions across any protocol. Open a position to see it here.</p>
+        </div>
+
+        <!-- Compare pools -->
+        <div id="compare-view" class="hidden">
+          <div class="overview-header">
+            <h2>Compare Pools</h2>
+            <div class="compare-controls">
+              <label for="compare-asset-select">Asset</label>
+              <select id="compare-asset-select" class="input compare-asset-select"></select>
+              <button id="compare-refresh-btn" class="btn btn-ghost btn-sm">&#8635;</button>
+            </div>
+          </div>
+          <p class="compare-status" id="compare-status">Loading pool data...</p>
+          <div class="compare-table-wrap">
+            <table class="overview-table compare-table">
+              <thead>
+                <tr>
+                  <th data-sort="pool">Pool</th>
+                  <th class="text-right" data-sort="supplyApy">Supply APY</th>
+                  <th class="text-right" data-sort="borrowApy">Borrow APY</th>
+                  <th class="text-right" data-sort="net5">Net APY 5x</th>
+                  <th class="text-right" data-sort="net10">Net APY 10x</th>
+                  <th class="text-right" data-sort="cFactor">c_factor</th>
+                  <th class="text-right" data-sort="tvl">TVL</th>
+                  <th class="text-right" data-sort="util">Utilization</th>
+                </tr>
+              </thead>
+              <tbody id="compare-table-body"></tbody>
+            </table>
+          </div>
         </div>
 
         <!-- Dashboard -->
