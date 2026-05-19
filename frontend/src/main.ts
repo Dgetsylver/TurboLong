@@ -1707,7 +1707,7 @@ function showConnected() {
 
 async function connect() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
     if (!networkOk) {
@@ -1729,7 +1729,7 @@ async function connect() {
 /** Re-open wallet modal to switch to a different account without a full page reload. */
 async function switchWallet() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     if (result.address === userAddress) return;
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
@@ -2238,6 +2238,12 @@ $("demo-btn").addEventListener("click", () => {
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n, bSupply: 1_000_000_000_000n, dSupply: 650_000_000_000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: {
+      rBase: 0, rOne: 500_000, rTwo: 2_000_000, rThree: 150_000_000,
+      utilOpt: Math.round(a.maxUtil * 10_000_000), irMod: 10_000_000, backstopFP: selectedPool.backstopFP,
+    },
   }));
   positions = { byAsset: new Map() };
   // One sample position

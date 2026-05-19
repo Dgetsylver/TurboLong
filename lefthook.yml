@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: true
+  commands:
+    frontend-build:
+      root: frontend/
+      glob: "frontend/**/*.{ts,html,css,json}"
+      run: npm run build
+    frontend-typecheck:
+      root: frontend/
+      glob: "frontend/**/*.{ts,json}"
+      run: npm run typecheck
+    rustfmt:
+      glob: "{src,contracts,tests}/**/*.rs"
+      run: rustfmt --check {staged_files}
