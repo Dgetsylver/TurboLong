@@ -338,6 +338,135 @@ const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
+const TOOLTIP_DOCS_URL = "https://docs.blend.capital/";
+const ACRONYM_TOOLTIPS = {
+  HF: "Health Factor shows how far a position is from liquidation; below 1.0 can be liquidated.",
+  APY: "Annual Percentage Yield estimates yearly return after compounding where compounding is available.",
+  c_factor: "Collateral factor is the share of supplied collateral that counts toward borrowing power.",
+  util_target: "Utilization target is the pool usage level where Blend's rate model starts increasing borrow rates faster.",
+  r_base: "Base rate is the starting borrow rate before utilization-based slopes are added.",
+  r_one: "Rate slope one is the first borrow-rate increase applied below the target utilization zone.",
+  r_two: "Rate slope two is the steeper borrow-rate increase after utilization passes the target zone.",
+  r_three: "Rate slope three is the emergency borrow-rate increase when utilization is very high.",
+  b_token: "b_tokens are Blend supply shares that track your supplied collateral plus earned interest.",
+  d_token: "d_tokens are Blend debt shares that track your borrowed amount plus accrued interest.",
+} as const;
+
+type AcronymTerm = keyof typeof ACRONYM_TOOLTIPS;
+
+const ACRONYM_ALIASES: Record<string, AcronymTerm> = {
+  "Health Factor": "HF",
+  HF: "HF",
+  APY: "APY",
+  c_factor: "c_factor",
+  util_target: "util_target",
+  r_base: "r_base",
+  r_one: "r_one",
+  r_two: "r_two",
+  r_three: "r_three",
+  b_token: "b_token",
+  d_token: "d_token",
+};
+
+const ACRONYM_PATTERN = new RegExp(
+  `\\b(${Object.keys(ACRONYM_ALIASES)
+    .sort((a, b) => b.length - a.length)
+    .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")})\\b`,
+  "g"
+);
+
+function installAcronymTooltipStyles() {
+  if (document.getElementById("acronym-tooltip-styles")) return;
+  const style = document.createElement("style");
+  style.id = "acronym-tooltip-styles";
+  style.textContent = `
+    .acronym-term {
+      color: inherit;
+      cursor: help;
+      border-bottom: 1px dotted currentColor;
+      text-underline-offset: 3px;
+    }
+    .acronym-term:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
+    }
+    .tooltip-popover a {
+      color: var(--accent);
+      display: inline-block;
+      margin-top: 6px;
+      text-decoration: none;
+    }
+    .tooltip-popover a:hover,
+    .tooltip-popover a:focus-visible {
+      text-decoration: underline;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function decorateAcronymText(root: ParentNode = document.body) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const text = node.textContent ?? "";
+      ACRONYM_PATTERN.lastIndex = 0;
+      if (!ACRONYM_PATTERN.test(text)) return NodeFilter.FILTER_REJECT;
+      ACRONYM_PATTERN.lastIndex = 0;
+
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("script,style,noscript,textarea,input,select,option,.tooltip-popover,.acronym-term,.tooltip")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+
+  for (const node of nodes) {
+    const text = node.textContent ?? "";
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    ACRONYM_PATTERN.lastIndex = 0;
+
+    for (const match of text.matchAll(ACRONYM_PATTERN)) {
+      const label = match[0];
+      const index = match.index ?? 0;
+      if (index > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, index)));
+
+      const term = ACRONYM_ALIASES[label];
+      const span = document.createElement("span");
+      span.className = "acronym-term";
+      span.tabIndex = 0;
+      span.dataset.acronym = term;
+      span.dataset.tip = ACRONYM_TOOLTIPS[term];
+      span.dataset.docsUrl = TOOLTIP_DOCS_URL;
+      span.setAttribute("aria-label", `${label}: ${ACRONYM_TOOLTIPS[term]}`);
+      span.textContent = label;
+      fragment.append(span);
+
+      lastIndex = index + label.length;
+    }
+
+    if (lastIndex < text.length) fragment.append(document.createTextNode(text.slice(lastIndex)));
+    node.replaceWith(fragment);
+  }
+}
+
+function applyAcronymTip(el: HTMLElement) {
+  const text = (el.dataset.acronym || el.textContent || "").trim();
+  const term = ACRONYM_ALIASES[text];
+  if (!term) return;
+  el.dataset.acronym = term;
+  el.dataset.tip = ACRONYM_TOOLTIPS[term];
+  el.dataset.docsUrl = TOOLTIP_DOCS_URL;
+  el.setAttribute("aria-label", `${text}: ${ACRONYM_TOOLTIPS[term]}`);
+  if (!el.hasAttribute("tabindex")) el.tabIndex = 0;
+}
+
 function setSkeleton(id: string) {
   const el = $(id);
   el.textContent = "\u00A0\u00A0\u00A0\u00A0\u00A0";
@@ -1958,37 +2087,119 @@ function debounceQuote() {
 // ── Tooltip popovers (#1) ────────────────────────────────────────────────────
 
 function initTooltips() {
+  installAcronymTooltipStyles();
+  decorateAcronymText();
+
   const popover = $("tooltip-popover");
   function showTip(el: HTMLElement) {
-    popover.textContent = el.dataset.tip || "";
+    popover.textContent = "";
+    const copy = document.createElement("span");
+    copy.textContent = el.dataset.tip || "";
+    popover.append(copy);
+
+    if (el.dataset.docsUrl) {
+      const link = document.createElement("a");
+      link.href = el.dataset.docsUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Learn more";
+      popover.append(document.createElement("br"), link);
+    }
+
     const rect = el.getBoundingClientRect();
     popover.style.left = `${rect.left + rect.width / 2}px`;
     popover.style.top = `${rect.bottom + 8}px`;
     popover.style.transform = "translateX(-50%)";
   }
-  document.querySelectorAll<HTMLElement>(".tooltip").forEach(el => {
+  function hideTip() {
+    popover.classList.remove("visible");
+  }
+  const getTooltipTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return null;
+    const el = target.closest<HTMLElement>(".tooltip, .acronym-term, [data-tip]:not(.tooltip)");
+    if (!el || popover.contains(el)) return null;
+    applyAcronymTip(el);
+    return el.dataset.tip ? el : null;
+  };
+
+  document.querySelectorAll<HTMLElement>(".tooltip, .acronym-term").forEach(el => {
+    if (el.dataset.tooltipBound === "1") {
+      applyAcronymTip(el);
+      return;
+    }
+
+    applyAcronymTip(el);
     if (el.hasAttribute("title")) {
       el.dataset.tip = el.getAttribute("title") || "";
       el.removeAttribute("title");
     }
 
     el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
-    el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("focus", () => { showTip(el); popover.classList.add("visible"); });
+    el.addEventListener("blur", hideTip);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") hideTip();
+    });
     // Mobile: toggle on click
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       showTip(el);
       popover.classList.toggle("visible");
     });
+    el.dataset.tooltipBound = "1";
   });
   // Also handle data-tip on non-.tooltip elements (buttons, etc.)
   document.querySelectorAll<HTMLElement>("[data-tip]:not(.tooltip)").forEach(el => {
+    if (el.classList.contains("acronym-term")) return;
+    if (el.dataset.tooltipBound === "1") return;
+
     el.removeAttribute("title");
 
     el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
-    el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("focus", () => { showTip(el); popover.classList.add("visible"); });
+    el.addEventListener("blur", hideTip);
+    el.dataset.tooltipBound = "1";
   });
-  document.addEventListener("click", () => popover.classList.remove("visible"));
+  if (document.body.dataset.tooltipDocumentBound !== "1") {
+    document.addEventListener("mouseover", (e) => {
+      const el = getTooltipTarget(e.target);
+      if (!el) return;
+      if (e.relatedTarget instanceof Node && el.contains(e.relatedTarget)) return;
+      showTip(el);
+      popover.classList.add("visible");
+    });
+    document.addEventListener("mouseout", (e) => {
+      const el = getTooltipTarget(e.target);
+      if (!el) return;
+      if (e.relatedTarget instanceof Node && el.contains(e.relatedTarget)) return;
+      hideTip();
+    });
+    document.addEventListener("focusin", (e) => {
+      const el = getTooltipTarget(e.target);
+      if (!el) return;
+      showTip(el);
+      popover.classList.add("visible");
+    });
+    document.addEventListener("focusout", (e) => {
+      if (getTooltipTarget(e.target)) hideTip();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") hideTip();
+    });
+    document.addEventListener("click", (e) => {
+      const el = getTooltipTarget(e.target);
+      if (!el) {
+        hideTip();
+        return;
+      }
+      e.stopPropagation();
+      showTip(el);
+      popover.classList.toggle("visible");
+    });
+    document.body.dataset.tooltipDocumentBound = "1";
+  }
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
@@ -2260,6 +2471,17 @@ updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+
+let tooltipRefreshScheduled = false;
+const tooltipObserver = new MutationObserver(() => {
+  if (tooltipRefreshScheduled) return;
+  tooltipRefreshScheduled = true;
+  requestAnimationFrame(() => {
+    tooltipRefreshScheduled = false;
+    initTooltips();
+  });
+});
+tooltipObserver.observe(document.body, { childList: true, subtree: true });
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 
