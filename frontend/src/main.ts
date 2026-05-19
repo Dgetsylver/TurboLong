@@ -44,6 +44,9 @@ import {
   submitClassicXdr,
   hfForLeverage,
   maxLeverageFor,
+  estimateFeeDragApr,
+  DEFAULT_REBALANCES_PER_YEAR,
+  ESTIMATED_REBALANCE_FEE_XLM,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -103,6 +106,7 @@ async function switchNetwork(net: NetworkMode) {
   // Switch blend.ts network config
   setNetwork(net);
   localStorage.setItem("networkMode", net);
+  syncRebalanceFrequencyInput();
 
   // Reinitialize wallet kit for new network
   StellarWalletsKit.init({
@@ -335,6 +339,48 @@ const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+const REBALANCES_PER_YEAR_KEY = "rebalanceFrequencyPerYear";
+
+function rebalanceFrequencyStorageKey(): string {
+  return `${REBALANCES_PER_YEAR_KEY}:${getActiveNetwork()}:${userAddress ?? "default"}`;
+}
+
+function getRebalancesPerYear(): number {
+  const scoped = localStorage.getItem(rebalanceFrequencyStorageKey());
+  const legacy = localStorage.getItem(REBALANCES_PER_YEAR_KEY);
+  const stored = scoped ?? legacy;
+  const raw = stored === null ? NaN : Number(stored);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_REBALANCES_PER_YEAR;
+}
+
+function setRebalancesPerYear(value: number) {
+  const clean = Number.isFinite(value) && value >= 0 ? value : DEFAULT_REBALANCES_PER_YEAR;
+  localStorage.setItem(rebalanceFrequencyStorageKey(), String(clean));
+}
+
+function syncRebalanceFrequencyInput() {
+  const input = document.getElementById("rebalance-frequency-input") as HTMLInputElement | null;
+  if (input) input.value = String(getRebalancesPerYear());
+}
+
+function xlmPriceUsd(sourceReserves: ReserveStats[] = reserves): number {
+  const reserve = sourceReserves.find(r => r.asset.symbol === "XLM");
+  return reserve?.priceUsd ?? (selectedAsset.symbol === "XLM" ? sourceReserves.find(r => r.asset.id === selectedAsset.id)?.priceUsd ?? 0 : 0);
+}
+
+function feeAdjustedNetApr(
+  rawNetApr: number,
+  equityUsd: number,
+  leverage: number,
+  sourceReserves: ReserveStats[] = reserves,
+): { netApr: number; feeDragApr: number } {
+  const feeDragApr = estimateFeeDragApr(equityUsd, leverage, getRebalancesPerYear(), xlmPriceUsd(sourceReserves));
+  return { netApr: rawNetApr - feeDragApr, feeDragApr };
+}
+
+function feeDragTip(rawNetApr: number, feeDragApr: number): string {
+  return `Actual net APR ${fmt(rawNetApr - feeDragApr, 2)}% = raw net APR ${fmt(rawNetApr, 2)}% - annual fee drag ${fmt(feeDragApr, 2)}%. Formula: rebalances/year x ${ESTIMATED_REBALANCE_FEE_XLM} XLM x XLM price x leverage / equity. Default: ${DEFAULT_REBALANCES_PER_YEAR}/year.`;
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -718,7 +764,8 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const steps: { lev: number; apy: number }[] = [];
   for (let l = 1.0; l <= maxLev; l += 0.2) {
     const p = projectRates(rs, equity * l - oldSupply, equity * (l - 1) - oldBorrow);
-    steps.push({ lev: l, apy: aprToApy(p.netSupplyApr * l - p.netBorrowCost * (l - 1)) });
+    const rawNetApr = p.netSupplyApr * l - p.netBorrowCost * (l - 1);
+    steps.push({ lev: l, apy: aprToApy(feeAdjustedNetApr(rawNetApr, equity * rs.priceUsd, l).netApr) });
   }
   if (steps.length < 2) { container.innerHTML = ""; return; }
   const minApy = Math.min(0, ...steps.map(s => s.apy));
@@ -728,7 +775,8 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const y = (apy: number) => padT + (1 - (apy - minApy) / rangeApy) * (H - padT - padB);
   const points = steps.map(s => `${x(s.lev).toFixed(1)},${y(s.apy).toFixed(1)}`).join(" ");
   const curProj = projectRates(rs, equity * currentLev - oldSupply, equity * (currentLev - 1) - oldBorrow);
-  const curApy = aprToApy(curProj.netSupplyApr * currentLev - curProj.netBorrowCost * (currentLev - 1));
+  const curRawNetApr = curProj.netSupplyApr * currentLev - curProj.netBorrowCost * (currentLev - 1);
+  const curApy = aprToApy(feeAdjustedNetApr(curRawNetApr, equity * rs.priceUsd, currentLev).netApr);
   const zeroY = y(0);
 
   // Position the label above or below the dot to avoid clipping
@@ -838,12 +886,14 @@ function renderPortfolioSummary() {
   container.innerHTML = "";
   for (const [assetId, pos] of positions.byAsset) {
     const rs = reserves.find(r => r.asset.id === assetId);
-    const cardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
+    const rawCardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
+    const cardFee = rs ? feeAdjustedNetApr(rawCardNetApr, pos.equity * rs.priceUsd, pos.leverage) : { netApr: rawCardNetApr, feeDragApr: 0 };
+    const cardNetApr = cardFee.netApr;
     const netApy = aprToApy(cardNetApr);
     const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
     const card = document.createElement("div");
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
-    card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
+    card.title = `Approximate APY - Blend does not auto-compound. ${feeDragTip(rawCardNetApr, cardFee.feeDragApr)}`;
     card.innerHTML = `
       <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
@@ -992,7 +1042,8 @@ function renderPosition() {
   const netAprEl = $("pos-net-apr");
   const heroApyEl = $("hero-net-apy");
   if (rs && pos.leverage > 0) {
-    const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
+    const rawPosNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
+    const { netApr: posNetApr, feeDragApr } = feeAdjustedNetApr(rawPosNetApr, pos.equity * rs.priceUsd, pos.leverage);
     const netApy = aprToApy(posNetApr);
     const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
     netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
@@ -1001,7 +1052,7 @@ function renderPosition() {
     heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     heroApyEl.className   = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
     // Tooltips with actual APR
-    const aprTip = `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(posNetApr, 2)}%`;
+    const aprTip = `Approximate APY - Blend interest does not auto-compound. ${feeDragTip(rawPosNetApr, feeDragApr)}`;
     const posTip = $("pos-net-apr-tip");
     if (posTip) posTip.setAttribute("data-tip", aprTip);
     const heroTip = $("hero-net-apy-tip");
@@ -1196,6 +1247,7 @@ function updatePreview() {
   $("prev-borrow").textContent      = `${fmt(borrow, 2)} ${selectedAsset.symbol}`;
   $("prev-hf").textContent          = isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "\u221E";
   $("prev-hf").className            = hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
+  $("prev-fee-drag").textContent    = "\u2014";
 
   // Borrow headroom: how much more could be borrowed before liquidation
   if (rs && rs.priceUsd > 0) {
@@ -1211,13 +1263,15 @@ function updatePreview() {
 
   if (rs) {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
-    const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
+    const rawNetApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
+    const { netApr, feeDragApr } = feeAdjustedNetApr(rawNetApr, equity * rs.priceUsd, lev);
     const netApy = aprToApy(netApr);
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
+    $("prev-fee-drag").textContent = `-${fmt(feeDragApr, 2)}% APR`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Approximate APY - Blend interest does not auto-compound. ${feeDragTip(rawNetApr, feeDragApr)}`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -1716,6 +1770,7 @@ async function connect() {
     }
     userAddress  = result.address;
     localStorage.setItem("walletAddress", userAddress);
+    syncRebalanceFrequencyInput();
     showConnected();
     buildPoolTabs();
     buildAssetTabs();
@@ -1736,6 +1791,7 @@ async function switchWallet() {
     if (!networkOk) return;
     userAddress = result.address;
     localStorage.setItem("walletAddress", userAddress);
+    syncRebalanceFrequencyInput();
     $("wallet-address").textContent = fmtAddr(userAddress);
     reserves  = [];
     positions = { byAsset: new Map() };
@@ -1750,6 +1806,7 @@ async function disconnect() {
   await StellarWalletsKit.disconnect();
   userAddress = null;
   localStorage.removeItem("walletAddress");
+  syncRebalanceFrequencyInput();
   reserves    = [];
   positions   = { byAsset: new Map() };
   $("connect-btn").classList.remove("hidden");
@@ -2222,6 +2279,15 @@ async function refreshAddFundsBalance() {
   slider.value = v.toFixed(1);
   updatePreview();
 });
+const rebalanceFrequencyInput = $("rebalance-frequency-input") as HTMLInputElement;
+syncRebalanceFrequencyInput();
+rebalanceFrequencyInput.addEventListener("input", () => {
+  const value = Number(rebalanceFrequencyInput.value);
+  setRebalancesPerYear(value);
+  updatePreview();
+  renderPosition();
+  renderPortfolioSummary();
+});
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
 
@@ -2230,14 +2296,22 @@ async function refreshAddFundsBalance() {
 $("demo-btn").addEventListener("click", () => {
   demoMode = true;
   userAddress = "GDEMO000000000000000000000000000000000000000000000000000";
+  syncRebalanceFrequencyInput();
   showConnected();
   $("wallet-address").textContent = "Demo Mode";
   $("switch-wallet-btn").classList.add("hidden");
   // Load mock reserves and positions
-  reserves = assets.map(a => ({
+  reserves = assets.map<ReserveStats>(a => ({
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n,
+    bSupply: 10_000_000_000_000n, dSupply: 6_500_000_000_000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: {
+      rBase: 300_000, rOne: 400_000, rTwo: 1_200_000, rThree: 50_000_000,
+      utilOpt: 5_000_000, irMod: 1_000_000, backstopFP: selectedPool.backstopFP,
+    },
   }));
   positions = { byAsset: new Map() };
   // One sample position
@@ -2372,11 +2446,13 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
     for (const bp of blendPos) {
       const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
       const price = rs?.priceUsd ?? 0;
-      const batchNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
+      const batchRawNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
+      const batchFee = rs ? feeAdjustedNetApr(batchRawNetApr, bp.pos.equity * price, bp.pos.leverage, bp.reserves) : { netApr: batchRawNetApr, feeDragApr: 0 };
+      const batchNetApr = batchFee.netApr;
       const netApy = aprToApy(batchNetApr);
       const hfColor = bp.pos.hf > 1.1 ? "hf-ok" : bp.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
       const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
-      const batchTip = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(batchNetApr, 2)}%`;
+      const batchTip = `Approximate APY - Blend does not auto-compound. ${feeDragTip(batchRawNetApr, batchFee.feeDragApr)}`;
 
       html += `<tr data-nav-pool="${bp.pool.id}" data-nav-asset="${bp.asset.id}">
         <td class="text-label">${bp.asset.symbol}</td>
@@ -2522,12 +2598,13 @@ async function refreshVaultView() {
     // Net APY (stats.netApy is actually APR — convert for display)
     const apyEl = $("vault-apy");
     if (stats.netApy !== null) {
-      const vaultApy = aprToApy(stats.netApy);
+      const vaultFee = feeAdjustedNetApr(stats.netApy, stats.totalEquity, stats.leverage, poolReserves ?? reserves);
+      const vaultApy = aprToApy(vaultFee.netApr);
       apyEl.textContent = (vaultApy >= 0 ? "+" : "") + vaultApy.toFixed(2) + "%";
       apyEl.className = "stat-value mono " + (vaultApy > 0 ? "hf-ok" : "hf-bad");
       const vaultTip = $("vault-apy-tip");
       if (vaultTip) vaultTip.setAttribute("data-tip",
-        `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(stats.netApy, 2)}%`);
+        `Approximate APY - Blend interest does not auto-compound. ${feeDragTip(stats.netApy, vaultFee.feeDragApr)}`);
     } else {
       apyEl.textContent = "--";
       apyEl.className = "stat-value mono";
@@ -2730,6 +2807,7 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
   const saved = localStorage.getItem("walletAddress");
   if (!saved) return;
   userAddress = saved;
+  syncRebalanceFrequencyInput();
   showConnected();
   buildPoolTabs();
   buildAssetTabs();

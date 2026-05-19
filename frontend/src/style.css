@@ -639,6 +639,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .preview-row strong { font-family: var(--mono); color: var(--text); font-weight: 600; }
 .preview-net-apr { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
 .prev-net-apr { font-size: 16px !important; font-weight: 700 !important; }
+.fee-drag-control { display: flex; align-items: center; gap: 4px; justify-content: flex-end; color: var(--text-2); }
+.fee-drag-input { width: 56px; padding: 3px 5px; font-size: 12px; text-align: right; }
 
 .hf-ok   { color: var(--success) !important; }
 .hf-warn { color: var(--warning) !important; }

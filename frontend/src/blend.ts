@@ -27,6 +27,8 @@ const RATE_DEC   = 1_000_000_000_000n;
 const SCALAR     = 10_000_000n;
 const SCALAR_F   = 10_000_000;
 const SECONDS_PER_YEAR = 31_536_000;
+export const DEFAULT_REBALANCES_PER_YEAR = 12;
+export const ESTIMATED_REBALANCE_FEE_XLM = 0.25;
 
 export const SUPPLY_COLLATERAL  = 2;
 export const WITHDRAW_COLLATERAL = 3;
@@ -712,6 +714,18 @@ export function maxLeverageFor(c: number, l: number = 1, minHF: number = 1.01): 
   // Solve HF = minHF: lev = minHF / (minHF - c * l)
   const cl = c * l;
   return cl >= minHF ? 100 : minHF / (minHF - cl);
+}
+
+export function estimateFeeDragApr(
+  equityUsd: number,
+  leverage: number,
+  rebalancesPerYear: number,
+  xlmPriceUsd: number,
+  feeXlm: number = ESTIMATED_REBALANCE_FEE_XLM,
+): number {
+  if (equityUsd <= 0 || leverage <= 0 || rebalancesPerYear <= 0 || xlmPriceUsd <= 0 || feeXlm <= 0) return 0;
+  // Annual fee drag APR = rebalances/year * fee(XLM) * XLM/USD * leverage / equity(USD) * 100.
+  return (rebalancesPerYear * feeXlm * xlmPriceUsd * leverage / equityUsd) * 100;
 }
 
 // ── Safety guards ────────────────────────────────────────────────────────────
