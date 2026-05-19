@@ -129,6 +129,7 @@ async function switchNetwork(net: NetworkMode) {
   btn.textContent = net === "testnet" ? "Testnet" : "Mainnet";
   btn.classList.toggle("testnet-active", net === "testnet");
   $("testnet-banner").classList.toggle("hidden", net !== "testnet");
+  syncStaticExplorerLinks();
   ($("fund-testnet-btn") as HTMLButtonElement).disabled = false;
   ($("fund-testnet-btn") as HTMLButtonElement).textContent = "Fund Wallet";
 
@@ -159,6 +160,7 @@ async function switchNetwork(net: NetworkMode) {
   buildPoolTabs();
   buildAssetTabs();
   renderPoolFooter();
+  renderTxHistory();
   updatePreview();
 
   // Prompt user to switch wallet network
@@ -336,6 +338,24 @@ const fmt  = (n: number, d = 2) =>
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
+type StellarExpertResource = "tx" | "contract" | "account" | "asset";
+
+function stellarExpertBaseUrl(network: NetworkMode = getActiveNetwork()) {
+  const segment = network === "testnet" ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${segment}`;
+}
+
+function stellarExpertUrl(resource: StellarExpertResource, id: string, network: NetworkMode = getActiveNetwork()) {
+  return `${stellarExpertBaseUrl(network)}/${resource}/${encodeURIComponent(id)}`;
+}
+
+function syncStaticExplorerLinks() {
+  document.querySelectorAll<HTMLAnchorElement>('a[href="https://stellar.expert"], a[data-explorer-home="stellar"]').forEach(link => {
+    link.href = stellarExpertBaseUrl();
+    link.dataset.explorerHome = "stellar";
+  });
+}
+
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
 function setSkeleton(id: string) {
@@ -404,7 +424,7 @@ function toast(msg: string, type: "info" | "success" | "error", hash?: string) {
   el.setAttribute("role", "alert");
   const icon = type === "success" ? "\u2713" : type === "error" ? "\u2717" : "\u27F3";
   const linkHtml = hash
-    ? ` <a class="toast-link" href="https://stellar.expert/explorer/public/tx/${hash}" target="_blank" rel="noopener">View \u2192</a>`
+    ? ` <a class="toast-link" href="${stellarExpertUrl("tx", hash)}" target="_blank" rel="noopener">View \u2192</a>`
     : "";
   el.innerHTML = `<span>${icon}</span><span>${msg}</span>${linkHtml}`;
   stack.appendChild(el);
@@ -416,16 +436,17 @@ function toast(msg: string, type: "info" | "success" | "error", hash?: string) {
 
 const TX_HISTORY_KEY = "blendlev_tx_history";
 const TX_HISTORY_MAX = 10;
+type TxHistoryItem = { label: string; hash: string; status: string; time: number; network?: NetworkMode };
 
 function addTxToHistory(label: string, hash: string, status: "success" | "error") {
   const history = getTxHistory();
-  history.unshift({ label, hash, status, time: Date.now() });
+  history.unshift({ label, hash, status, time: Date.now(), network: getActiveNetwork() });
   if (history.length > TX_HISTORY_MAX) history.pop();
   localStorage.setItem(TX_HISTORY_KEY, JSON.stringify(history));
   renderTxHistory();
 }
 
-function getTxHistory(): Array<{ label: string; hash: string; status: string; time: number }> {
+function getTxHistory(): TxHistoryItem[] {
   const raw = localStorage.getItem(TX_HISTORY_KEY);
   return raw ? JSON.parse(raw) : [];
 }
@@ -442,7 +463,7 @@ function renderTxHistory() {
       <span class="tx-history-status-${tx.status === "success" ? "ok" : "err"}">${tx.status === "success" ? "\u2713" : "\u2717"}</span>
       <span class="tx-history-label">${tx.label}</span>
       <span class="tx-history-time">${timeStr}</span>
-      <a class="tx-history-link" href="https://stellar.expert/explorer/public/tx/${tx.hash}" target="_blank" rel="noopener">View</a>
+      <a class="tx-history-link" href="${stellarExpertUrl("tx", tx.hash, tx.network ?? getActiveNetwork())}" target="_blank" rel="noopener">View</a>
     </div>`;
   }).join("");
 }
@@ -866,7 +887,7 @@ function renderPoolFooter() {
   const addr = selectedPool.id;
   const truncated = addr.slice(0, 6) + "\u2026" + addr.slice(-4);
   footer.innerHTML = `
-    <span>Pool: <a href="https://stellar.expert/explorer/public/contract/${addr}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
+    <span>Pool: <a href="${stellarExpertUrl("contract", addr)}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
     <span>\u00B7</span>
     <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
     <span>\u00B7</span>
@@ -2259,6 +2280,7 @@ $("demo-btn").addEventListener("click", () => {
 updatePreview();
 renderTxHistory();
 renderPoolFooter();
+syncStaticExplorerLinks();
 initTooltips();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
@@ -2479,13 +2501,10 @@ async function refreshVaultView() {
   $("vault-loops").textContent = String(vault.targetLoops);
 
   // Contract link
-  const explorerBase = getActiveNetwork() === "testnet"
-    ? "https://stellar.expert/explorer/testnet/contract/"
-    : "https://stellar.expert/explorer/public/contract/";
   const linkEl = $("vault-contract-link") as HTMLAnchorElement;
   if (vaultReady) {
     linkEl.textContent = vault.vaultId.slice(0, 8) + "..." + vault.vaultId.slice(-4);
-    linkEl.href = explorerBase + vault.vaultId;
+    linkEl.href = stellarExpertUrl("contract", vault.vaultId);
   } else {
     linkEl.textContent = "Not deployed";
     linkEl.href = "#";
@@ -2726,6 +2745,7 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     $("network-toggle").classList.add("testnet-active");
     $("testnet-banner").classList.remove("hidden");
   }
+  syncStaticExplorerLinks();
 
   const saved = localStorage.getItem("walletAddress");
   if (!saved) return;
