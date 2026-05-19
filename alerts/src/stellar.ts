@@ -72,18 +72,6 @@ function addressToScVal(addr: string): string {
   return JSON.stringify({ type: "Address", value: addr });
 }
 
-/** Build a simulateTransaction JSON-RPC request body. */
-function buildSimulateBody(contractId: string, method: string, args: any[]): object {
-  return {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "simulateTransaction",
-    params: {
-      transaction: buildInvokeXdr(contractId, method, args),
-    },
-  };
-}
-
 // We need proper XDR encoding. Since we can't use the SDK in a worker easily,
 // we'll use the soroban-rpc's native JSON interface via stellar-sdk-like encoding.
 // Actually, the simplest approach: build a minimal transaction envelope in base64.
@@ -101,6 +89,8 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  cFactor: number;
+  lFactor: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -172,6 +162,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
 
     const totalSupply = Number(bSupply * BigInt(Math.round(Number(bRate))) / BigInt(RATE_DEC)) / SCALAR;
     const totalBorrow = Number(dSupply * BigInt(Math.round(Number(dRate))) / BigInt(RATE_DEC)) / SCALAR;
+    const cFactor = Number(reserveRaw.config?.c_factor ?? 0) / SCALAR;
+    const lFactor = Number(reserveRaw.config?.l_factor ?? 0) / SCALAR;
 
     // ── Interest rate formula (Blend v2) ──
     const util = totalSupply > 0 ? totalBorrow / totalSupply : 0;
@@ -224,6 +216,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      cFactor,
+      lFactor,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
@@ -234,4 +228,12 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
 /** Compute net APY at a given leverage. */
 export function computeNetApy(rates: ReserveRates, leverage: number): number {
   return rates.netSupplyApr * leverage - rates.netBorrowCost * (leverage - 1);
+}
+
+/** Compute same-asset Blend health factor at a leverage bracket. */
+export function computeHealthFactor(rates: ReserveRates, leverage: number): number {
+  if (leverage <= 1) return Infinity;
+  const effectiveCollateral = rates.cFactor * leverage;
+  const effectiveDebt = (leverage - 1) / Math.max(rates.lFactor, Number.EPSILON);
+  return effectiveDebt > 0 ? effectiveCollateral / effectiveDebt : Infinity;
 }

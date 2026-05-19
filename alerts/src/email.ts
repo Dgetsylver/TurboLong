@@ -41,7 +41,7 @@ export async function sendVerificationEmail(env: Env, to: string, verifyUrl: str
 <head><meta charset="utf-8"></head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
   <h2 style="margin: 0 0 16px;">Verify your Turbolong alert</h2>
-  <p style="line-height: 1.6; color: #555;">Click the button below to verify your email and activate APY alerts.</p>
+  <p style="line-height: 1.6; color: #555;">Click the button below to verify your email and activate APY and health-factor alerts.</p>
   <a href="${verifyUrl}" style="display: inline-block; margin: 20px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Verify Subscription</a>
   <p style="font-size: 13px; color: #888; margin-top: 24px;">If you didn't subscribe, ignore this email.</p>
 </body>
@@ -97,6 +97,57 @@ export async function sendApyAlert(
     env,
     to,
     `\u26A0 Negative APY: ${assetSymbol} at ${leverage}x on ${poolName}`,
+    html,
+  );
+}
+
+export async function sendHfAlert(
+  env: Env,
+  to: string,
+  opts: {
+    poolName: string;
+    assetSymbol: string;
+    leverage: number;
+    healthFactor: number;
+    threshold: number;
+    netApy: number;
+    unsubscribeUrl: string;
+    appUrl: string;
+  },
+): Promise<SendResult> {
+  const { poolName, assetSymbol, leverage, healthFactor, threshold, netApy, unsubscribeUrl, appUrl } = opts;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
+  <h2 style="margin: 0 0 8px; color: #FF4D6A;">Health Factor Alert</h2>
+  <p style="font-size: 14px; color: #555; margin: 0 0 20px;">${assetSymbol} at ${leverage}x on ${poolName}</p>
+
+  <div style="background: #f8f8fc; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+    <p style="margin: 0 0 8px; font-size: 13px; color: #888;">Current risk estimate</p>
+    <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+      <tr><td style="padding: 4px 0; color: #555;">Health factor</td><td style="padding: 4px 0; text-align: right; font-weight: 700; color: #FF4D6A;">${healthFactor.toFixed(3)}</td></tr>
+      <tr><td style="padding: 4px 0; color: #555;">Alert threshold</td><td style="padding: 4px 0; text-align: right; font-weight: 600;">${threshold.toFixed(3)}</td></tr>
+      <tr style="border-top: 1px solid #e0e0e8;"><td style="padding: 8px 0 4px; color: #555;">Net APY at ${leverage}x</td><td style="padding: 8px 0 4px; text-align: right; font-weight: 600;">${netApy.toFixed(2)}%</td></tr>
+    </table>
+  </div>
+
+  <p style="line-height: 1.6; color: #555;">Your selected leverage bracket is below the health-factor threshold you chose. Consider reducing leverage or adding collateral.</p>
+
+  <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
+
+  <p style="font-size: 12px; color: #aaa; margin-top: 32px;">
+    <a href="${unsubscribeUrl}" style="color: #aaa;">Unsubscribe</a> from this alert.
+  </p>
+</body>
+</html>`.trim();
+
+  return sendEmail(
+    env,
+    to,
+    `Health Factor Alert: ${assetSymbol} at ${leverage}x on ${poolName}`,
     html,
   );
 }
