@@ -19,7 +19,8 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Val, Vec,
+    contract, contractevent, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal,
+    String, Val, Vec,
 };
 use storage::{extend_instance_ttl, Config};
 
@@ -29,6 +30,37 @@ fn check_positive_amount(amount: i128) -> Result<(), StrategyError> {
     } else {
         Ok(())
     }
+}
+
+fn ensure_not_paused(e: &Env) -> Result<(), StrategyError> {
+    if storage::is_paused(e) {
+        Err(StrategyError::InvalidArgument)
+    } else {
+        Ok(())
+    }
+}
+
+fn require_admin(e: &Env, admin: &Address) -> Result<(), StrategyError> {
+    admin.require_auth();
+    if *admin != storage::get_admin(e) {
+        return Err(StrategyError::NotAuthorized);
+    }
+    Ok(())
+}
+
+#[contractevent(data_format = "single-value", topics = ["pause_state"])]
+pub struct PauseState {
+    #[topic]
+    admin: Address,
+    paused: bool,
+}
+
+fn emit_pause_state(e: &Env, admin: &Address, paused: bool) {
+    PauseState {
+        admin: admin.clone(),
+        paused,
+    }
+    .publish(e);
 }
 
 const STRATEGY_NAME: &str = "BlendLeverageStrategy";
@@ -49,6 +81,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [5] c_factor: i128         — collateral factor (1e7)
     ///   [6] target_loops: u32      — number of leverage loops
     ///   [7] min_hf: i128           — minimum health factor (1e7)
+    ///   [8] admin: Address         — optional emergency pause admin, defaults to keeper
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -82,6 +115,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .get(7)
             .expect("Missing: min_hf")
             .into_val(&e);
+        let admin: Address = match init_args.get(8) {
+            Some(value) => value.into_val(&e),
+            None => keeper.clone(),
+        };
 
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
@@ -111,6 +148,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_admin(&e, &admin);
+        storage::set_paused(&e, false);
     }
 
     fn asset(e: Env) -> Result<Address, StrategyError> {
@@ -127,6 +166,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// 4. Return the depositor's underlying balance
     fn deposit(e: Env, amount: i128, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
+        ensure_not_paused(&e)?;
         check_positive_amount(amount)?;
         from.require_auth();
 
@@ -205,6 +245,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// No new shares are minted — this increases per-share equity.
     fn harvest(e: Env, from: Address, data: Option<Bytes>) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
+        ensure_not_paused(&e)?;
 
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
@@ -352,6 +393,36 @@ impl BlendLeverageStrategy {
     pub fn get_keeper(e: Env) -> Result<Address, StrategyError> {
         extend_instance_ttl(&e);
         Ok(storage::get_keeper(&e))
+    }
+
+    /// Emergency pause: blocks deposits and harvest re-looping, while withdrawals remain available.
+    pub fn pause(e: Env, admin: Address) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        require_admin(&e, &admin)?;
+        storage::set_paused(&e, true);
+        emit_pause_state(&e, &admin, true);
+        Ok(())
+    }
+
+    /// Resume deposits and harvest re-looping after an emergency pause.
+    pub fn unpause(e: Env, admin: Address) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        require_admin(&e, &admin)?;
+        storage::set_paused(&e, false);
+        emit_pause_state(&e, &admin, false);
+        Ok(())
+    }
+
+    /// Get the configured emergency pause admin.
+    pub fn get_admin(e: Env) -> Result<Address, StrategyError> {
+        extend_instance_ttl(&e);
+        Ok(storage::get_admin(&e))
+    }
+
+    /// Whether deposits and harvest re-looping are currently paused.
+    pub fn is_paused(e: Env) -> Result<bool, StrategyError> {
+        extend_instance_ttl(&e);
+        Ok(storage::is_paused(&e))
     }
 
     /// Get current health factor (1e7 scaled).

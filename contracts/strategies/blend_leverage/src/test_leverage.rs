@@ -391,7 +391,12 @@ extern crate std;
 
 use crate::reserves;
 use crate::storage;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use crate::{BlendLeverageStrategy, StrategyError};
+use defindex_strategy_core::DeFindexStrategyTrait;
+use soroban_sdk::{
+    testutils::{Address as _, EnvTestConfig},
+    Address, Env,
+};
 
 fn make_reserves(b: i128, d: i128, shares: i128) -> LeverageReserves {
     LeverageReserves {
@@ -416,6 +421,71 @@ fn with_contract<F: FnOnce(&Env, &Address)>(e: &Env, f: F) {
     let contract_id = e.register(TestStorageContract, ());
     e.as_contract(&contract_id, || {
         f(e, &contract_id);
+    });
+}
+
+fn env_without_snapshots() -> Env {
+    Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
+#[test]
+fn test_admin_can_pause_and_unpause() {
+    let e = env_without_snapshots();
+    e.mock_all_auths();
+    let admin = Address::generate(&e);
+    let contract_id = e.register(TestStorageContract, ());
+
+    e.as_contract(&contract_id, || {
+        storage::set_admin(&e, &admin);
+        storage::set_paused(&e, false);
+
+        assert_eq!(BlendLeverageStrategy::get_admin(e.clone()).unwrap(), admin.clone());
+        assert!(!BlendLeverageStrategy::is_paused(e.clone()).unwrap());
+
+        BlendLeverageStrategy::pause(e.clone(), admin.clone()).unwrap();
+        assert!(BlendLeverageStrategy::is_paused(e.clone()).unwrap());
+    });
+
+    e.as_contract(&contract_id, || {
+        BlendLeverageStrategy::unpause(e.clone(), admin).unwrap();
+        assert!(!BlendLeverageStrategy::is_paused(e.clone()).unwrap());
+    });
+}
+
+#[test]
+fn test_only_admin_can_pause() {
+    let e = env_without_snapshots();
+    e.mock_all_auths();
+    with_contract(&e, |e, _| {
+        let admin = Address::generate(e);
+        let other = Address::generate(e);
+        storage::set_admin(e, &admin);
+
+        let result = BlendLeverageStrategy::pause(e.clone(), other);
+        assert_eq!(result, Err(StrategyError::NotAuthorized));
+        assert!(!storage::is_paused(e));
+    });
+}
+
+#[test]
+fn test_pause_guard_blocks_new_loop_paths() {
+    let e = env_without_snapshots();
+    with_contract(&e, |e, _| {
+        let user = Address::generate(e);
+        storage::set_paused(e, false);
+        assert_eq!(crate::ensure_not_paused(e), Ok(()));
+
+        storage::set_paused(e, true);
+        assert_eq!(
+            BlendLeverageStrategy::deposit(e.clone(), 1, user.clone()),
+            Err(StrategyError::InvalidArgument)
+        );
+        assert_eq!(
+            BlendLeverageStrategy::harvest(e.clone(), user, None),
+            Err(StrategyError::InvalidArgument)
+        );
     });
 }
 

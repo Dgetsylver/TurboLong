@@ -19,6 +19,8 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
+    Admin,
+    Paused,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -147,6 +149,45 @@ pub fn get_keeper(e: &Env) -> Address {
         .persistent()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
+}
+
+pub fn set_admin(e: &Env, admin: &Address) {
+    e.storage()
+        .persistent()
+        .set(&DataKey::Admin, admin);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Admin,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn get_admin(e: &Env) -> Address {
+    e.storage()
+        .persistent()
+        .get(&DataKey::Admin)
+        .expect("Admin not set")
+}
+
+pub fn set_paused(e: &Env, paused: bool) {
+    e.storage().persistent().set(&DataKey::Paused, &paused);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Paused,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn is_paused(e: &Env) -> bool {
+    let paused = e.storage().persistent().get(&DataKey::Paused).unwrap_or(false);
+    if paused {
+        e.storage().persistent().extend_ttl(
+            &DataKey::Paused,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+    paused
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────
