@@ -89,6 +89,9 @@ let positions:   UserPositions   = { byAsset: new Map() };
 let selectedPool: PoolDef        = getKnownPools()[0]; // default: Etherfuse
 let assets: AssetInfo[]          = getPoolAssets(selectedPool);
 let selectedAsset: AssetInfo     = assets[2]; // default: CETES (index 2 in Etherfuse)
+let _overviewExportBlendPositions: OverviewBlendPosition[] = [];
+let _overviewExportVaultPositions: OverviewVaultPosition[] = [];
+let _overviewExportWallet: string | null = null;
 
 // ── Network switching ────────────────────────────────────────────────────────
 
@@ -119,6 +122,9 @@ async function switchNetwork(net: NetworkMode) {
   // Reset state
   reserves = [];
   positions = { byAsset: new Map() };
+  _overviewExportBlendPositions = [];
+  _overviewExportVaultPositions = [];
+  _overviewExportWallet = null;
   demoMode = false;
   selectedPool = getKnownPools()[0];
   assets = getPoolAssets(selectedPool);
@@ -417,17 +423,72 @@ function toast(msg: string, type: "info" | "success" | "error", hash?: string) {
 const TX_HISTORY_KEY = "blendlev_tx_history";
 const TX_HISTORY_MAX = 10;
 
+type TxHistoryEntry = {
+  label: string;
+  hash: string;
+  status: "success" | "error" | string;
+  time: number;
+  network?: NetworkMode;
+};
+
+type ExportRow = Record<string, string | number>;
+
+const EXPORT_HEADERS = [
+  "record_type",
+  "exported_at",
+  "wallet_address",
+  "wallet_prefix",
+  "network",
+  "protocol",
+  "pool_name",
+  "pool_id",
+  "asset_symbol",
+  "asset_name",
+  "asset_id",
+  "collateral",
+  "debt",
+  "equity",
+  "collateral_usd",
+  "debt_usd",
+  "equity_usd",
+  "leverage",
+  "health_factor",
+  "net_apy",
+  "price_usd",
+  "c_factor",
+  "l_factor",
+  "b_tokens",
+  "d_tokens",
+  "vault_name",
+  "vault_id",
+  "vault_value_usdc",
+  "vault_shares",
+  "vault_health_factor",
+  "event_type",
+  "event_timestamp",
+  "tx_hash",
+  "tx_status",
+  "tx_label",
+  "tx_url",
+];
+
 function addTxToHistory(label: string, hash: string, status: "success" | "error") {
   const history = getTxHistory();
-  history.unshift({ label, hash, status, time: Date.now() });
+  history.unshift({ label, hash, status, time: Date.now(), network: getActiveNetwork() });
   if (history.length > TX_HISTORY_MAX) history.pop();
   localStorage.setItem(TX_HISTORY_KEY, JSON.stringify(history));
   renderTxHistory();
 }
 
-function getTxHistory(): Array<{ label: string; hash: string; status: string; time: number }> {
+function getTxHistory(): TxHistoryEntry[] {
   const raw = localStorage.getItem(TX_HISTORY_KEY);
-  return raw ? JSON.parse(raw) : [];
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function renderTxHistory() {
@@ -448,6 +509,209 @@ function renderTxHistory() {
 }
 
 // ── TX Stepper (#10) ─────────────────────────────────────────────────────────
+
+function blankExportRow(): ExportRow {
+  return Object.fromEntries(EXPORT_HEADERS.map(header => [header, ""])) as ExportRow;
+}
+
+function getExportWallet() {
+  const wallet = userAddress ?? (demoMode ? "demo-wallet" : "");
+  const prefix = wallet ? wallet.slice(0, 8) : "wallet";
+  return { wallet, prefix };
+}
+
+function numberField(value: number, decimals = 8): number | string {
+  if (!Number.isFinite(value)) return "";
+  return Number(value.toFixed(decimals));
+}
+
+function classifyTxEvent(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("open")) return "open";
+  if (normalized.includes("close")) return "close";
+  if (normalized.includes("rebalance")) return "rebalance";
+  if (normalized.includes("withdraw")) return "withdraw";
+  if (normalized.includes("repay")) return "repay";
+  if (normalized.includes("deposit") || normalized.includes("add ") || normalized.includes("resupply")) return "deposit";
+  if (normalized.includes("increase") || normalized.includes("decrease") || normalized.includes("adjust")) return "adjust";
+  if (normalized.includes("claim")) return "claim";
+  if (normalized.includes("swap")) return "swap";
+  if (normalized.includes("approve")) return "approve";
+  return "transaction";
+}
+
+function stellarTxUrl(network: NetworkMode, hash: string): string {
+  const route = network === "testnet" ? "testnet" : "public";
+  return hash ? `https://stellar.expert/explorer/${route}/tx/${hash}` : "";
+}
+
+function selectedPoolExportPositions(): OverviewBlendPosition[] {
+  return Array.from(positions.byAsset.values()).map(pos => ({
+    pool: selectedPool,
+    asset: pos.asset,
+    pos,
+    reserves,
+  }));
+}
+
+function buildPositionExportRows(exportedAt: string, wallet: string, prefix: string, network: NetworkMode): ExportRow[] {
+  const useOverviewCache = activeView === "overview" && _overviewExportWallet === wallet;
+  const blendPositions = useOverviewCache ? _overviewExportBlendPositions : selectedPoolExportPositions();
+  const vaultPositions = useOverviewCache ? _overviewExportVaultPositions : [];
+  const rows: ExportRow[] = [];
+
+  for (const entry of blendPositions) {
+    const rs = entry.reserves.find(r => r.asset.id === entry.asset.id);
+    const priceUsd = rs?.priceUsd ?? 0;
+    const netApr = rs ? rs.netSupplyApr * entry.pos.leverage - rs.netBorrowCost * (entry.pos.leverage - 1) : 0;
+    const row = blankExportRow();
+    row.record_type = "position";
+    row.exported_at = exportedAt;
+    row.wallet_address = wallet;
+    row.wallet_prefix = prefix;
+    row.network = network;
+    row.protocol = "Blend";
+    row.pool_name = entry.pool.name;
+    row.pool_id = entry.pool.id;
+    row.asset_symbol = entry.asset.symbol;
+    row.asset_name = entry.asset.name;
+    row.asset_id = entry.asset.id;
+    row.collateral = numberField(entry.pos.collateral);
+    row.debt = numberField(entry.pos.debt);
+    row.equity = numberField(entry.pos.equity);
+    row.collateral_usd = numberField(entry.pos.collateral * priceUsd);
+    row.debt_usd = numberField(entry.pos.debt * priceUsd);
+    row.equity_usd = numberField(entry.pos.equity * priceUsd);
+    row.leverage = numberField(entry.pos.leverage, 4);
+    row.health_factor = numberField(entry.pos.hf, 6);
+    row.net_apy = numberField(aprToApy(netApr), 6);
+    row.price_usd = numberField(priceUsd);
+    row.c_factor = rs ? numberField(rs.cFactor, 6) : "";
+    row.l_factor = rs ? numberField(rs.lFactor, 6) : "";
+    row.b_tokens = entry.pos.bTokens.toString();
+    row.d_tokens = entry.pos.dTokens.toString();
+    rows.push(row);
+  }
+
+  for (const entry of vaultPositions) {
+    const row = blankExportRow();
+    const hf = entry.stats ? formatHf(entry.stats.healthFactor).text : "";
+    row.record_type = "position";
+    row.exported_at = exportedAt;
+    row.wallet_address = wallet;
+    row.wallet_prefix = prefix;
+    row.network = network;
+    row.protocol = "DeFindex";
+    row.vault_name = entry.vault.name;
+    row.vault_id = entry.vault.vaultId;
+    row.asset_symbol = entry.vault.assetSymbol;
+    row.asset_name = entry.vault.assetSymbol;
+    row.asset_id = entry.vault.assetId;
+    row.equity_usd = numberField(entry.userPos.underlyingValue);
+    row.vault_value_usdc = numberField(entry.userPos.underlyingValue);
+    row.vault_shares = numberField(entry.userPos.shares);
+    row.vault_health_factor = hf;
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function buildEventExportRows(exportedAt: string, wallet: string, prefix: string, fallbackNetwork: NetworkMode): ExportRow[] {
+  return getTxHistory().map(tx => {
+    const network = tx.network ?? fallbackNetwork;
+    const row = blankExportRow();
+    row.record_type = "event";
+    row.exported_at = exportedAt;
+    row.wallet_address = wallet;
+    row.wallet_prefix = prefix;
+    row.network = network;
+    row.event_type = classifyTxEvent(tx.label);
+    row.event_timestamp = Number.isFinite(tx.time) ? new Date(tx.time).toISOString() : "";
+    row.tx_hash = tx.hash;
+    row.tx_status = tx.status;
+    row.tx_label = tx.label;
+    row.tx_url = stellarTxUrl(network, tx.hash);
+    return row;
+  });
+}
+
+function buildExportRows(): ExportRow[] {
+  const exportedAt = new Date().toISOString();
+  const network = getActiveNetwork();
+  const { wallet, prefix } = getExportWallet();
+  return [
+    ...buildPositionExportRows(exportedAt, wallet, prefix, network),
+    ...buildEventExportRows(exportedAt, wallet, prefix, network),
+  ];
+}
+
+function toCsv(rows: ExportRow[]): string {
+  const escape = (value: string | number) => {
+    const text = String(value ?? "");
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [
+    EXPORT_HEADERS.join(","),
+    ...rows.map(row => EXPORT_HEADERS.map(header => escape(row[header] ?? "")).join(",")),
+  ].join("\r\n");
+}
+
+function downloadText(filename: string, mimeType: string, body: string) {
+  const blob = new Blob([body], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportPortfolio(format: "csv" | "json") {
+  const rows = buildExportRows();
+  const { prefix } = getExportWallet();
+  const isoDate = new Date().toISOString().slice(0, 10);
+  const filename = `turbolong-${prefix}-${isoDate}.${format}`;
+  if (format === "csv") {
+    downloadText(filename, "text/csv;charset=utf-8", toCsv(rows));
+  } else {
+    downloadText(filename, "application/json;charset=utf-8", JSON.stringify(rows, null, 2));
+  }
+  toast(`Exported ${rows.length} rows as ${format.toUpperCase()}`, "success");
+}
+
+function initExportControls() {
+  const header = document.querySelector(".overview-header");
+  if (!header || document.getElementById("export-csv-btn")) return;
+
+  const actions = document.createElement("div");
+  actions.id = "overview-export-actions";
+  actions.style.display = "flex";
+  actions.style.gap = "6px";
+  actions.style.marginLeft = "auto";
+  actions.setAttribute("aria-label", "Export portfolio data");
+
+  const csvBtn = document.createElement("button");
+  csvBtn.id = "export-csv-btn";
+  csvBtn.className = "btn btn-ghost btn-sm";
+  csvBtn.type = "button";
+  csvBtn.textContent = "CSV";
+  csvBtn.title = "Export positions and transaction history as CSV";
+  csvBtn.addEventListener("click", () => exportPortfolio("csv"));
+
+  const jsonBtn = document.createElement("button");
+  jsonBtn.id = "export-json-btn";
+  jsonBtn.className = "btn btn-ghost btn-sm";
+  jsonBtn.type = "button";
+  jsonBtn.textContent = "JSON";
+  jsonBtn.title = "Export positions and transaction history as JSON";
+  jsonBtn.addEventListener("click", () => exportPortfolio("json"));
+
+  actions.append(csvBtn, jsonBtn);
+  header.insertBefore(actions, $("overview-refresh-btn"));
+}
 
 let _stepperTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1739,6 +2003,9 @@ async function switchWallet() {
     $("wallet-address").textContent = fmtAddr(userAddress);
     reserves  = [];
     positions = { byAsset: new Map() };
+    _overviewExportBlendPositions = [];
+    _overviewExportVaultPositions = [];
+    _overviewExportWallet = null;
     await loadAll();
     toast("Switched wallet", "success");
   } catch (e: any) {
@@ -1752,6 +2019,9 @@ async function disconnect() {
   localStorage.removeItem("walletAddress");
   reserves    = [];
   positions   = { byAsset: new Map() };
+  _overviewExportBlendPositions = [];
+  _overviewExportVaultPositions = [];
+  _overviewExportWallet = null;
   $("connect-btn").classList.remove("hidden");
   $("wallet-connected").classList.add("hidden");
   $("connect-prompt").classList.remove("hidden");
@@ -2260,6 +2530,7 @@ updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+initExportControls();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 
@@ -2319,6 +2590,9 @@ async function loadOverview() {
   });
 
   await Promise.all([...poolFetches, ...vaultFetches]);
+  _overviewExportBlendPositions = blendPositions;
+  _overviewExportVaultPositions = vaultPositions;
+  _overviewExportWallet = userAddress;
   renderOverview(blendPositions, vaultPositions);
   _overviewLoading = false;
 }
@@ -2648,7 +2922,8 @@ $("vault-deposit-btn").addEventListener("click", async () => {
 
     const xdr = await buildVaultDepositXdr(vault, userAddress, amount);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
-    await submitSignedXdr(signedTxXdr);
+    const hash = await submitSignedXdr(signedTxXdr);
+    addTxToHistory(`Deposit ${fmt(amount, 2)} ${vault.assetSymbol} to ${vault.name}`, hash, "success");
     await refreshVaultView();
     ($("vault-deposit-input") as HTMLInputElement).value = "";
   } catch (err: any) {
@@ -2677,7 +2952,8 @@ $("vault-withdraw-btn").addEventListener("click", async () => {
 
     const xdr = await buildVaultWithdrawXdr(vault, userAddress, amount);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
-    await submitSignedXdr(signedTxXdr);
+    const hash = await submitSignedXdr(signedTxXdr);
+    addTxToHistory(`Withdraw ${fmt(amount, 2)} ${vault.assetSymbol} from ${vault.name}`, hash, "success");
     await refreshVaultView();
     ($("vault-withdraw-input") as HTMLInputElement).value = "";
   } catch (err: any) {
@@ -2699,7 +2975,8 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
 
     const xdr = await buildVaultRebalanceXdr(vault, userAddress);
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
-    await submitSignedXdr(signedTxXdr);
+    const hash = await submitSignedXdr(signedTxXdr);
+    addTxToHistory(`Rebalance ${vault.name}`, hash, "success");
     await refreshVaultView();
   } catch (err: any) {
     alert("Rebalance failed: " + (err.message || err));
