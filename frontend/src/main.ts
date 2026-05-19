@@ -1167,6 +1167,25 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
+function renderLiveHfPreview(hf: number) {
+  const preview = $("hf-live-preview");
+  const value = $("hf-live-value");
+  const status = $("hf-live-status");
+  const min = minHF();
+  const finite = Number.isFinite(hf);
+  const display = finite ? fmt(hf, expertMode ? 5 : 3) : hf > 0 ? "\u221E" : "--";
+  const state = !finite ? (hf > 0 ? "ok" : "bad") : hf >= 1.1 ? "ok" : hf >= min ? "warn" : "bad";
+
+  value.textContent = display;
+  value.className = `hf-live-value ${state === "ok" ? "hf-ok" : state === "warn" ? "hf-warn" : "hf-bad"}`;
+  status.textContent = state === "ok"
+    ? `Safe above ${fmt(min, expertMode ? 5 : 3)} min`
+    : state === "warn"
+      ? `Near ${fmt(min, expertMode ? 5 : 3)} minimum`
+      : `Below ${fmt(min, expertMode ? 5 : 3)} minimum`;
+  preview.className = `hf-live-preview hf-live-${state}`;
+}
+
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -1178,6 +1197,7 @@ function updatePreview() {
   const l       = rs?.lFactor ?? 1;
   const hf      = hfForLeverage(lev, c, l);
   const pos     = positions.byAsset.get(selectedAsset.id);
+  renderLiveHfPreview(hf);
 
   // In adjust mode, use equity as the base; in add-funds mode, use the add-funds input; in open mode, use initial deposit
   const equity  = (actionMode === "adjust" && pos) ? pos.equity
