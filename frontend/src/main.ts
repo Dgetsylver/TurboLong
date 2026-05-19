@@ -51,6 +51,7 @@ import {
   type AssetPosition,
   type UserPositions,
   projectRates,
+  projectRatesAtUtilization,
 } from "./blend.ts";
 
 import {
@@ -1167,6 +1168,79 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
+function clampStressUtil(value: number): number {
+  return Math.max(1, Math.min(99.9, value));
+}
+
+function stressDaysToLiquidation(hf: number, spreadPct: number): number {
+  return spreadPct > 0 && isFinite(hf) && hf > 1
+    ? Math.log(hf) / (spreadPct / 100) * 365
+    : Infinity;
+}
+
+function formatStressDays(days: number): string {
+  if (!isFinite(days)) return "Never";
+  return days > 3650 ? ">10y" : `~${Math.round(days)}d`;
+}
+
+function stressDayClass(days: number): string {
+  if (!isFinite(days)) return "hf-ok";
+  return days < 30 ? "hf-bad" : days < 90 ? "hf-warn" : "hf-ok";
+}
+
+function setStressValue(id: string, text: string, className = "") {
+  const el = $(id);
+  el.textContent = text;
+  el.className = className;
+}
+
+function updateDownsideCalculator(
+  rs: ReserveStats,
+  lev: number,
+  equity: number,
+  oldSupply: number,
+  oldBorrow: number,
+  hf: number,
+  currentProj: ReturnType<typeof projectRates>,
+) {
+  const targetInput = $("downside-util-input") as HTMLInputElement;
+  const rawTarget = parseFloat(targetInput.value);
+  const targetUtil = clampStressUtil(isFinite(rawTarget) ? rawTarget : 97);
+  const supplyDelta = equity * lev - oldSupply;
+  const borrowDelta = equity * (lev - 1) - oldBorrow;
+  const baseSupply = Number.isFinite(rs.totalSupply) ? rs.totalSupply : 0;
+  const baseBorrow = Number.isFinite(rs.totalBorrow) ? rs.totalBorrow : 0;
+  const projectedSupply = Math.max(0, baseSupply + supplyDelta);
+  const projectedBorrow = Math.max(0, baseBorrow + borrowDelta);
+  const currentUtil = projectedSupply > 0 ? (projectedBorrow / projectedSupply) * 100 : 0;
+  const targetProj = projectRatesAtUtilization(rs, targetUtil, supplyDelta);
+
+  const currentNetApr = currentProj.netSupplyApr * lev - currentProj.netBorrowCost * (lev - 1);
+  const targetNetApr = targetProj.netSupplyApr * lev - targetProj.netBorrowCost * (lev - 1);
+  const currentNetApy = aprToApy(currentNetApr);
+  const targetNetApy = aprToApy(targetNetApr);
+  const currentSpread = currentProj.interestBorrowApr - currentProj.interestSupplyApr;
+  const targetSpread = targetProj.interestBorrowApr - targetProj.interestSupplyApr;
+  const currentDays = stressDaysToLiquidation(hf, currentSpread);
+  const targetDays = stressDaysToLiquidation(hf, targetSpread);
+  const targetDecay = targetSpread / 365;
+  const currentDecay = currentSpread / 365;
+
+  setStressValue("downside-net-apy", `${targetNetApy >= 0 ? "+" : ""}${fmt(targetNetApy, 2)}%`, targetNetApy >= 0 ? "hf-ok" : "hf-bad");
+  setStressValue("downside-hf-decay", `${targetDecay >= 0 ? "+" : ""}${fmt(targetDecay, 4)}%/day`, targetDecay > 0.02 ? "hf-bad" : targetDecay > 0.005 ? "hf-warn" : "hf-ok");
+  setStressValue("downside-liq-days", formatStressDays(targetDays), stressDayClass(targetDays));
+
+  setStressValue("downside-current-util", `${fmt(currentUtil, 1)}%`);
+  setStressValue("downside-current-apy", `${currentNetApy >= 0 ? "+" : ""}${fmt(currentNetApy, 2)}%`, currentNetApy >= 0 ? "hf-ok" : "hf-bad");
+  setStressValue("downside-current-decay", `${currentDecay >= 0 ? "+" : ""}${fmt(currentDecay, 4)}%/day`, currentDecay > 0.02 ? "hf-bad" : currentDecay > 0.005 ? "hf-warn" : "hf-ok");
+  setStressValue("downside-current-liq", formatStressDays(currentDays), stressDayClass(currentDays));
+
+  setStressValue("downside-target-util", `${fmt(targetUtil, 1)}%`);
+  setStressValue("downside-target-apy", `${targetNetApy >= 0 ? "+" : ""}${fmt(targetNetApy, 2)}%`, targetNetApy >= 0 ? "hf-ok" : "hf-bad");
+  setStressValue("downside-target-decay", `${targetDecay >= 0 ? "+" : ""}${fmt(targetDecay, 4)}%/day`, targetDecay > 0.02 ? "hf-bad" : targetDecay > 0.005 ? "hf-warn" : "hf-ok");
+  setStressValue("downside-target-liq", formatStressDays(targetDays), stressDayClass(targetDays));
+}
+
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -1233,6 +1307,8 @@ function updatePreview() {
       prevLiqEl.textContent = "\u2014";
       prevLiqEl.className   = "";
     }
+
+    updateDownsideCalculator(rs, lev, equity, oldSupply, oldBorrow, hf, proj);
 
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
@@ -2224,6 +2300,16 @@ async function refreshAddFundsBalance() {
 });
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
+$("downside-toggle").addEventListener("click", () => {
+  $("downside-calculator").classList.toggle("hidden");
+  updatePreview();
+});
+($("downside-util-input") as HTMLInputElement).addEventListener("input", updatePreview);
+($("downside-util-input") as HTMLInputElement).addEventListener("change", () => {
+  const input = $("downside-util-input") as HTMLInputElement;
+  input.value = clampStressUtil(parseFloat(input.value) || 97).toFixed(1);
+  updatePreview();
+});
 
 // ── Demo mode (#17) ──────────────────────────────────────────────────────────
 
