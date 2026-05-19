@@ -584,6 +584,17 @@ export interface ProjectedRates {
  * @param addBorrow Additional tokens borrowed (user's deposit × (leverage − 1))
  */
 export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: number): ProjectedRates {
+  if (!rs.rateConfig) {
+    return {
+      interestSupplyApr: rs.interestSupplyApr,
+      interestBorrowApr: rs.interestBorrowApr,
+      blndSupplyApr: rs.blndSupplyApr,
+      blndBorrowApr: rs.blndBorrowApr,
+      netSupplyApr: rs.netSupplyApr,
+      netBorrowCost: rs.netBorrowCost,
+    };
+  }
+
   const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
   const FIXED_95PCT = 9_500_000;
 
@@ -629,6 +640,21 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
     netSupplyApr:  interestSupplyApr + blndSupplyApr,
     netBorrowCost: interestBorrowApr - blndBorrowApr,
   };
+}
+
+// ── Projected stress helpers ─────────────────────────────────────────────────
+
+export function projectRatesAtUtilization(
+  rs: ReserveStats,
+  targetUtilPct: number,
+  addSupply: number,
+): ProjectedRates {
+  const util = Math.max(0, Math.min(99.9, targetUtilPct)) / 100;
+  const currentSupply = Number.isFinite(rs.totalSupply) ? rs.totalSupply : 0;
+  const currentBorrow = Number.isFinite(rs.totalBorrow) ? rs.totalBorrow : 0;
+  const projectedSupply = Math.max(0, currentSupply + addSupply);
+  const targetBorrow = projectedSupply * util;
+  return projectRates(rs, addSupply, targetBorrow - currentBorrow);
 }
 
 // ── User position ─────────────────────────────────────────────────────────────

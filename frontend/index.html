@@ -423,11 +423,30 @@
                     <span>Borrow headroom</span><strong id="prev-headroom" class="mono">—</strong>
                   </div>
                   <div class="preview-row preview-net-apr">
-                    <span>Est. net APY <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
+                    <span>Est. net APY <span class="tooltip" id="prev-net-tip" data-tip="">?</span> <button type="button" id="downside-toggle" class="downside-link">Rate stress</button></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
                   <div class="preview-row">
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
                   </div>
+                </div>
+                <div id="downside-calculator" class="downside-calculator hidden">
+                  <div class="downside-head">
+                    <strong>What if rates move against you?</strong>
+                    <label>Future utilization <input type="number" id="downside-util-input" min="1" max="99.9" step="0.1" value="97" class="input mono downside-input" />%</label>
+                  </div>
+                  <div class="downside-grid">
+                    <div><span>Net APY at scenario</span><strong id="downside-net-apy">—</strong></div>
+                    <div><span>HF decay rate</span><strong id="downside-hf-decay">—</strong></div>
+                    <div><span>Time to liquidation</span><strong id="downside-liq-days">—</strong></div>
+                  </div>
+                  <table class="downside-table">
+                    <thead><tr><th>Scenario</th><th>Util</th><th>Net APY</th><th>HF decay</th><th>Liquidation</th></tr></thead>
+                    <tbody>
+                      <tr><td>Current projection</td><td id="downside-current-util">—</td><td id="downside-current-apy">—</td><td id="downside-current-decay">—</td><td id="downside-current-liq">—</td></tr>
+                      <tr><td>Future utilization</td><td id="downside-target-util">—</td><td id="downside-target-apy">—</td><td id="downside-target-decay">—</td><td id="downside-target-liq">—</td></tr>
+                    </tbody>
+                  </table>
+                  <p class="downside-note">Stress output reruns the live rate model at the selected utilization and keeps your current leverage. Liquidation timing is interest-only and excludes oracle moves, price changes, and BLND reward changes.</p>
                 </div>
                 <p class="hf-warning hidden" id="hf-warning">&#9888; HF too low — liquidation risk. Reduce leverage.</p>
                 <p class="hf-warning hidden" id="liquidity-warning"></p>
