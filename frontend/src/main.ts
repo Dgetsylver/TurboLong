@@ -1707,7 +1707,7 @@ function showConnected() {
 
 async function connect() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
     if (!networkOk) {
@@ -1729,7 +1729,7 @@ async function connect() {
 /** Re-open wallet modal to switch to a different account without a full page reload. */
 async function switchWallet() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     if (result.address === userAddress) return;
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
@@ -2234,11 +2234,24 @@ $("demo-btn").addEventListener("click", () => {
   $("wallet-address").textContent = "Demo Mode";
   $("switch-wallet-btn").classList.add("hidden");
   // Load mock reserves and positions
-  reserves = assets.map(a => ({
-    asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
-    blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
-    totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
-  }));
+  reserves = assets.map(a => {
+    const totalSupply = 1_000_000;
+    const totalBorrow = 650_000;
+    return {
+      asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
+      blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
+      totalSupply, totalBorrow, available: totalSupply - totalBorrow, priceUsd: 1.0,
+      bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n,
+      bSupply: BigInt(totalSupply * 10_000_000),
+      dSupply: BigInt(totalBorrow * 10_000_000),
+      supplyEps: 0n, borrowEps: 0n,
+      supplyEmission: null, borrowEmission: null,
+      rateConfig: {
+        rBase: 300_000, rOne: 400_000, rTwo: 1_200_000, rThree: 50_000_000,
+        utilOpt: 5_000_000, irMod: 10_000_000, backstopFP: selectedPool.backstopFP,
+      },
+    };
+  });
   positions = { byAsset: new Map() };
   // One sample position
   const sampleAsset = assets[0];
