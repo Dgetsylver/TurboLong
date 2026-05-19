@@ -51,6 +51,7 @@ import {
   type AssetPosition,
   type UserPositions,
   projectRates,
+  nodeCall,
 } from "./blend.ts";
 
 import {
@@ -189,6 +190,7 @@ const TESTNET_USDC_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZL
 
 async function fundTestnetWallet() {
   if (!userAddress || getActiveNetwork() !== "testnet") return;
+  const fundingAddress = userAddress;
   const btn = $("fund-testnet-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Funding...";
@@ -196,7 +198,7 @@ async function fundTestnetWallet() {
   try {
     // Step 1: Friendbot — fund with 10,000 XLM
     toast("Requesting testnet XLM from Friendbot...", "info");
-    const fbRes = await fetch(`https://friendbot.stellar.org?addr=${userAddress}`);
+    const fbRes = await fetch(`https://friendbot.stellar.org?addr=${fundingAddress}`);
     if (!fbRes.ok) {
       // Any friendbot failure is non-fatal — account likely already exists
       toast("Account already exists on testnet, skipping Friendbot", "info");
@@ -209,7 +211,7 @@ async function fundTestnetWallet() {
     const usdcAsset = new Asset("USDC", TESTNET_USDC_ISSUER);
 
     const horizonServer = new Horizon.Server(getHorizonUrl());
-    const acc = await horizonServer.loadAccount(userAddress);
+    const acc = await nodeCall("load Horizon account for testnet funding", () => horizonServer.loadAccount(fundingAddress));
 
     // Check if trustline already exists
     const hasTrustline = acc.balances.some(
@@ -230,7 +232,7 @@ async function fundTestnetWallet() {
       Operation.pathPaymentStrictSend({
         sendAsset: Asset.native(),
         sendAmount: "1000",
-        destination: userAddress,
+        destination: fundingAddress,
         destAsset: usdcAsset,
         destMin: "0.0000001", // accept any amount
         path: [],
@@ -242,10 +244,10 @@ async function fundTestnetWallet() {
     // Sign via wallet kit
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(tx.toXDR(), {
       networkPassphrase: getNetworkPassphrase(),
-      address: userAddress,
+      address: fundingAddress,
     });
     const signedTx = TransactionBuilder.fromXDR(signedTxXdr, getNetworkPassphrase());
-    const result = await horizonServer.submitTransaction(signedTx);
+    const result = await nodeCall("submit Horizon testnet funding transaction", () => horizonServer.submitTransaction(signedTx));
     if (!(result as any).successful) {
       throw new Error("Transaction failed");
     }

@@ -334,14 +334,66 @@ function buildRequestsVec(items: xdr.ScVal[]): xdr.ScVal {
 
 // ── RPC retry helper ──────────────────────────────────────────────────────────
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T> {
+const NODE_MIN_INTERVAL_MS = 250;
+const NODE_BASE_BACKOFF_MS = 900;
+const NODE_MAX_RETRIES = 3;
+
+let nodeQueue: Promise<void> = Promise.resolve();
+let lastNodeCallStartedAt = 0;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+function statusFromError(e: unknown): number | null {
+  const err = e as any;
+  return err?.status ?? err?.response?.status ?? err?.code ?? null;
+}
+
+function retryAfterMs(e: unknown): number | null {
+  const headers = (e as any)?.response?.headers;
+  const raw = headers?.get?.("retry-after") ?? headers?.["retry-after"];
+  const seconds = raw ? Number(raw) : NaN;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+}
+
+function isRateLimitError(e: unknown): boolean {
+  const status = statusFromError(e);
+  const message = String((e as any)?.message ?? e);
+  return status === 429 || /429|too many requests|rate.?limit/i.test(message);
+}
+
+async function waitForNodeSlot(label: string) {
+  const scheduled = nodeQueue.catch(() => {}).then(async () => {
+    const waitMs = Math.max(0, lastNodeCallStartedAt + NODE_MIN_INTERVAL_MS - Date.now());
+    if (waitMs > 0) {
+      console.warn(`[node-rate-limit] throttling ${label} for ${waitMs}ms`);
+      await sleep(waitMs);
+    }
+    lastNodeCallStartedAt = Date.now();
+  });
+  nodeQueue = scheduled.catch(() => {});
+  await scheduled;
+}
+
+export async function nodeCall<T>(
+  label: string,
+  fn: () => Promise<T>,
+  retries = NODE_MAX_RETRIES,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    await waitForNodeSlot(label);
     try {
       return await fn();
     } catch (e) {
       if (attempt >= retries) throw e;
-      console.warn(`RPC call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delayMs}ms...`);
-      await new Promise(r => setTimeout(r, delayMs));
+
+      const jitter = Math.round(Math.random() * 350);
+      const rateDelay = retryAfterMs(e);
+      const backoff = rateDelay ?? NODE_BASE_BACKOFF_MS * (2 ** attempt) + jitter;
+      const reason = isRateLimitError(e) ? "rate limited" : "failed";
+      console.warn(
+        `[node-rate-limit] ${label} ${reason}; retry ${attempt + 1}/${retries} in ${backoff}ms`,
+      );
+      await sleep(backoff);
     }
   }
 }
@@ -355,7 +407,7 @@ async function simulate(op: xdr.Operation): Promise<any> {
     const acc = new Account(NULL_ACCOUNT, "0");
     const tx  = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: _cfg.passphrase })
       .addOperation(op).setTimeout(30).build();
-    const sim = await withRetry(() => server.simulateTransaction(tx));
+    const sim = await nodeCall("simulate read", () => server.simulateTransaction(tx));
     if (!SorobanRpc.Api.isSimulationSuccess(sim)) return null;
     return scValToNative(sim.result!.retval);
   } catch (e) {
@@ -873,10 +925,10 @@ export async function buildApproveXdr(
   const token     = new Contract(assetId);
   const addrScVal = new Address(userAddress).toScVal();
   const poolScVal = new Address(pool.id).toScVal();
-  const ledger    = await server.getLatestLedger();
+  const ledger    = await nodeCall("get latest ledger", () => server.getLatestLedger());
   const expiry    = ledger.sequence + 120;
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await nodeCall("load account for approve", () => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -890,7 +942,7 @@ export async function buildApproveXdr(
     ))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate approve", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Approve simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -908,7 +960,7 @@ export async function buildOpenPositionXdr(
   const addrScVal    = new Address(userAddress).toScVal();
   const requests     = buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await nodeCall("load account for open", () => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -916,7 +968,7 @@ export async function buildOpenPositionXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate open", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Open position simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -955,7 +1007,7 @@ export async function buildCloseSubmitXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for close", () => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -963,7 +1015,7 @@ export async function buildCloseSubmitXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate close", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Close simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -992,7 +1044,7 @@ export async function buildRepayXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for repay", () => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1000,7 +1052,7 @@ export async function buildRepayXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate repay", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Repay simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1023,7 +1075,7 @@ export async function buildWithdrawXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for withdraw", () => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1031,7 +1083,7 @@ export async function buildWithdrawXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate withdraw", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Withdraw simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1079,7 +1131,7 @@ export async function buildClaimXdr(
     tokenIds.map(id => nativeToScVal(id, { type: "u32" }))
   );
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await nodeCall("load account for claim", () => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1087,7 +1139,7 @@ export async function buildClaimXdr(
     .addOperation(poolContract.call("claim", addrScVal, tokenIds_scv, addrScVal))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate claim", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Claim simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1143,7 +1195,7 @@ export async function buildIncreaseLeverageXdr(
   const requests = buildRequestsVec(items);
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for increase leverage", () => server.getAccount(userAddress));
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1151,7 +1203,7 @@ export async function buildIncreaseLeverageXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate increase leverage", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Increase leverage simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1185,7 +1237,7 @@ export async function buildDecreaseLeverageXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for decrease leverage", () => server.getAccount(userAddress));
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1193,7 +1245,7 @@ export async function buildDecreaseLeverageXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate decrease leverage", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Decrease leverage simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1218,7 +1270,7 @@ export async function buildResupplyXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await nodeCall("load account for resupply", () => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1226,7 +1278,7 @@ export async function buildResupplyXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await nodeCall("simulate resupply", () => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Resupply simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1254,9 +1306,10 @@ export async function buildSwapBlndXdr(
   const sendAmount = blndAmount.toFixed(7);
 
   // Find best path via Horizon
-  const paths = await horizon
-    .strictSendPaths(_cfg.blndClassic, sendAmount, [destAsset])
-    .call();
+  const paths = await nodeCall(
+    "find BLND swap path",
+    () => horizon.strictSendPaths(_cfg.blndClassic, sendAmount, [destAsset]).call(),
+  );
 
   if (paths.records.length === 0)
     throw new Error("No swap path found for BLND → " + (destAsset.isNative() ? "XLM" : destAsset.getCode()));
@@ -1271,7 +1324,7 @@ export async function buildSwapBlndXdr(
     p.asset_type === "native" ? Asset.native() : new Asset(p.asset_code, p.asset_issuer)
   );
 
-  const acc = await horizon.loadAccount(userAddress);
+  const acc = await nodeCall("load Horizon account for BLND swap", () => horizon.loadAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: "10000",
     networkPassphrase: _cfg.passphrase,
@@ -1301,9 +1354,10 @@ export async function estimateBlndSwap(
   if (!destAsset) return null;
 
   try {
-    const paths = await horizon
-      .strictSendPaths(_cfg.blndClassic, blndAmount.toFixed(7), [destAsset])
-      .call();
+    const paths = await nodeCall(
+      "estimate BLND swap path",
+      () => horizon.strictSendPaths(_cfg.blndClassic, blndAmount.toFixed(7), [destAsset]).call(),
+    );
     if (paths.records.length === 0) return null;
     const best = paths.records[0];
     const via = best.path.map((p: any) => p.asset_type === "native" ? "XLM" : p.asset_code).join(" → ");
@@ -1320,13 +1374,13 @@ export async function estimateBlndSwap(
 
 export async function submitSignedXdr(signedXdr: string): Promise<string> {
   const tx     = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
-  const result = await withRetry(() => server.sendTransaction(tx));
+  const result = await nodeCall("send transaction", () => server.sendTransaction(tx));
   if (result.status === "ERROR")
     throw new Error(`Send failed: ${result.errorResult?.toXDR("base64")}`);
 
   for (let i = 0; i < 30; i++) {
     await new Promise(r => setTimeout(r, 3000));
-    const poll = await withRetry(() => server.getTransaction(result.hash));
+    const poll = await nodeCall("poll transaction", () => server.getTransaction(result.hash));
     if (poll.status === "SUCCESS") return result.hash;
     if (poll.status === "FAILED")
       throw new Error(`On-chain failure: ${poll.resultXdr?.toXDR("base64")}`);
@@ -1337,6 +1391,6 @@ export async function submitSignedXdr(signedXdr: string): Promise<string> {
 /** Submit a classic (non-Soroban) transaction via Horizon. */
 export async function submitClassicXdr(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
-  const result = await horizon.submitTransaction(tx);
+  const result = await nodeCall("submit Horizon transaction", () => horizon.submitTransaction(tx));
   return (result as any).hash;
 }
