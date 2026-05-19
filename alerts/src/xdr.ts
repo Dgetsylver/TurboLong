@@ -340,7 +340,8 @@ export function decodeScVal(data: Uint8Array, c: Cursor): any {
     case 11: { // SCV_STRING
       return readString(data, c);
     }
-    case 14: { // SCV_SYMBOL
+    case 14: // SCV_STRING in newer Stellar XDR
+    case 15: { // SCV_SYMBOL
       return readString(data, c);
     }
     case 16: { // SCV_VEC
