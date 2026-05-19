@@ -621,6 +621,49 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .slider-zone.active { opacity: 1; font-weight: 800; }
 .slider-zone:not(.active) { opacity: .4; }
 
+.hf-live-preview {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: var(--metric-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+}
+.hf-live-label {
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.hf-live-value {
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1;
+}
+.hf-live-status {
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: right;
+}
+.hf-live-preview.hf-live-ok {
+  background: var(--primary-glow);
+  border-color: var(--success-border);
+}
+.hf-live-preview.hf-live-warn {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+.hf-live-preview.hf-live-bad {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
 /* APY chart */
 .apy-chart { margin: 4px 0 10px; overflow: visible; }
 .apy-chart svg { width: 100%; height: 120px; display: block; overflow: visible; }
@@ -1192,6 +1235,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   .swap-asset-select { width: 100%; }
   .slider-row { flex-wrap: wrap; }
   .leverage-num-input { width: 100%; margin-top: 4px; }
+  .hf-live-preview { grid-template-columns: 1fr auto; }
+  .hf-live-status { grid-column: 1 / -1; text-align: left; }
   #wallet-area { flex-wrap: wrap; gap: 6px; }
   .btn-connect { font-size: 12px; padding: 5px 10px; }
   .slippage-opt { padding: 2px 6px; font-size: 11px; }
