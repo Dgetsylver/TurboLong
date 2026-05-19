@@ -749,6 +749,63 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   </svg>`;
 }
 
+const RATE_SCALAR = 10_000_000;
+const RATE_KINK_95 = 9_500_000;
+const WORST_CASE_UTIL = 0.99;
+const WORST_CASE_DAYS = 30;
+
+function stressRatesAtUtil(rs: ReserveStats, util: number) {
+  const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
+  const utilFp = Math.round(Math.max(0, Math.min(1, util)) * RATE_SCALAR);
+
+  let baseRate: number;
+  if (utilFp <= utilOpt) {
+    baseRate = rBase + Math.ceil(rOne * utilFp / Math.max(1, utilOpt));
+  } else if (utilFp <= RATE_KINK_95) {
+    const slope = Math.ceil((utilFp - utilOpt) * RATE_SCALAR / Math.max(1, RATE_KINK_95 - utilOpt));
+    baseRate = rBase + rOne + Math.ceil(rTwo * slope / RATE_SCALAR);
+  } else {
+    const slope = Math.ceil((utilFp - RATE_KINK_95) * RATE_SCALAR / (RATE_SCALAR - RATE_KINK_95));
+    baseRate = rBase + rOne + rTwo + Math.ceil(rThree * slope / RATE_SCALAR);
+  }
+
+  const curIr = Math.ceil(baseRate * irMod / RATE_SCALAR);
+  const borrowApr = (curIr / RATE_SCALAR) * 100;
+  const supplyCapture = Math.floor((RATE_SCALAR - backstopFP) * utilFp / RATE_SCALAR);
+  const supplyApr = (Math.floor(curIr * supplyCapture / RATE_SCALAR) / RATE_SCALAR) * 100;
+  return { borrowApr, supplyApr, spreadApr: Math.max(0, borrowApr - supplyApr) };
+}
+
+function hfClass(hf: number) {
+  return hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
+}
+
+function renderWorstCasePanel(rs: ReserveStats | undefined, hf: number, lev: number, equity: number, supply: number, borrow: number) {
+  const panel = $("worst-case-panel") as HTMLElement;
+  if (!rs || !rs.rateConfig || !isFinite(hf) || hf <= 0 || lev <= 1 || equity <= 0 || borrow <= 0) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const { borrowApr, supplyApr, spreadApr } = stressRatesAtUtil(rs, WORST_CASE_UTIL);
+  const hf30 = hf * Math.exp(-(spreadApr / 100) * (WORST_CASE_DAYS / 365));
+  const hfDigits = expertMode ? 5 : 4;
+
+  const hfEl = $("worst-case-hf");
+  hfEl.textContent = `${fmt(hf, hfDigits)} -> ${fmt(hf30, hfDigits)}`;
+  hfEl.className = hfClass(hf30);
+  const hf30El = $("worst-case-hf-30d");
+  hf30El.textContent = fmt(hf30, hfDigits);
+  hf30El.className = hfClass(hf30);
+  $("worst-case-borrow").textContent = `${fmt(borrowApr, 2)}%`;
+  $("worst-case-spread").textContent = `${fmt(spreadApr, 2)}%`;
+  $("worst-case-copy").textContent =
+    `If r_three is active and utilization stays at 99% for ${WORST_CASE_DAYS} days, this ${fmt(lev, 1)}x position ` +
+    `supplies ${fmt(supply, 2)} ${rs.asset.symbol}, borrows ${fmt(borrow, 2)} ${rs.asset.symbol}, and HF moves from ` +
+    `${fmt(hf, hfDigits)} to ${fmt(hf30, hfDigits)}. Supply APR at stress is ${fmt(supplyApr, 2)}%.`;
+  panel.classList.remove("hidden");
+}
+
 // ── Render reserve stats for selected asset ───────────────────────────────────
 
 function renderSelectedAsset() {
@@ -1237,6 +1294,7 @@ function updatePreview() {
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
   }
+  renderWorstCasePanel(rs, hf, lev, equity, supply, borrow);
 
   // Risk zone labels (#9)
   const maxSlider = parseFloat(($("leverage-slider") as HTMLInputElement).max) || 10;
@@ -1707,7 +1765,7 @@ function showConnected() {
 
 async function connect() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
     if (!networkOk) {
@@ -1729,7 +1787,7 @@ async function connect() {
 /** Re-open wallet modal to switch to a different account without a full page reload. */
 async function switchWallet() {
   try {
-    const result = await StellarWalletsKit.authModal({ network: getActiveNetwork() === "testnet" ? Networks.TESTNET : Networks.PUBLIC });
+    const result = await StellarWalletsKit.authModal();
     if (result.address === userAddress) return;
     // Verify wallet network matches app network
     const networkOk = await verifyWalletNetwork();
@@ -2238,6 +2296,12 @@ $("demo-btn").addEventListener("click", () => {
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n, bSupply: 1_000_000_000_000n, dSupply: 650_000_000_000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: {
+      rBase: 0, rOne: 500_000, rTwo: 2_000_000, rThree: 150_000_000,
+      utilOpt: Math.round(a.maxUtil * RATE_SCALAR), irMod: RATE_SCALAR, backstopFP: selectedPool.backstopFP,
+    },
   }));
   positions = { byAsset: new Map() };
   // One sample position
