@@ -710,6 +710,21 @@ function renderLiqCountdownRing(days: number, maxDays = 365): string {
 
 // ── APY Chart (#14) ──────────────────────────────────────────────────────────
 
+type ProjectedRateFields = Pick<ReserveStats, "interestSupplyApr" | "interestBorrowApr" | "netSupplyApr" | "netBorrowCost">;
+
+function projectRatesWithFallback(rs: ReserveStats, supplyDelta: number, borrowDelta: number): ProjectedRateFields {
+  try {
+    return projectRates(rs, supplyDelta, borrowDelta);
+  } catch {
+    return {
+      interestSupplyApr: rs.interestSupplyApr,
+      interestBorrowApr: rs.interestBorrowApr,
+      netSupplyApr: rs.netSupplyApr,
+      netBorrowCost: rs.netBorrowCost,
+    };
+  }
+}
+
 function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity: number, oldSupply = 0, oldBorrow = 0) {
   const container = $("apy-chart");
   if (!rs) { container.innerHTML = ""; return; }
@@ -717,7 +732,7 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const W = 300, H = 120, padL = 34, padR = 10, padT = 14, padB = 15;
   const steps: { lev: number; apy: number }[] = [];
   for (let l = 1.0; l <= maxLev; l += 0.2) {
-    const p = projectRates(rs, equity * l - oldSupply, equity * (l - 1) - oldBorrow);
+    const p = projectRatesWithFallback(rs, equity * l - oldSupply, equity * (l - 1) - oldBorrow);
     steps.push({ lev: l, apy: aprToApy(p.netSupplyApr * l - p.netBorrowCost * (l - 1)) });
   }
   if (steps.length < 2) { container.innerHTML = ""; return; }
@@ -727,7 +742,7 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   const x = (lev: number) => padL + (lev - 1.0) / (maxLev - 1.0) * (W - padL - padR);
   const y = (apy: number) => padT + (1 - (apy - minApy) / rangeApy) * (H - padT - padB);
   const points = steps.map(s => `${x(s.lev).toFixed(1)},${y(s.apy).toFixed(1)}`).join(" ");
-  const curProj = projectRates(rs, equity * currentLev - oldSupply, equity * (currentLev - 1) - oldBorrow);
+  const curProj = projectRatesWithFallback(rs, equity * currentLev - oldSupply, equity * (currentLev - 1) - oldBorrow);
   const curApy = aprToApy(curProj.netSupplyApr * currentLev - curProj.netBorrowCost * (currentLev - 1));
   const zeroY = y(0);
 
@@ -1167,6 +1182,64 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
+function formatSignedUsd(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${fmt(Math.abs(value), 2)}`;
+}
+
+function ensureReturnCalculator() {
+  if ($("return-calculator")) return;
+  const preview = document.querySelector(".leverage-preview");
+  if (!preview) return;
+
+  const panel = document.createElement("div");
+  panel.id = "return-calculator";
+  panel.className = "leverage-preview";
+  panel.style.marginTop = "10px";
+  panel.innerHTML = `
+    <div class="preview-row">
+      <span>Return calculator</span>
+      <strong class="mono" style="font-size:11px;color:var(--text-3)">simple APY</strong>
+    </div>
+    <label class="preview-row" for="return-calc-usd" style="cursor:text">
+      <span>Deposit USD</span>
+      <input id="return-calc-usd" class="input mono" type="number" min="0" step="any" value="1000" style="width:120px;text-align:right;padding:6px 8px" />
+    </label>
+    <div class="preview-row">
+      <span>Weekly return</span><strong id="return-calc-week" class="mono">-</strong>
+    </div>
+    <div class="preview-row">
+      <span>Monthly return</span><strong id="return-calc-month" class="mono">-</strong>
+    </div>
+    <p style="margin:8px 0 0;color:var(--text-3);font-size:11px;line-height:1.4">
+      Uses displayed APY / 52 and APY / 12; values are not compounded.
+    </p>`;
+
+  preview.insertAdjacentElement("afterend", panel);
+  $("return-calc-usd").addEventListener("input", updatePreview);
+}
+
+function updateReturnCalculator(netApy: number | null) {
+  ensureReturnCalculator();
+  const input = $("return-calc-usd") as HTMLInputElement | null;
+  const weekEl = $("return-calc-week");
+  const monthEl = $("return-calc-month");
+  if (!input || !weekEl || !monthEl || netApy === null || !Number.isFinite(netApy)) {
+    if (weekEl) weekEl.textContent = "-";
+    if (monthEl) monthEl.textContent = "-";
+    return;
+  }
+
+  const amount = Math.max(0, parseFloat(input.value) || 0);
+  const weekly = amount * (netApy / 100) / 52;
+  const monthly = amount * (netApy / 100) / 12;
+  const cls = netApy >= 0 ? "hf-ok" : "hf-bad";
+  weekEl.textContent = `${formatSignedUsd(weekly)} / week`;
+  monthEl.textContent = `${formatSignedUsd(monthly)} / month`;
+  weekEl.className = `mono ${cls}`;
+  monthEl.className = `mono ${cls}`;
+}
+
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -1190,6 +1263,7 @@ function updatePreview() {
   // pool totals. Pass the net delta so projectRates doesn't double-count.
   const oldSupply = (actionMode === "adjust" && pos) ? pos.collateral : 0;
   const oldBorrow = (actionMode === "adjust" && pos) ? pos.debt : 0;
+  let projectedNetApy: number | null = null;
 
   $("prev-lev").textContent         = `${lev.toFixed(2)}\u00D7`;
   $("prev-supply").textContent      = `${fmt(supply, 2)} ${selectedAsset.symbol}`;
@@ -1210,9 +1284,10 @@ function updatePreview() {
   }
 
   if (rs) {
-    const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
+    const proj = projectRatesWithFallback(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
+    projectedNetApy = netApy;
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
@@ -1237,6 +1312,7 @@ function updatePreview() {
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
   }
+  updateReturnCalculator(projectedNetApy);
 
   // Risk zone labels (#9)
   const maxSlider = parseFloat(($("leverage-slider") as HTMLInputElement).max) || 10;
