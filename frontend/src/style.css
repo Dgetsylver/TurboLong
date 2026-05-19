@@ -940,6 +940,56 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 /* ── APY Alert modal ─────────────────────────────────────────────────────── */
 
+.yield-link {
+  border: none; background: transparent; color: var(--primary); cursor: pointer;
+  padding: 0; font: inherit; font-size: 11px; font-weight: 600;
+}
+.yield-link:hover { text-decoration: underline; }
+.yield-link-inline { margin-left: 4px; }
+.yield-modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.yield-modal {
+  position: relative; background: var(--surface-solid); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 28px 24px; max-width: 720px; width: min(720px, 100%);
+  max-height: min(760px, 90vh); overflow: auto; box-shadow: var(--shadow);
+}
+.yield-modal-close {
+  position: absolute; top: 12px; right: 14px;
+  background: none; border: none; color: var(--text-2); font-size: 22px;
+  cursor: pointer; line-height: 1; padding: 0;
+}
+.yield-modal-close:hover { color: var(--text); }
+.yield-modal h3 { font-size: 18px; font-weight: 700; margin: 0 0 8px; letter-spacing: -.3px; }
+.yield-modal-body { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+.yield-modal-body h4 { color: var(--text); font-size: 13px; margin: 18px 0 6px; }
+.yield-modal-body p { margin: 0 0 10px; }
+.yield-modal-body ul { margin: 0 0 10px 18px; padding: 0; }
+.yield-modal-body li { margin: 4px 0; }
+.yield-formula {
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--r-xs);
+  padding: 10px 12px; font-family: var(--mono); color: var(--text); font-size: 12px;
+  overflow-x: auto; margin: 8px 0 12px;
+}
+.yield-live-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 12px;
+}
+.yield-live-card {
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--r-xs);
+  padding: 10px;
+}
+.yield-live-label { display: block; color: var(--text-3); font-size: 11px; margin-bottom: 4px; }
+.yield-live-value { color: var(--text); font-family: var(--mono); font-weight: 700; }
+.apy-chart-yield-link { display: inline-block; margin: -6px 0 10px; }
+
+@media (max-width: 640px) {
+  .yield-live-grid { grid-template-columns: 1fr; }
+  .yield-modal { padding: 24px 18px; }
+}
+
 .alert-bell-btn { font-size: 16px; line-height: 1; }
 .alert-modal-overlay {
   position: fixed; inset: 0; z-index: 1000;
