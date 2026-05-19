@@ -44,6 +44,7 @@ import {
   submitClassicXdr,
   hfForLeverage,
   maxLeverageFor,
+  BEGINNER_MAX_LEVERAGE,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -320,9 +321,14 @@ let activeView: AppView = "leverage";
 // ── Expert mode ──────────────────────────────────────────────────────────────
 
 let expertMode = false;
+let beginnerMode = localStorage.getItem("beginnerMode") === "1";
 const MIN_HF_NORMAL = 1.01;
 const MIN_HF_EXPERT = 1.00001;
 function minHF() { return expertMode ? MIN_HF_EXPERT : MIN_HF_NORMAL; }
+
+function beginnerCappedLeverage(value: number): number {
+  return beginnerMode ? Math.min(value, BEGINNER_MAX_LEVERAGE) : value;
+}
 
 // ── Demo mode ────────────────────────────────────────────────────────────────
 
@@ -601,7 +607,8 @@ function selectPool(pool: PoolDef) {
 function updateLeverageSlider(c: number, l: number = 1) {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
-  const maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
+  const protocolMaxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
+  const maxLev = beginnerCappedLeverage(protocolMaxLev);
   // Looping requires the same asset to be both collateral (c > 0) and borrowable (l > 0).
   // If either is 0 the pool blocks one side and maxLev collapses to 1.0 — disable the slider
   // and surface an accurate notice instead of leaving min == max (appearing stuck).
@@ -627,6 +634,55 @@ function updateLeverageSlider(c: number, l: number = 1) {
         ? `⚠ ${sym} is collateral-only on this pool — cannot be borrowed, so looping is not available.`
         : `⚠ ${sym} cannot be looped on this pool.`;
   }
+}
+
+function setPreviousLabel(valueId: string, text: string) {
+  const valueEl = document.getElementById(valueId);
+  const labelEl = valueEl?.previousElementSibling;
+  if (labelEl) labelEl.textContent = text;
+}
+
+function applyBeginnerModeUi() {
+  const badge = $("beginner-toggle").querySelector(".settings-badge");
+  if (badge) badge.textContent = beginnerMode ? "On" : "Off";
+  $("beginner-toggle").classList.toggle("expert-active", beginnerMode);
+
+  const mobileBtn = document.getElementById("mobile-beginner-toggle");
+  if (mobileBtn) {
+    mobileBtn.classList.toggle("expert-active", beginnerMode);
+    mobileBtn.textContent = beginnerMode ? "Beginner ON" : "Beginner";
+  }
+
+  const hfLabel = beginnerMode ? "Safety Score" : "Health Factor";
+  const assetLabel = beginnerMode ? "Asset Safety Score" : "Asset HF";
+  const poolLabel = beginnerMode ? "Pool Safety Score" : "Pool HF";
+  setPreviousLabel("prev-hf", hfLabel);
+  setPreviousLabel("hero-hf", hfLabel);
+  setPreviousLabel("vault-hf", hfLabel);
+  setPreviousLabel("vault-min-hf", beginnerMode ? "Min Safety Score" : "Min HF");
+
+  const posHfLabel = document.querySelector("#pos-hf")?.previousElementSibling;
+  if (posHfLabel) {
+    posHfLabel.innerHTML = `${assetLabel} <span class="tooltip" data-tip="${hfLabel} for this asset only. Below 1.0 = liquidatable.">?</span>`;
+  }
+  const posPoolHfLabel = document.querySelector("#pos-pool-hf")?.previousElementSibling;
+  if (posPoolHfLabel) {
+    posPoolHfLabel.innerHTML = `${poolLabel} <span class="tooltip" data-tip="${hfLabel} across ALL your positions in this pool, weighted by oracle price.">?</span>`;
+  }
+
+  $("hf-warning").textContent = beginnerMode
+    ? "Safety Score too low - reduce leverage."
+    : "\u26A0 HF too low - liquidation risk. Reduce leverage.";
+
+  document.getElementById("stat-cfactor")?.closest(".stat-card")?.classList.toggle("hidden", beginnerMode);
+  document.querySelector(".broker-settings")?.classList.toggle("hidden", beginnerMode);
+  document.querySelector(".vault-contract-footer")?.classList.toggle("hidden", beginnerMode);
+  document.querySelectorAll<HTMLElement>(".zone-aggressive, .zone-degen, #zone-maxi-degen").forEach(el => {
+    el.classList.toggle("hidden", beginnerMode || (el.id === "zone-maxi-degen" && !expertMode));
+  });
+
+  renderPoolFooter();
+  initTooltips();
 }
 
 function buildAssetTabs() {
@@ -762,7 +818,7 @@ function renderSelectedAsset() {
 
   updateLeverageSlider(rs.cFactor, rs.lFactor);
 
-  const maxLev = maxLeverageFor(rs.cFactor, rs.lFactor, minHF());
+  const maxLev = beginnerCappedLeverage(maxLeverageFor(rs.cFactor, rs.lFactor, minHF()));
   $("stat-cfactor").textContent    = `${(rs.cFactor * 100).toFixed(0)}%`;
   $("stat-max-lev").textContent    = `${maxLev.toFixed(2)}\u00D7`;
   $("stat-liquidity").textContent  = `${fmt(rs.available, 0)} ${rs.asset.symbol}`;
@@ -863,6 +919,10 @@ function renderPortfolioSummary() {
 
 function renderPoolFooter() {
   const footer = $("pool-footer");
+  if (beginnerMode) {
+    footer.innerHTML = `<a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>`;
+    return;
+  }
   const addr = selectedPool.id;
   const truncated = addr.slice(0, 6) + "\u2026" + addr.slice(-4);
   footer.innerHTML = `
@@ -1243,7 +1303,7 @@ function updatePreview() {
   const atMax = Math.abs(lev - maxSlider) < 0.15;
   const zones = document.querySelectorAll<HTMLElement>(".slider-zone");
   const maxiDegenEl = $("zone-maxi-degen");
-  if (expertMode) {
+  if (expertMode && !beginnerMode) {
     maxiDegenEl?.classList.remove("hidden");
   } else {
     maxiDegenEl?.classList.add("hidden");
@@ -1251,7 +1311,7 @@ function updatePreview() {
   zones.forEach(z => {
     const zone = z.dataset.zone;
     const active =
-      (zone === "maxi-degen" && expertMode && atMax) ||
+      (zone === "maxi-degen" && expertMode && !beginnerMode && atMax) ||
       (!( expertMode && atMax) && (
         (zone === "conservative" && lev >= 1.0 && lev < 3) ||
         (zone === "moderate" && lev >= 3 && lev < 6) ||
@@ -1351,7 +1411,7 @@ async function openPosition() {
   if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
   if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot open new positions", "error"); return; }
   const initial  = parseFloat(($("initial-input") as HTMLInputElement).value);
-  const leverage = parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  const leverage = beginnerCappedLeverage(parseFloat(($("leverage-slider") as HTMLInputElement).value));
   if (isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
 
   // Use live cFactor from reserves so intermediate borrow steps don't exceed pool limits
@@ -1374,7 +1434,7 @@ async function openPosition() {
   try {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage, { beginnerMode });
     await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
@@ -1512,7 +1572,7 @@ async function adjustLeverage() {
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
-  const targetLev = parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  const targetLev = beginnerCappedLeverage(parseFloat(($("leverage-slider") as HTMLInputElement).value));
   const curLev = pos.leverage;
   if (Math.abs(targetLev - curLev) < 0.05) { toast("Target leverage is same as current", "error"); return; }
 
@@ -1529,10 +1589,10 @@ async function adjustLeverage() {
   showTxStepper([`${direction} Leverage`]);
   try {
     if (targetLev > curLev) {
-      const xdr = await buildIncreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
+      const xdr = await buildIncreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev, { beginnerMode });
       await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
     } else {
-      const xdr = await buildDecreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
+      const xdr = await buildDecreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev, { beginnerMode });
       await signAndSubmit(xdr, `Decrease leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
     }
     hideTxStepper();
@@ -1561,7 +1621,7 @@ async function addFundsToPosition() {
   if (!pos) return;
 
   const additional = parseFloat(($("add-funds-input") as HTMLInputElement).value);
-  const leverage   = parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  const leverage   = beginnerCappedLeverage(parseFloat(($("leverage-slider") as HTMLInputElement).value));
   if (isNaN(additional) || additional <= 0) { toast("Enter a valid amount", "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -1577,7 +1637,7 @@ async function addFundsToPosition() {
   try {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, additionalStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, additionalStroops, leverage);
+    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, additionalStroops, leverage, { beginnerMode });
     await signAndSubmit(submitXdr, `Add ${fmt(additional, 2)} ${liveAsset.symbol} at ${leverage.toFixed(1)}\u00D7`, 1);
     hideTxStepper();
     // Update PnL entry: add to existing deposit
@@ -1993,6 +2053,23 @@ function initTooltips() {
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 
+function refreshLeverageLimits() {
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  updateLeverageSlider(rs?.cFactor ?? selectedAsset.cFactor, rs?.lFactor ?? 1);
+}
+
+// Beginner toggle (settings dropdown)
+function toggleBeginner() {
+  beginnerMode = !beginnerMode;
+  localStorage.setItem("beginnerMode", beginnerMode ? "1" : "0");
+  refreshLeverageLimits();
+  applyBeginnerModeUi();
+  renderSelectedAsset();
+  updatePreview();
+}
+$("beginner-toggle").addEventListener("click", toggleBeginner);
+document.getElementById("mobile-beginner-toggle")?.addEventListener("click", toggleBeginner);
+
 // Expert toggle (settings dropdown)
 function toggleExpert() {
   expertMode = !expertMode;
@@ -2007,6 +2084,8 @@ function toggleExpert() {
     mobileBtn.classList.toggle("expert-active", expertMode);
     mobileBtn.textContent = expertMode ? "Expert ON" : "Expert";
   }
+  refreshLeverageLimits();
+  applyBeginnerModeUi();
   renderSelectedAsset();
   updatePreview();
 }
@@ -2354,6 +2433,8 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
   emptyEl.classList.add("hidden");
 
   let html = "";
+  const overviewRiskLabel = beginnerMode ? "Safety" : "HF";
+  const strategyRiskLabel = beginnerMode ? "Strategy Safety" : "Strategy HF";
 
   // Blend positions as data table
   if (blendPos.length > 0) {
@@ -2365,7 +2446,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
       <table class="overview-table">
         <thead><tr>
           <th>Asset</th><th>Pool</th><th class="text-right">Equity</th>
-          <th class="text-right">Leverage</th><th class="text-right">HF</th>
+          <th class="text-right">Leverage</th><th class="text-right">${overviewRiskLabel}</th>
           <th class="text-right">Net APY</th><th class="text-right">Debt</th>
         </tr></thead><tbody>`;
 
@@ -2413,7 +2494,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
             <span class="overview-pos-card-value">${formatUsd(vp.userPos.underlyingValue)}</span>
           </div>
           <div class="overview-pos-card-metric">
-            <span class="overview-pos-card-label">Strategy HF</span>
+            <span class="overview-pos-card-label">${strategyRiskLabel}</span>
             <span class="overview-pos-card-value ${hf.cls}">${hf.text}</span>
           </div>
         </div>
@@ -2726,6 +2807,9 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     $("network-toggle").classList.add("testnet-active");
     $("testnet-banner").classList.remove("hidden");
   }
+
+  refreshLeverageLimits();
+  applyBeginnerModeUi();
 
   const saved = localStorage.getItem("walletAddress");
   if (!saved) return;
