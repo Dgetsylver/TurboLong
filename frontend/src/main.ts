@@ -849,7 +849,7 @@ function renderPortfolioSummary() {
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span>Net APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
       </span>`;
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
@@ -1030,7 +1030,7 @@ function renderPosition() {
         liqDaysEl.textContent = daysLeft > 3650 ? ">10 years" : `~${Math.round(daysLeft)} days`;
       }
       liqDaysEl.className   = `metric-value ${daysLeft < 30 ? "hf-bad" : daysLeft < 90 ? "hf-warn" : "hf-ok"}`;
-      liqNoteEl.textContent = `Interest spread: ${fmt(aprToApy(spreadPct), 2)}%/yr (borrow \u2212 supply). Claim & convert BLND to extend runway.`;
+      liqNoteEl.textContent = `Interest spread APR: ${fmt(spreadPct, 2)} percentage points (borrow \u2212 supply). Claim & convert BLND to extend runway.`;
     }
   } else {
     liqDaysEl.textContent = "\u2014";
