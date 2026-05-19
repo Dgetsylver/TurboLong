@@ -367,6 +367,10 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .portfolio-card-symbol { font-family: var(--mono); font-weight: 700; font-size: 14px; }
 .portfolio-card-details { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-2); }
 .portfolio-card-hf-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.portfolio-card-net-apy { font-family: var(--mono); font-size: 18px; font-weight: 800; line-height: 1.1; }
+.portfolio-rate-details { margin-top: 3px; font-size: 11px; }
+.portfolio-rate-details summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.portfolio-rate-details .rate-components-grid { min-width: 180px; }
 
 /* ── Pool stats (always visible) ─────────────────────────────────────────── */
 
@@ -405,6 +409,24 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 /* ── APR grid ────────────────────────────────────────────────────────────── */
 
 .apr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.net-apy-card {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 16px 18px; margin-bottom: 8px;
+}
+.net-apy-label {
+  display: block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .8px; color: var(--text-3); margin-bottom: 4px;
+}
+.net-apy-value,
+.net-apy-value.mono { display: block; font-size: 28px; font-weight: 800; line-height: 1; }
+.rate-components { min-width: 240px; color: var(--text-2); font-size: 12px; }
+.rate-components summary { cursor: pointer; font-weight: 700; color: var(--text); }
+.rate-components-grid { display: grid; gap: 4px; margin-top: 8px; }
+.rate-components-grid div {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.rate-components-grid strong { font-family: var(--mono); color: var(--text); font-weight: 600; }
 .apr-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--r); padding: 16px 18px;
@@ -1161,6 +1183,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   .overview-totals { grid-template-columns: 1fr; }
   .overview-positions { grid-template-columns: 1fr; }
   .metrics-hero { grid-template-columns: 1fr; }
+  .net-apy-card { flex-direction: column; }
+  .rate-components { min-width: 0; width: 100%; }
   .landing-steps-grid { grid-template-columns: 1fr; }
   .landing-features-grid { grid-template-columns: 1fr; }
 }

@@ -422,6 +422,8 @@ export interface ReserveStats {
   interestSupplyApr: number; // % pa — after backstop take
   blndSupplyApr:     number; // % pa — BLND emissions on supply side
   blndBorrowApr:     number; // % pa — BLND emissions on borrow side (currently 0)
+  grossSupplyApr:    number; // % pa — before backstop fee drag
+  feeDragApr:        number; // % pa — backstop fee drag on supplied liquidity
   netSupplyApr:      number; // interest + blnd
   netBorrowCost:     number; // interest - blnd (usually just interest)
   supplyEps:         bigint; // raw eps from pool, 0 if no emissions
@@ -511,8 +513,10 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
       const interestBorrowApr = (curIr_fp / SCALAR_F) * 100;
 
       // Supply APR = borrow_ir × (1 - backstop) × util  (all in fixed-point)
+      const grossSupplyApr = (Math.floor(curIr_fp * curUtil_fp / SCALAR_F) / SCALAR_F) * 100;
       const supplyCapture_fp  = Math.floor((SCALAR_F - BACKSTOP_FP) * curUtil_fp / SCALAR_F);
       const interestSupplyApr = (Math.floor(curIr_fp * supplyCapture_fp / SCALAR_F) / SCALAR_F) * 100;
+      const feeDragApr = Math.max(0, grossSupplyApr - interestSupplyApr);
 
       // BLND emissions APR
       const supplyEps = supplyEmissions?.eps != null ? BigInt(supplyEmissions.eps) : 0n;
@@ -549,6 +553,8 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
         interestSupplyApr,
         blndSupplyApr,
         blndBorrowApr,
+        grossSupplyApr,
+        feeDragApr,
         netSupplyApr:  interestSupplyApr + blndSupplyApr,
         netBorrowCost: interestBorrowApr - blndBorrowApr,
         supplyEps,
@@ -571,8 +577,35 @@ export interface ProjectedRates {
   interestBorrowApr: number;
   blndSupplyApr:     number;
   blndBorrowApr:     number;
+  grossSupplyApr:    number;
+  feeDragApr:        number;
   netSupplyApr:      number;
   netBorrowCost:     number;
+}
+
+export interface NetAprBreakdown {
+  supplyApr:     number;
+  blndSupplyApr: number;
+  blndBorrowApr: number;
+  borrowApr:     number;
+  feeDragApr:    number;
+  netApr:        number;
+}
+
+export function netAprBreakdown(rates: ProjectedRates | ReserveStats, leverage = 1): NetAprBreakdown {
+  const supplyWeight = Math.max(0, leverage);
+  const borrowWeight = Math.max(0, leverage - 1);
+  const breakdown = {
+    supplyApr: rates.grossSupplyApr * supplyWeight,
+    blndSupplyApr: rates.blndSupplyApr * supplyWeight,
+    blndBorrowApr: rates.blndBorrowApr * borrowWeight,
+    borrowApr: rates.interestBorrowApr * borrowWeight,
+    feeDragApr: rates.feeDragApr * supplyWeight,
+  };
+  return {
+    ...breakdown,
+    netApr: breakdown.supplyApr + breakdown.blndSupplyApr + breakdown.blndBorrowApr - breakdown.borrowApr - breakdown.feeDragApr,
+  };
 }
 
 /**
@@ -607,8 +640,10 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
   const curIr = Math.ceil(baseRate * irMod / SCALAR_F);
   const interestBorrowApr = (curIr / SCALAR_F) * 100;
 
+  const grossSupplyApr = (Math.floor(curIr * utilFp / SCALAR_F) / SCALAR_F) * 100;
   const supplyCapture = Math.floor((SCALAR_F - backstopFP) * utilFp / SCALAR_F);
   const interestSupplyApr = (Math.floor(curIr * supplyCapture / SCALAR_F) / SCALAR_F) * 100;
+  const feeDragApr = Math.max(0, grossSupplyApr - interestSupplyApr);
 
   // BLND emissions — same tokens/sec, diluted across new totals
   const supplyBlndYr = Number(rs.supplyEps) * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
@@ -626,6 +661,8 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
     interestBorrowApr,
     blndSupplyApr,
     blndBorrowApr,
+    grossSupplyApr,
+    feeDragApr,
     netSupplyApr:  interestSupplyApr + blndSupplyApr,
     netBorrowCost: interestBorrowApr - blndBorrowApr,
   };
