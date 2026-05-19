@@ -425,6 +425,10 @@
                   <div class="preview-row preview-net-apr">
                     <span>Est. net APY <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
+                  <div class="preview-row fee-drag-row">
+                    <span>Fee drag <span class="tooltip" data-tip="Annualized estimate: rebalances/year x tx fee in XLM x XLM price x leverage / equity. Default: 12/year.">?</span></span>
+                    <span class="fee-drag-control"><input type="number" id="rebalance-frequency-input" class="input mono fee-drag-input" min="0" step="1" value="12" />/yr <strong id="prev-fee-drag">—</strong></span>
+                  </div>
                   <div class="preview-row">
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
                   </div>
