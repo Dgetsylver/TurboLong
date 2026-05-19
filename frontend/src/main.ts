@@ -334,7 +334,23 @@ const $ = (id: string) => document.getElementById(id)!;
 const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+const leverageValue = (lev: number) => Math.max(1, lev).toFixed(4);
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+
+function setLeverageControls(lev: number) {
+  const next = leverageValue(lev);
+  ($("leverage-slider") as HTMLInputElement).value = next;
+  ($("leverage-input") as HTMLInputElement).value = next;
+}
+
+function targetHFFloor(c: number) {
+  return c > 0 ? 1 / c : Infinity;
+}
+
+function leverageForTargetHF(targetHF: number, c: number, l = 1) {
+  const effectiveFactor = c * l;
+  return targetHF / (targetHF - effectiveFactor);
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -601,18 +617,21 @@ function selectPool(pool: PoolDef) {
 function updateLeverageSlider(c: number, l: number = 1) {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
-  const maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
+  const targetHFInput = $("target-hf-input") as HTMLInputElement;
+  const maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10_000) / 10_000; // floor to 4 decimals
   // Looping requires the same asset to be both collateral (c > 0) and borrowable (l > 0).
   // If either is 0 the pool blocks one side and maxLev collapses to 1.0 — disable the slider
   // and surface an accurate notice instead of leaving min == max (appearing stuck).
   const leverageable = maxLev > 1.0;
   slider.min = numIn.min = "1.0";
-  slider.max = numIn.max = String(leverageable ? maxLev : 1.0);
-  slider.step = numIn.step = "0.1";
+  slider.max = numIn.max = leverageValue(leverageable ? maxLev : 1.0);
+  slider.step = numIn.step = "0.0001";
   slider.disabled = numIn.disabled = !leverageable;
+  targetHFInput.disabled = !leverageable;
+  targetHFInput.min = isFinite(targetHFFloor(c)) ? targetHFFloor(c).toFixed(4) : "1";
   const cur = parseFloat(slider.value);
   const clamped = Math.min(parseFloat(slider.max), Math.max(1.0, cur));
-  if (clamped !== cur) { slider.value = String(clamped); numIn.value = String(clamped); }
+  if (clamped !== cur) setLeverageControls(clamped);
   // Gradient track (#9)
   slider.style.background = leverageable
     ? `linear-gradient(90deg, var(--success) 0%, var(--primary) 33%, var(--warning) 66%, var(--danger) 100%)`
@@ -1106,11 +1125,7 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
     $("leverage-label").textContent = "Target leverage";
     $("add-funds-symbol").textContent = pos.asset.symbol;
     // Set slider to current leverage
-    const slider = $("leverage-slider") as HTMLInputElement;
-    const numIn  = $("leverage-input")  as HTMLInputElement;
-    const curLev = Math.round(pos.leverage * 10) / 10;
-    slider.value = String(curLev);
-    numIn.value  = curLev.toFixed(1);
+    setLeverageControls(pos.leverage);
   } else {
     $("leverage-label").innerHTML = 'Leverage <span class="tooltip" data-tip="Multiplier on your deposit. Higher leverage amplifies both yield and liquidation risk.">?</span>';
     initTooltips(); // Re-init tooltips for newly created elements
@@ -1140,11 +1155,7 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
     $("action-card-title").textContent = "Add Funds";
     $("leverage-label").innerHTML = 'Leverage <span class="tooltip" data-tip="Leverage for the new deposit. This deposit is added on top of your existing position.">?</span>';
     // Default leverage to current position leverage
-    const slider = $("leverage-slider") as HTMLInputElement;
-    const numIn  = $("leverage-input")  as HTMLInputElement;
-    const curLev = Math.round(pos.leverage * 10) / 10;
-    slider.value = String(curLev);
-    numIn.value  = curLev.toFixed(1);
+    setLeverageControls(pos.leverage);
     $("add-funds-symbol").textContent = selectedAsset.symbol;
     // Fetch wallet balance for add-funds display
     if (userAddress) {
@@ -1156,11 +1167,7 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
   } else {
     $("action-card-title").textContent = "Adjust Position";
     $("leverage-label").textContent = "Target leverage";
-    const slider = $("leverage-slider") as HTMLInputElement;
-    const numIn  = $("leverage-input")  as HTMLInputElement;
-    const curLev = Math.round(pos.leverage * 10) / 10;
-    slider.value = String(curLev);
-    numIn.value  = curLev.toFixed(1);
+    setLeverageControls(pos.leverage);
   }
   updatePreview();
 }
@@ -1172,12 +1179,18 @@ function updatePreview() {
   const numIn  = $("leverage-input")  as HTMLInputElement;
   const lev    = parseFloat(slider.value) || 1.0;
   // Keep the number input in sync with the slider
-  if (parseFloat(numIn.value) !== lev) numIn.value = lev.toFixed(1);
+  if (parseFloat(numIn.value) !== lev) numIn.value = leverageValue(lev);
   const rs      = reserves.find(r => r.asset.id === selectedAsset.id);
   const c       = rs ? rs.cFactor : selectedAsset.cFactor;
   const l       = rs?.lFactor ?? 1;
   const hf      = hfForLeverage(lev, c, l);
   const pos     = positions.byAsset.get(selectedAsset.id);
+  const targetHFInput = $("target-hf-input") as HTMLInputElement;
+  const targetHFError = $("target-hf-error") as HTMLElement;
+  if (document.activeElement !== targetHFInput) {
+    targetHFInput.value = isFinite(hf) ? hf.toFixed(4) : "";
+    targetHFError.classList.add("hidden");
+  }
 
   // In adjust mode, use equity as the base; in add-funds mode, use the add-funds input; in open mode, use initial deposit
   const equity  = (actionMode === "adjust" && pos) ? pos.equity
@@ -2200,6 +2213,45 @@ async function refreshAddFundsBalance() {
   } catch { /* ignore */ }
 }
 
+function applyTargetHFInput() {
+  const input = $("target-hf-input") as HTMLInputElement;
+  const error = $("target-hf-error") as HTMLElement;
+  const targetHF = parseFloat(input.value);
+  if (!input.value.trim() || isNaN(targetHF)) {
+    error.classList.add("hidden");
+    return;
+  }
+
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  const c = rs ? rs.cFactor : selectedAsset.cFactor;
+  const l = rs?.lFactor ?? 1;
+  const minTargetHF = targetHFFloor(c);
+  if (!isFinite(minTargetHF)) {
+    error.textContent = "Target HF is available only on leverageable assets.";
+    error.classList.remove("hidden");
+    return;
+  }
+  if (targetHF < minTargetHF) {
+    error.textContent = `Target HF must be at least ${fmt(minTargetHF, 4)} for ${selectedAsset.symbol}.`;
+    error.classList.remove("hidden");
+    return;
+  }
+
+  const slider = $("leverage-slider") as HTMLInputElement;
+  const solvedLev = leverageForTargetHF(targetHF, c, l);
+  const minLev = parseFloat(slider.min) || 1.0;
+  const maxLev = parseFloat(slider.max) || 1.0;
+  if (!isFinite(solvedLev) || solvedLev < minLev || solvedLev > maxLev) {
+    error.textContent = `Target HF is outside the available leverage range (${fmt(minLev, 4)}\u00D7-${fmt(maxLev, 4)}\u00D7).`;
+    error.classList.remove("hidden");
+    return;
+  }
+
+  setLeverageControls(solvedLev);
+  error.classList.add("hidden");
+  updatePreview();
+}
+
 ($("leverage-slider") as HTMLInputElement).addEventListener("input",  updatePreview);
 // Live preview while typing (no clamping so user can type multi-digit numbers like "10")
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
@@ -2207,7 +2259,7 @@ async function refreshAddFundsBalance() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const v = parseFloat(numIn.value);
   if (!isNaN(v) && v >= 1.0) {
-    slider.value = v.toFixed(1);
+    slider.value = leverageValue(v);
     updatePreview();
   }
 });
@@ -2217,11 +2269,11 @@ async function refreshAddFundsBalance() {
   const slider = $("leverage-slider") as HTMLInputElement;
   let v = parseFloat(numIn.value);
   if (isNaN(v)) v = 1.0;
-  v = Math.min(parseFloat(slider.max), Math.max(1.0, Math.round(v * 10) / 10));
-  numIn.value  = v.toFixed(1);
-  slider.value = v.toFixed(1);
+  v = Math.min(parseFloat(slider.max), Math.max(1.0, Math.round(v * 10_000) / 10_000));
+  setLeverageControls(v);
   updatePreview();
 });
+($("target-hf-input") as HTMLInputElement).addEventListener("input", applyTargetHFInput);
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
 
