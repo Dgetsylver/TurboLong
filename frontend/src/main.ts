@@ -335,6 +335,8 @@ const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+const STRESS_PRESET_UTILS = [0.80, 0.90, 0.95, 0.99];
+const STRESS_HF_DAYS = 30;
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -747,6 +749,87 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
     <text x="${padL - 2}" y="${H - padB + 2}" text-anchor="end" class="apy-chart-label">${fmt(minApy, 0)}%</text>
     <text x="${labelX}" y="${labelY}" text-anchor="middle" class="apy-chart-label apy-chart-cur">${fmt(curApy, 2)}%</text>
   </svg>`;
+}
+
+// ── Utilization stress panel ──────────────────────────────────────────────────
+
+function formatStressDays(hf: number, spreadPct: number): { text: string; cls: string } {
+  if (!isFinite(hf)) return { text: "Never", cls: "hf-ok" };
+  if (hf <= 1) return { text: "Now", cls: "hf-bad" };
+  if (spreadPct <= 0) return { text: "Never", cls: "hf-ok" };
+
+  const days = Math.log(hf) / (spreadPct / 100) * 365;
+  if (!isFinite(days) || days > 3650) return { text: ">10 years", cls: "hf-ok" };
+  return {
+    text: `~${Math.max(0, Math.round(days))} days`,
+    cls: days < 30 ? "hf-bad" : days < 90 ? "hf-warn" : "hf-ok",
+  };
+}
+
+function stressHfAfterDays(hf: number, spreadPct: number, days: number): number {
+  if (!isFinite(hf)) return Infinity;
+  return hf * Math.exp(-(spreadPct / 100) * (days / 365));
+}
+
+function renderStressPanel(
+  rs: ReserveStats | undefined,
+  lev: number,
+  equity: number,
+  oldSupply: number,
+  oldBorrow: number,
+  hf: number,
+) {
+  const scenariosEl = $("stress-scenarios");
+  const currentUtilEl = $("stress-current-util");
+  const customSlider = $("stress-util-slider") as HTMLInputElement;
+  const customLabel = $("stress-custom-label");
+  const customUtil = Math.max(0.5, Math.min(0.99, Number(customSlider.value) / 100));
+  customLabel.textContent = `${Math.round(customUtil * 100)}%`;
+
+  if (!rs) {
+    currentUtilEl.textContent = "No pool data";
+    scenariosEl.innerHTML = `<div class="stress-empty">Load reserve data to run utilization stress scenarios.</div>`;
+    return;
+  }
+
+  const currentUtil = rs.totalSupply > 0 ? rs.totalBorrow / rs.totalSupply : 0;
+  currentUtilEl.textContent = `Current ${fmt(currentUtil * 100, 1)}%`;
+
+  const addSupply = equity * lev - oldSupply;
+  const baseSupply = rs.totalSupply + addSupply;
+  if (baseSupply <= 0) {
+    scenariosEl.innerHTML = `<div class="stress-empty">Pool supply is unavailable for stress testing.</div>`;
+    return;
+  }
+
+  const scenarios = [
+    ...STRESS_PRESET_UTILS.map(util => ({ label: `${Math.round(util * 100)}%`, util, custom: false })),
+    { label: `${Math.round(customUtil * 100)}%`, util: customUtil, custom: true },
+  ];
+
+  scenariosEl.innerHTML = scenarios.map(s => {
+    const stressedBorrow = Math.max(0, baseSupply * s.util);
+    const stressed = projectRates(rs, addSupply, stressedBorrow - rs.totalBorrow);
+    const netApr = stressed.netSupplyApr * lev - stressed.netBorrowCost * (lev - 1);
+    const netApy = aprToApy(netApr);
+    const spreadPct = stressed.interestBorrowApr - stressed.interestSupplyApr;
+    const hf30 = stressHfAfterDays(hf, spreadPct, STRESS_HF_DAYS);
+    const ttl = formatStressDays(hf, spreadPct);
+    const kink = s.util >= 0.95;
+    const hfCls = !isFinite(hf30) || hf30 > 1.1 ? "hf-ok" : hf30 > 1.03 ? "hf-warn" : "hf-bad";
+
+    return `<div class="stress-scenario ${kink ? "stress-scenario-kink" : ""}">
+      <div class="stress-scenario-top">
+        <span class="stress-util mono">${s.label}</span>
+        <span class="stress-badge">${s.custom ? "custom" : kink ? "r_three kink" : "preset"}</span>
+      </div>
+      <div class="stress-metrics">
+        <span>Net APY</span><strong class="${netApy >= 0 ? "apr-great" : "apr-bad"}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</strong>
+        <span>${STRESS_HF_DAYS}d HF</span><strong class="${hfCls}">${isFinite(hf30) ? fmt(hf30, 3) : "∞"}</strong>
+        <span>Liquidation</span><strong class="${ttl.cls}">${ttl.text}</strong>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 // ── Render reserve stats for selected asset ───────────────────────────────────
@@ -1236,6 +1319,9 @@ function updatePreview() {
 
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
+    renderStressPanel(rs, lev, equity, oldSupply, oldBorrow, hf);
+  } else {
+    renderStressPanel(undefined, lev, equity, oldSupply, oldBorrow, hf);
   }
 
   // Risk zone labels (#9)
@@ -2201,6 +2287,7 @@ async function refreshAddFundsBalance() {
 }
 
 ($("leverage-slider") as HTMLInputElement).addEventListener("input",  updatePreview);
+($("stress-util-slider") as HTMLInputElement).addEventListener("input", updatePreview);
 // Live preview while typing (no clamping so user can type multi-digit numbers like "10")
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -2238,6 +2325,12 @@ $("demo-btn").addEventListener("click", () => {
     asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
     blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
     totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    bRate: 1_000_000_000_000n, dRate: 1_000_000_000_000n, bSupply: 1_000_000_000_000n, dSupply: 650_000_000_000n,
+    supplyEps: 0n, borrowEps: 0n, supplyEmission: null, borrowEmission: null,
+    rateConfig: {
+      rBase: 0, rOne: 500_000, rTwo: 2_000_000, rThree: 150_000_000,
+      utilOpt: Math.round(a.maxUtil * 10_000_000), irMod: 10_000_000, backstopFP: selectedPool.backstopFP,
+    },
   }));
   positions = { byAsset: new Map() };
   // One sample position
