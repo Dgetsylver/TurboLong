@@ -10,8 +10,8 @@
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
  */
 
-import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
+import { sendVerificationEmail, sendApyAlert, sendDailySummaryEmail, type DailySummaryRow } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -54,6 +54,36 @@ const KNOWN_POOL_IDS = new Set(POOLS.flatMap(p => [p.id]));
 
 /** All known asset symbols across pools. */
 const KNOWN_SYMBOLS = new Set(POOLS.flatMap(p => p.assets.map(a => a.symbol)));
+const STELLAR_ACCOUNT_RE = /^G[A-Z2-7]{55}$/;
+const WORKER_ORIGIN = "https://turbolong-alerts.workers.dev";
+
+let dailySummarySchemaReady = false;
+
+async function ensureDailySummarySchema(env: Env): Promise<void> {
+  if (dailySummarySchemaReady) return;
+  const statements = [
+    "ALTER TABLE subscriptions ADD COLUMN wallet_address TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN daily_summary_enabled INTEGER DEFAULT 0",
+    "ALTER TABLE subscriptions ADD COLUMN summary_utc_hour INTEGER",
+    "ALTER TABLE subscriptions ADD COLUMN summary_equity_usd REAL",
+    "ALTER TABLE subscriptions ADD COLUMN last_summary_at TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN last_summary_net_apy REAL",
+    "ALTER TABLE subscriptions ADD COLUMN last_summary_hf REAL",
+    "CREATE INDEX IF NOT EXISTS idx_subs_daily_summary ON subscriptions(daily_summary_enabled, summary_utc_hour, last_summary_at)",
+  ];
+
+  for (const sql of statements) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (e: any) {
+      const msg = String(e?.message ?? e).toLowerCase();
+      if (!msg.includes("duplicate column")) {
+        throw e;
+      }
+    }
+  }
+  dailySummarySchemaReady = true;
+}
 
 function generateToken(): string {
   const bytes = new Uint8Array(24);
@@ -71,6 +101,8 @@ function workerUrl(request: Request): string {
 // ── Route handlers ───────────────────────────────────────────────────────────
 
 async function handleSubscribe(request: Request, env: Env): Promise<Response> {
+  await ensureDailySummarySchema(env);
+
   let body: any;
   try {
     body = await request.json();
@@ -95,16 +127,50 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: false, error: "Invalid leverage bracket. Must be one of: " + LEVERAGE_BRACKETS.join(", ") }, 400, env);
   }
 
+  const dailySummary = body.daily_summary === true || body.daily_summary === "true";
+  const summaryHour = Number(body.summary_utc_hour);
+  if (dailySummary && (!Number.isInteger(summaryHour) || summaryHour < 0 || summaryHour > 23)) {
+    return jsonResponse({ ok: false, error: "Daily summary hour must be an integer from 0 to 23 UTC" }, 400, env);
+  }
+
+  const walletAddress = typeof body.wallet_address === "string" ? body.wallet_address.trim() : "";
+  if (walletAddress && !STELLAR_ACCOUNT_RE.test(walletAddress)) {
+    return jsonResponse({ ok: false, error: "Invalid Stellar wallet address" }, 400, env);
+  }
+
+  const equityUsd = Number(body.equity_usd);
+  const summaryEquityUsd = dailySummary && Number.isFinite(equityUsd) && equityUsd > 0 ? equityUsd : null;
+
   const verifyToken = generateToken();
   const unsubToken  = generateToken();
 
   try {
     await env.DB.prepare(`
-      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      INSERT INTO subscriptions (
+        email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token,
+        wallet_address, daily_summary_enabled, summary_utc_hour, summary_equity_usd
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, verified = 0
-    `).bind(email, pool_id, asset_symbol, lev, verifyToken, unsubToken).run();
+        SET verify_token = ?5,
+            unsub_token = ?6,
+            verified = 0,
+            wallet_address = ?7,
+            daily_summary_enabled = ?8,
+            summary_utc_hour = ?9,
+            summary_equity_usd = ?10
+    `).bind(
+      email,
+      pool_id,
+      asset_symbol,
+      lev,
+      verifyToken,
+      unsubToken,
+      walletAddress || null,
+      dailySummary ? 1 : 0,
+      dailySummary ? summaryHour : null,
+      summaryEquityUsd,
+    ).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
     return jsonResponse({ ok: false, error: "Database error" }, 500, env);
@@ -150,7 +216,7 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 <head><meta charset="utf-8"><title>Verified</title></head>
 <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 60px 20px;">
   <h2 style="color: #2DE8A3;">Subscription Verified!</h2>
-  <p>You'll receive an alert when your position's net APY turns negative.</p>
+  <p>You'll receive alerts and any daily summaries you opted into.</p>
 </body>
 </html>`);
 }
@@ -182,7 +248,121 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 
 // ── Cron handler ─────────────────────────────────────────────────────────────
 
+interface DailySummarySubscription {
+  id: number;
+  email: string;
+  pool_id: string;
+  asset_symbol: string;
+  leverage_bracket: number;
+  unsub_token: string;
+  summary_utc_hour: number;
+  summary_equity_usd: number | null;
+  last_summary_net_apy: number | null;
+  last_summary_hf: number | null;
+}
+
+function unsubscribeUrl(token: string): string {
+  return `${WORKER_ORIGIN}/unsubscribe?token=${token}`;
+}
+
+async function sendDailySummaries(env: Env): Promise<void> {
+  const hour = new Date().getUTCHours();
+  const due = await env.DB.prepare(`
+    SELECT id, email, pool_id, asset_symbol, leverage_bracket, unsub_token,
+           summary_utc_hour, summary_equity_usd, last_summary_net_apy, last_summary_hf
+    FROM subscriptions
+    WHERE verified = 1
+      AND daily_summary_enabled = 1
+      AND summary_utc_hour = ?1
+      AND (last_summary_at IS NULL OR last_summary_at < datetime('now', '-23 hours'))
+    ORDER BY email, pool_id, asset_symbol, leverage_bracket
+  `).bind(hour).all();
+
+  const subscriptions = (due.results ?? []) as unknown as DailySummarySubscription[];
+  if (!subscriptions.length) {
+    console.log(`[daily-summary] No subscribers due for ${hour}:00 UTC`);
+    return;
+  }
+
+  const grouped = new Map<string, { rows: DailySummaryRow[]; updates: { id: number; netApy: number; hf: number }[]; unsubToken: string }>();
+  const rateCache = new Map<string, ReserveRates | null>();
+
+  for (const sub of subscriptions) {
+    const pool = POOLS.find(p => p.id === sub.pool_id);
+    const asset = pool?.assets.find(a => a.symbol === sub.asset_symbol);
+    if (!pool || !asset) {
+      console.warn(`[daily-summary] Skipping unknown subscription ${sub.id}`);
+      continue;
+    }
+
+    const cacheKey = `${pool.id}:${asset.symbol}`;
+    let rates = rateCache.get(cacheKey);
+    if (rates === undefined) {
+      rates = await fetchReserveRates(pool, asset);
+      rateCache.set(cacheKey, rates);
+    }
+    if (!rates) {
+      console.warn(`[daily-summary] No rates for ${asset.symbol} on ${pool.name}`);
+      continue;
+    }
+
+    const leverage = Number(sub.leverage_bracket);
+    const netApy = computeNetApy(rates, leverage);
+    const healthFactor = computeHealthFactor(rates, leverage);
+    const lastHf = sub.last_summary_hf == null ? null : Number(sub.last_summary_hf);
+    const equityUsd = sub.summary_equity_usd == null ? null : Number(sub.summary_equity_usd);
+    const netYieldUsd = equityUsd !== null && Number.isFinite(equityUsd)
+      ? equityUsd * (netApy / 100) / 365
+      : null;
+
+    const digest = grouped.get(sub.email) ?? { rows: [], updates: [], unsubToken: sub.unsub_token };
+    digest.rows.push({
+      poolName: pool.name,
+      assetSymbol: asset.symbol,
+      leverage,
+      equityUsd,
+      netApy,
+      healthFactor,
+      healthFactorDelta: lastHf === null ? null : healthFactor - lastHf,
+      netYieldUsd,
+    });
+    digest.updates.push({ id: sub.id, netApy, hf: healthFactor });
+    grouped.set(sub.email, digest);
+  }
+
+  for (const [email, digest] of grouped) {
+    if (!digest.rows.length) continue;
+    const result = await sendDailySummaryEmail(
+      { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+      email,
+      {
+        summaryUtcHour: hour,
+        rows: digest.rows,
+        unsubscribeUrl: unsubscribeUrl(digest.unsubToken),
+        appUrl: env.FRONTEND_ORIGIN,
+      },
+    );
+
+    if (!result.ok) {
+      console.error(`[daily-summary] Failed to send summary to ${email}:`, result.error);
+      continue;
+    }
+
+    for (const update of digest.updates) {
+      await env.DB.prepare(`
+        UPDATE subscriptions
+        SET last_summary_at = datetime('now'),
+            last_summary_net_apy = ?2,
+            last_summary_hf = ?3
+        WHERE id = ?1
+      `).bind(update.id, update.netApy, update.hf).run();
+    }
+    console.log(`[daily-summary] Sent ${digest.rows.length} row(s) to ${email}`);
+  }
+}
+
 async function handleCron(env: Env): Promise<void> {
+  await ensureDailySummarySchema(env);
   console.log("[cron] APY alert check starting...");
 
   for (const pool of POOLS) {
@@ -223,7 +403,7 @@ async function handleCron(env: Env): Promise<void> {
         console.log(`[cron] Alerting ${subs.results.length} subscriber(s) for ${asset.symbol}@${bracket}x on ${pool.name}`);
 
         for (const sub of subs.results) {
-          const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+          const unsubUrl = unsubscribeUrl(sub.unsub_token as string);
           const result = await sendApyAlert(
             { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
             sub.email as string,
@@ -250,6 +430,8 @@ async function handleCron(env: Env): Promise<void> {
       }
     }
   }
+
+  await sendDailySummaries(env);
 
   console.log("[cron] APY alert check complete.");
 }

@@ -12,6 +12,43 @@ interface SendResult {
   error?: string;
 }
 
+export interface DailySummaryRow {
+  poolName: string;
+  assetSymbol: string;
+  leverage: number;
+  equityUsd: number | null;
+  netApy: number;
+  healthFactor: number;
+  healthFactorDelta: number | null;
+  netYieldUsd: number | null;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function pct(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function money(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
+  return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(2)}`;
+}
+
+function hf(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(3) : "inf";
+}
+
+function delta(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(3)}`;
+}
+
 async function sendEmail(env: Env, to: string, subject: string, html: string): Promise<SendResult> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -97,6 +134,71 @@ export async function sendApyAlert(
     env,
     to,
     `\u26A0 Negative APY: ${assetSymbol} at ${leverage}x on ${poolName}`,
+    html,
+  );
+}
+
+export async function sendDailySummaryEmail(
+  env: Env,
+  to: string,
+  opts: {
+    summaryUtcHour: number;
+    rows: DailySummaryRow[];
+    unsubscribeUrl: string;
+    appUrl: string;
+  },
+): Promise<SendResult> {
+  const rows = opts.rows.map(row => {
+    const apyColor = row.netApy >= 0 ? "#0B8F5A" : "#D92D20";
+    return `
+      <tr>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef;">${escapeHtml(row.poolName)}</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef;">${escapeHtml(row.assetSymbol)} ${row.leverage}x</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef; text-align: right;">${row.equityUsd === null ? "--" : `$${row.equityUsd.toFixed(2)}`}</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef; text-align: right; color: ${apyColor}; font-weight: 700;">${pct(row.netApy)}</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef; text-align: right;">${hf(row.healthFactor)}</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef; text-align: right;">${delta(row.healthFactorDelta)}</td>
+        <td style="padding: 8px 6px; border-bottom: 1px solid #e8e8ef; text-align: right;">${money(row.netYieldUsd)}</td>
+      </tr>`;
+  }).join("");
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
+  <h2 style="margin: 0 0 8px;">Turbolong daily summary</h2>
+  <p style="font-size: 14px; color: #555; margin: 0 0 20px;">Scheduled for ${opts.summaryUtcHour.toString().padStart(2, "0")}:00 UTC. Yield is estimated from the latest Blend rates over the last 24 hours.</p>
+
+  <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+    <thead>
+      <tr style="background: #f8f8fc; color: #555;">
+        <th style="padding: 8px 6px; text-align: left;">Pool</th>
+        <th style="padding: 8px 6px; text-align: left;">Position</th>
+        <th style="padding: 8px 6px; text-align: right;">Equity</th>
+        <th style="padding: 8px 6px; text-align: right;">Net APY</th>
+        <th style="padding: 8px 6px; text-align: right;">HF</th>
+        <th style="padding: 8px 6px; text-align: right;">HF 24h</th>
+        <th style="padding: 8px 6px; text-align: right;">24h Yield</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <p style="line-height: 1.6; color: #555; margin-top: 20px;">Open Turbolong to refresh position size or adjust leverage. The first daily summary shows "--" for HF delta because there is no previous digest baseline yet.</p>
+
+  <a href="${opts.appUrl}" style="display: inline-block; margin: 12px 0 20px; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
+
+  <p style="font-size: 12px; color: #aaa; margin-top: 24px;">
+    <a href="${opts.unsubscribeUrl}" style="color: #aaa;">Unsubscribe</a> from this summary.
+  </p>
+</body>
+</html>`.trim();
+
+  return sendEmail(
+    env,
+    to,
+    `Turbolong daily summary - ${opts.rows.length} position${opts.rows.length === 1 ? "" : "s"}`,
     html,
   );
 }
