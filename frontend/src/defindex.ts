@@ -17,6 +17,7 @@ import {
 
 import {
   server as blendServer,
+  nodeCall,
   getNetworkPassphrase,
   getActiveNetwork,
   fetchAllReserves,
@@ -120,7 +121,7 @@ async function invokeRead(contractId: string, method: string, args: xdr.ScVal[] 
     .setTimeout(30)
     .build();
 
-  const sim = await blendServer.simulateTransaction(tx);
+  const sim = await nodeCall(`simulate vault ${method}`, () => blendServer.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim)) {
     throw new Error(`Simulation failed`);
   }
@@ -239,7 +240,7 @@ export async function buildVaultDepositXdr(
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await blendServer.getAccount(userAddress);
+  const account = await nodeCall("load account for vault deposit", () => blendServer.getAccount(userAddress));
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -256,7 +257,7 @@ export async function buildVaultDepositXdr(
     .setTimeout(300)
     .build();
 
-  const sim = await blendServer.simulateTransaction(tx);
+  const sim = await nodeCall("simulate vault deposit", () => blendServer.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim)) {
     const errDetail = 'error' in sim ? JSON.stringify((sim as any).error).slice(0, 300) : 'unknown';
     throw new Error(`Deposit simulation failed: ${errDetail}`);
@@ -277,7 +278,7 @@ export async function buildVaultWithdrawXdr(
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await blendServer.getAccount(userAddress);
+  const account = await nodeCall("load account for vault withdraw", () => blendServer.getAccount(userAddress));
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -295,7 +296,7 @@ export async function buildVaultWithdrawXdr(
     .setTimeout(300)
     .build();
 
-  const sim = await blendServer.simulateTransaction(tx);
+  const sim = await nodeCall("simulate vault withdraw", () => blendServer.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim)) {
     const errDetail = 'error' in sim ? JSON.stringify((sim as any).error).slice(0, 300) : 'unknown';
     throw new Error(`Withdraw simulation failed: ${errDetail}`);
@@ -313,7 +314,7 @@ export async function buildVaultRebalanceXdr(
   vault: VaultConfig,
   userAddress: string,
 ): Promise<string> {
-  const account = await blendServer.getAccount(userAddress);
+  const account = await nodeCall("load account for vault rebalance", () => blendServer.getAccount(userAddress));
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -324,7 +325,7 @@ export async function buildVaultRebalanceXdr(
     .setTimeout(300)
     .build();
 
-  const sim = await blendServer.simulateTransaction(tx);
+  const sim = await nodeCall("simulate vault rebalance", () => blendServer.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim)) {
     throw new Error(`Rebalance simulation failed — HF may already be healthy`);
   }
