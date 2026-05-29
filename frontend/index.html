@@ -306,39 +306,50 @@
                 </div>
               </div>
 
-              <!-- APR breakdown -->
-              <div class="apr-grid">
-                <div class="apr-card">
-                  <div class="apr-card-label">Supply</div>
-                  <div class="apr-row">
-                    <span class="apr-key">Interest APY</span>
-                    <span class="apr-val" id="supply-interest-apr">—</span>
-                  </div>
-                  <div class="apr-row">
-                    <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards distributed by the pool. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
-                    <span class="apr-val apr-blnd" id="supply-blnd-apr">—</span>
-                  </div>
-                  <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
-                    <span class="apr-val" id="supply-net-apr">—</span>
-                  </div>
-                </div>
-                <div class="apr-card">
-                  <div class="apr-card-label">Borrow</div>
-                  <div class="apr-row">
-                    <span class="apr-key">Interest cost</span>
-                    <span class="apr-val" id="borrow-interest-apr">—</span>
-                  </div>
-                  <div class="apr-row">
-                    <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards that offset borrow cost. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
-                    <span class="apr-val apr-blnd" id="borrow-blnd-apr">—</span>
-                  </div>
-                  <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
-                    <span class="apr-val" id="borrow-net-cost">—</span>
-                  </div>
+              <!-- Net APY headline -->
+              <div class="net-apy-headline-row">
+                <div class="net-apy-headline-card">
+                  <span class="net-apy-headline-label">Net APY <span class="tooltip" id="pool-net-apy-tip" data-tip="Base supply APY (interest compounded) plus BLND emission rewards at 1× leverage. Leverage this further in the Open Position panel to amplify returns.">?</span></span>
+                  <span class="net-apy-headline-value" id="pool-net-apy">—</span>
                 </div>
               </div>
+
+              <!-- Component rate breakdown (expandable) -->
+              <details class="apr-breakdown-details" id="apr-breakdown-details">
+                <summary class="apr-breakdown-summary">Rate breakdown <span class="apr-breakdown-caret">&#9662;</span></summary>
+                <div class="apr-grid">
+                  <div class="apr-card">
+                    <div class="apr-card-label">Supply</div>
+                    <div class="apr-row">
+                      <span class="apr-key">Interest APY</span>
+                      <span class="apr-val" id="supply-interest-apr">—</span>
+                    </div>
+                    <div class="apr-row">
+                      <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards distributed by the pool. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
+                      <span class="apr-val apr-blnd" id="supply-blnd-apr">—</span>
+                    </div>
+                    <div class="apr-row apr-net-row">
+                      <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
+                      <span class="apr-val" id="supply-net-apr">—</span>
+                    </div>
+                  </div>
+                  <div class="apr-card">
+                    <div class="apr-card-label">Borrow</div>
+                    <div class="apr-row">
+                      <span class="apr-key">Interest cost</span>
+                      <span class="apr-val" id="borrow-interest-apr">—</span>
+                    </div>
+                    <div class="apr-row">
+                      <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards that offset borrow cost. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
+                      <span class="apr-val apr-blnd" id="borrow-blnd-apr">—</span>
+                    </div>
+                    <div class="apr-row apr-net-row">
+                      <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
+                      <span class="apr-val" id="borrow-net-cost">—</span>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div><!-- stats-body -->
           </div><!-- stats-collapsible -->
 

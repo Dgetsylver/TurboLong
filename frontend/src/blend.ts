@@ -424,6 +424,8 @@ export interface ReserveStats {
   blndBorrowApr:     number; // % pa — BLND emissions on borrow side (currently 0)
   netSupplyApr:      number; // interest + blnd
   netBorrowCost:     number; // interest - blnd (usually just interest)
+  /** Headline metric: APY on the supply side (interest compounded) + BLND emission APR. */
+  netApy:            number; // aprToApy(interestSupplyApr) + blndSupplyApr
   supplyEps:         bigint; // raw eps from pool, 0 if no emissions
   borrowEps:         bigint;
   supplyEmission:    any;    // raw get_reserve_emissions result for supply token
@@ -533,6 +535,11 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
 
       console.log(`[blend:${pool.name}] ${asset.symbol} util=${util.toFixed(4)} c=${cFactor.toFixed(4)} l=${lFactor.toFixed(4)} borrowApr=${interestBorrowApr.toFixed(4)}% supplyApr=${interestSupplyApr.toFixed(4)}% blndSupplyApr=${blndSupplyApr.toFixed(4)}% supplyEps=${supplyEps}`);
 
+      const _netSupplyApr  = interestSupplyApr + blndSupplyApr;
+      const _netBorrowCost = interestBorrowApr - blndBorrowApr;
+      // Headline APY: interest side compounded (APY), BLND is linear (APR)
+      const _netApy = (Math.exp(interestSupplyApr / 100) - 1) * 100 + blndSupplyApr;
+
       results.push({
         asset: { ...asset, cFactor, maxUtil: maxUtilActual },
         cFactor,
@@ -549,8 +556,9 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
         interestSupplyApr,
         blndSupplyApr,
         blndBorrowApr,
-        netSupplyApr:  interestSupplyApr + blndSupplyApr,
-        netBorrowCost: interestBorrowApr - blndBorrowApr,
+        netSupplyApr:  _netSupplyApr,
+        netBorrowCost: _netBorrowCost,
+        netApy:        _netApy,
         supplyEps,
         borrowEps,
         supplyEmission: supplyEmissions,
@@ -573,6 +581,8 @@ export interface ProjectedRates {
   blndBorrowApr:     number;
   netSupplyApr:      number;
   netBorrowCost:     number;
+  /** Headline metric: APY on supply side (interest compounded) + BLND APR. */
+  netApy:            number;
 }
 
 /**
@@ -621,6 +631,8 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
   const blndSupplyApr = projSupplyUsd > 0 ? (supplyBlndYr * bp / projSupplyUsd) * 100 : 0;
   const blndBorrowApr = projBorrowUsd > 0 ? (borrowBlndYr * bp / projBorrowUsd) * 100 : 0;
 
+  const projNetApy = (Math.exp(interestSupplyApr / 100) - 1) * 100 + blndSupplyApr;
+
   return {
     interestSupplyApr,
     interestBorrowApr,
@@ -628,6 +640,7 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
     blndBorrowApr,
     netSupplyApr:  interestSupplyApr + blndSupplyApr,
     netBorrowCost: interestBorrowApr - blndBorrowApr,
+    netApy:        projNetApy,
   };
 }
 

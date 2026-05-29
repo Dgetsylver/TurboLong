@@ -34,6 +34,7 @@ interface RustOutput {
   blndBorrowApr: number;
   netSupplyApr: number;
   netBorrowCost: number;
+  netApy?: number; // added in TS; Rust binary may not emit this yet
 }
 
 describe('Parity tests between Rust simulate binary and TS projectRates', () => {

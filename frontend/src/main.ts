@@ -757,6 +757,7 @@ function renderSelectedAsset() {
 
   // Clear skeletons (#3)
   ["stat-cfactor","stat-max-lev","stat-liquidity","stat-util","stat-price",
+   "pool-net-apy",
    "supply-interest-apr","supply-blnd-apr","supply-net-apr","borrow-interest-apr","borrow-blnd-apr","borrow-net-cost"]
     .forEach(clearSkeleton);
 
@@ -786,6 +787,18 @@ function renderSelectedAsset() {
   renderAprLine("borrow-interest-apr", rs.interestBorrowApr, true);
   renderAprLine("borrow-blnd-apr",     rs.blndBorrowApr,     false, true, "-");
   renderAprLine("borrow-net-cost",     aprToApy(rs.interestBorrowApr) - rs.blndBorrowApr, true, false, undefined, true);
+
+  // ── Net APY headline ──────────────────────────────────────────────────────
+  const netApyEl = $("pool-net-apy");
+  const netApyVal = rs.netApy; // aprToApy(interestSupplyApr) + blndSupplyApr
+  const netApySign = netApyVal >= 0 ? "+" : "";
+  netApyEl.textContent = `${netApySign}${fmt(netApyVal, 2)}%`;
+  netApyEl.className = `net-apy-headline-value ${
+    netApyVal > 10 ? "apr-great" : netApyVal > 3 ? "apr-ok" : netApyVal > 0 ? "apr-dim" : "apr-bad"
+  }`;
+  const netApyTip = $("pool-net-apy-tip");
+  if (netApyTip) netApyTip.setAttribute("data-tip",
+    `Supply APY (compounded) + BLND emission APR at 1× leverage. Interest APY: ${fmt(aprToApy(rs.interestSupplyApr), 2)}%, BLND: +${fmt(rs.blndSupplyApr, 2)}%. Actual net APR: ${fmt(rs.netSupplyApr, 2)}%`);
 
   // Update net tooltips with actual APR
   const supplyTip = $("supply-net-tip");
@@ -838,18 +851,22 @@ function renderPortfolioSummary() {
   container.innerHTML = "";
   for (const [assetId, pos] of positions.byAsset) {
     const rs = reserves.find(r => r.asset.id === assetId);
+    // Leveraged Net APY for the position
     const cardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
     const netApy = aprToApy(cardNetApr);
+    // Base (1×) pool Net APY for secondary context
+    const baseNetApy = rs ? rs.netApy : 0;
     const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
     const card = document.createElement("div");
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
-    card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
+    card.title = `Leveraged Net APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
     card.innerHTML = `
       <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
+      <span class="portfolio-card-net-apy ${netApy >= 0 ? "apr-great" : "apr-bad"}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span>HF ${fmt(pos.hf, 2)} \u00B7 pool ${fmt(baseNetApy, 2)}% base</span>
       </span>`;
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
@@ -1316,6 +1333,7 @@ async function loadAll() {
 
   // Show skeletons (#3)
   const skeletonIds = ["stat-cfactor","stat-max-lev","stat-liquidity","stat-util","stat-price",
+    "pool-net-apy",
     "supply-interest-apr","supply-blnd-apr","supply-net-apr","borrow-interest-apr","borrow-blnd-apr","borrow-net-cost",
     "pos-collateral","pos-debt","pos-equity","pos-leverage","pos-hf","pos-pool-hf","pos-net-apr","pos-headroom","pos-liq-days"];
   skeletonIds.forEach(setSkeleton);
