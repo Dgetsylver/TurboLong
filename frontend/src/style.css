@@ -217,6 +217,9 @@ body {
 }
 .settings-dropdown-item:hover { background: var(--tab-hover-bg); color: var(--text); }
 .settings-badge { font-size: 10px; padding: 1px 6px; border-radius: 99px; background: var(--surface2); color: var(--text-3); }
+.settings-fee-row { cursor: default; gap: 8px; }
+.settings-fee-row:hover { background: transparent; color: var(--text-2); }
+.settings-rebalances-input { width: 56px; padding: 3px 6px; font-size: 12px; text-align: right; }
 
 /* Legacy sidebar — hidden by default, used for mobile drawer */
 .sidebar { display: none; }

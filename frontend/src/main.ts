@@ -93,6 +93,43 @@ let selectedPool: PoolDef        = getKnownPools()[0]; // default: Etherfuse
 let assets: AssetInfo[]          = getPoolAssets(selectedPool);
 let selectedAsset: AssetInfo     = assets[2]; // default: CETES (index 2 in Etherfuse)
 
+// ── Fee-adjusted APY (B2) ─────────────────────────────────────────────────────
+// Default: 12 rebalances/year (monthly). Each rebalance = 2 txs (approve + submit).
+// Per-tx fee = BASE_FEE = 100 stroops = 0.00001 XLM.
+// fee_drag_%/yr = (rebalances × 2 × 0.00001 × xlm_price) / equity_usd × 100
+
+const FEE_REBALANCES_KEY = "blendlev_rebalances_per_year";
+const FEE_REBALANCES_DEFAULT = 12;
+const BASE_FEE_XLM = 0.00001; // 100 stroops
+const TXS_PER_REBALANCE = 2;  // approve + submit
+
+function getRebalancesPerYear(): number {
+  const raw = localStorage.getItem(FEE_REBALANCES_KEY);
+  const n = raw ? parseInt(raw, 10) : FEE_REBALANCES_DEFAULT;
+  return isNaN(n) || n < 0 ? FEE_REBALANCES_DEFAULT : n;
+}
+
+function setRebalancesPerYear(n: number) {
+  localStorage.setItem(FEE_REBALANCES_KEY, String(n));
+}
+
+/** XLM price in USD — use live reserve price if available, else fallback. */
+function xlmPriceUsd(): number {
+  const xlmReserve = reserves.find(r => r.asset.symbol === "XLM");
+  return xlmReserve?.priceUsd ?? 0.10;
+}
+
+/**
+ * Annual fee drag as a percentage of equity.
+ * fee_drag = (rebalances × TXS_PER_REBALANCE × BASE_FEE_XLM × xlm_price) / equity_usd × 100
+ */
+function feeDragPct(equityUsd: number): number {
+  if (equityUsd <= 0) return 0;
+  const rebalances = getRebalancesPerYear();
+  const feeUsdPerYear = rebalances * TXS_PER_REBALANCE * BASE_FEE_XLM * xlmPriceUsd();
+  return (feeUsdPerYear / equityUsd) * 100;
+}
+
 // ── Network switching ────────────────────────────────────────────────────────
 
 async function switchNetwork(net: NetworkMode) {
@@ -1084,7 +1121,9 @@ function renderPosition() {
   const heroApyEl = $("hero-net-apy");
   if (rs && pos.leverage > 0) {
     const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
-    const netApy = aprToApy(posNetApr);
+    const equityUsd = pos.equity * (rs.priceUsd || 1);
+    const drag = feeDragPct(equityUsd);
+    const netApy = aprToApy(posNetApr - drag);
     const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
     netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     netAprEl.className   = `metric-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
@@ -1092,7 +1131,7 @@ function renderPosition() {
     heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     heroApyEl.className   = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
     // Tooltips with actual APR
-    const aprTip = `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(posNetApr, 2)}%`;
+    const aprTip = `Fee-adjusted APY. Net APR: ${fmt(posNetApr, 2)}% − fee drag: ${fmt(drag, 3)}%/yr (${getRebalancesPerYear()} rebalances/yr). Blend does not auto-compound.`;
     const posTip = $("pos-net-apr-tip");
     if (posTip) posTip.setAttribute("data-tip", aprTip);
     const heroTip = $("hero-net-apy-tip");
@@ -1372,12 +1411,15 @@ function updatePreview() {
   if (rs) {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
-    const netApy = aprToApy(netApr);
+    // Fee-adjusted APY (B2): subtract annualised XLM fee drag from net APR
+    const equityUsd = equity * (rs.priceUsd || 1);
+    const drag = feeDragPct(equityUsd);
+    const netApy = aprToApy(netApr - drag);
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Fee-adjusted APY. Net APR: ${fmt(netApr, 2)}% − fee drag: ${fmt(drag, 3)}%/yr (${getRebalancesPerYear()} rebalances × 2 txs × ${BASE_FEE_XLM} XLM @ $${fmt(xlmPriceUsd(), 3)}). Blend does not auto-compound.`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -2195,6 +2237,17 @@ function toggleTheme() {
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
 document.getElementById("mobile-theme-toggle")?.addEventListener("click", toggleTheme);
+
+// Rebalances/yr input (B2) — persist and re-render APY on change
+const rebalancesInput = $("rebalances-input") as HTMLInputElement;
+rebalancesInput.value = String(getRebalancesPerYear());
+rebalancesInput.addEventListener("change", () => {
+  const n = Math.max(0, Math.min(365, parseInt(rebalancesInput.value, 10) || 0));
+  rebalancesInput.value = String(n);
+  setRebalancesPerYear(n);
+  updatePreview();
+  renderPosition();
+});
 
 // Settings dropdown toggle
 $("settings-btn").addEventListener("click", (e) => {

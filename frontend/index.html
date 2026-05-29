@@ -55,6 +55,10 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <label class="settings-dropdown-item settings-fee-row">
+            Rebalances/yr
+            <input type="number" id="rebalances-input" class="input mono settings-rebalances-input" min="0" max="365" step="1" value="12" title="Assumed rebalances per year for fee-adjusted APY. Each rebalance = 2 txs × 0.00001 XLM." />
+          </label>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
