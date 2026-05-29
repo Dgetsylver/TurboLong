@@ -1,0 +1,102 @@
+# .gitleaks.toml — TurboLong secret-scanning configuration
+# https://github.com/gitleaks/gitleaks
+#
+# ── Allowlisting false positives ───────────────────────────────────────────────
+#
+#   Option A — inline suppression (per-line, preferred for one-offs):
+#     Add the comment  # gitleaks:allow  at the end of the offending line.
+#     Example:
+#       const TEST_KEY = "GBHD3V2XKX6DXHYZDSHA2UYZTO4MKB2R6QNSCDT4XEKNGTLPXT7A36EA"  # gitleaks:allow
+#
+#   Option B — allowlist block in this file (for whole patterns or paths):
+#     Add an [[allowlists]] section below. Each entry needs a description.
+#     It can match by regex on the secret value, commit hash, file path, or
+#     the full regex of the rule ID.
+#
+#   Option C — .gitleaksignore file (commit-hash based):
+#     Run:  gitleaks detect --report-format json --report-path findings.json
+#     Then: gitleaks add <finding-fingerprint>  (creates/updates .gitleaksignore)
+#
+# ── Title ──────────────────────────────────────────────────────────────────────
+
+title = "TurboLong Gitleaks Config"
+
+# ── Extend the default rule set ────────────────────────────────────────────────
+# Pulls in the built-in Gitleaks ruleset so we only need to add/override below.
+[extend]
+useDefault = true
+
+# ── Custom rules ───────────────────────────────────────────────────────────────
+
+# Stellar secret keys start with 'S' followed by 55 uppercase base32 chars.
+[[rules]]
+id          = "stellar-secret-key"
+description = "Stellar secret key (Ed25519 seed)"
+regex       = '''(?i)(stellar[_\-]?(secret|private|seed|sk)[_\-]?key[\"\':\s=]+)?S[A-Z2-7]{55}'''
+tags        = ["stellar", "key", "secret"]
+severity    = "CRITICAL"
+
+  [rules.allowlist]
+  description = "Known test / public key values that are not secrets"
+  regexes     = [
+    # Stellar address space - public keys start with G, not S, so this is a
+    # safety net for regex overlap only
+    "^G[A-Z2-7]{55}$",
+  ]
+
+# Resend API key pattern (used in alerts worker)
+[[rules]]
+id          = "resend-api-key"
+description = "Resend API key"
+regex       = '''re_[a-zA-Z0-9]{32,}'''
+tags        = ["resend", "api", "key"]
+severity    = "HIGH"
+
+# Cloudflare API token
+[[rules]]
+id          = "cloudflare-api-token"
+description = "Cloudflare API token"
+regex       = '''(?i)(cf[_\-]?(api[_\-]?)?token[\s\"\'=:]+)[a-zA-Z0-9_\-]{40,}'''
+tags        = ["cloudflare", "token"]
+severity    = "HIGH"
+
+# Generic private key block (PEM / seed phrase style)
+[[rules]]
+id          = "private-key-block"
+description = "PEM private key block"
+regex       = '''-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'''
+tags        = ["pem", "private-key"]
+severity    = "CRITICAL"
+
+# ── Global allowlist ───────────────────────────────────────────────────────────
+# Paths, commits, and regex patterns that should NEVER trigger an alert.
+
+[[allowlists]]
+description = "Test fixtures, snapshots, and lock files"
+paths       = [
+  # Cargo.lock and package-lock files contain hashes that look like secrets
+  '''Cargo\.lock''',
+  '''package-lock\.json''',
+  # Ledger snapshot JSON files are raw on-chain data — not secrets
+  '''tests-snapshot-source/.*\.json''',
+  # Generated report documents
+  '''.*\.docx''',
+]
+
+[[allowlists]]
+description = "Known public Stellar addresses used in docs and tests (not secret keys)"
+regexes     = [
+  # Pool contract IDs and oracle addresses referenced throughout the codebase
+  '''CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI''',
+  '''CAVRP26CWW6IUEXBRA3Q2T2SHBUVBC2DF43M4E23LEZGW5ZEIB62HALS''',
+  '''CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75''',
+  '''CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY''',
+  '''CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK''',
+]
+
+[[allowlists]]
+description = "On-chain proof-of-concept wallet addresses in bug bounty report (public, not secrets)"
+regexes     = [
+  '''GBHD3V2XKX6DXHYZDSHA2UYZTO4MKB2R6QNSCDT4XEKNGTLPXT7A36EA''',
+  '''GCR3VBVLYM5ZUBX63XMYBEY4EMAPVNCLORA4CWPA64CYEQQT53UCIQ36''',
+]

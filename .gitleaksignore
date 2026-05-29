@@ -1,0 +1,31 @@
+# .gitleaksignore
+#
+# Allowlisted findings — each line is a finding fingerprint from `gitleaks detect`.
+# Format: <commit>:<file>:<ruleID>:<line>
+#
+# INSTRUCTIONS FOR ADDING NEW ENTRIES
+# ─────────────────────────────────────
+# 1. Run:  gitleaks detect --config .gitleaks.toml --report-format json --report-path findings.json
+# 2. Open findings.json and copy the "Fingerprint" field of the false positive.
+# 3. Add it here with a comment explaining WHY it is a false positive.
+# 4. Verify the scan passes:  gitleaks detect --config .gitleaks.toml
+# 5. Commit ONLY the updated .gitleaksignore — never suppress a real secret.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Finding: Stellar testnet secret key SCX6RZDD... committed 2026-03-13
+# File:    scripts/test_strategy.ts  (line 41)
+# Commit:  befb1e016bd92a80af107de62ae9f1093d3f354e
+# Reason:  TESTNET-ONLY throwaway key used in a one-time E2E test script.
+#          The corresponding Stellar address holds zero mainnet funds.
+#          Key has been rotated (testnet keypair, no real-money exposure).
+#          The commit cannot be cleanly rewritten without rebasing all
+#          subsequent history; the suppression is accepted on that basis.
+#          Confirmed testnet: Networks.TESTNET passphrase used in same file.
+befb1e016bd92a80af107de62ae9f1093d3f354e:scripts/test_strategy.ts:stellar-secret-key:41
+
+# Finding: Stellar testnet secret key SCX6RZDD... committed 2026-03-13
+# File:    scripts/deploy_strategy.ts  (line 24)
+# Commit:  befb1e016bd92a80af107de62ae9f1093d3f354e
+# Reason:  Same testnet throwaway key as above, in the deploy script.
+#          Both files in the same commit — same justification applies.
+befb1e016bd92a80af107de62ae9f1093d3f354e:scripts/deploy_strategy.ts:stellar-secret-key:24
