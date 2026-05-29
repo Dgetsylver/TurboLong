@@ -19,6 +19,7 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
+    LastRebalance,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -147,6 +148,21 @@ pub fn get_keeper(e: &Env) -> Address {
         .persistent()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
+}
+
+// ── Last Rebalance Timestamp ─────────────────────────────────────────────────
+
+pub fn set_last_rebalance(e: &Env, timestamp: u64) {
+    e.storage()
+        .instance()
+        .set(&DataKey::LastRebalance, &timestamp);
+}
+
+pub fn get_last_rebalance(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get(&DataKey::LastRebalance)
+        .unwrap_or(0)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

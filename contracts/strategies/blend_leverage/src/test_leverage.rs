@@ -324,6 +324,7 @@ fn test_unwind_healthy_position_returns_zero() {
         SCALAR_12,
         9_500_000,
         10_500_000, // min_hf = 1.05
+        8,          // target_loops
     ).unwrap();
     assert_eq!(loops, 0);
 }
@@ -340,6 +341,7 @@ fn test_unwind_unhealthy_position() {
         SCALAR_12,
         9_500_000,
         10_500_000,
+        8,
     ).unwrap();
     assert!(loops > 0, "Should need at least 1 unwind loop");
     assert!(loops <= 5, "Should not exceed safety limit");
@@ -354,6 +356,7 @@ fn test_unwind_no_debt() {
         SCALAR_12,
         9_500_000,
         10_500_000,
+        8,
     ).unwrap();
     assert_eq!(loops, 0);
 }
@@ -694,3 +697,28 @@ fn test_safety_allows_healthy_pool() {
     );
     assert!(result.is_ok(), "Should allow at 50% utilization with healthy HF");
 }
+
+// ── Rate limit & Keeper check ────────────────────────────────────────────────
+
+#[test]
+fn test_last_rebalance_rate_limit() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        // Initially 0
+        assert_eq!(storage::get_last_rebalance(e), 0);
+        
+        storage::set_last_rebalance(e, 1000);
+        assert_eq!(storage::get_last_rebalance(e), 1000);
+    });
+}
+
+#[test]
+fn test_keeper_storage() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let keeper = Address::generate(e);
+        storage::set_keeper(e, keeper.clone());
+        assert_eq!(storage::get_keeper(e), keeper);
+    });
+}
+
