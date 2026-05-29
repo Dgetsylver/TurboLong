@@ -1210,3 +1210,17 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── Keyboard shortcut table (A12) ─────────────────────────────────────────── */
+.shortcut-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+.shortcut-table td { padding: 0.4rem 0.6rem; }
+.shortcut-table td:first-child { width: 5rem; }
+kbd {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+}
