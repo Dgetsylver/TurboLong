@@ -6,11 +6,11 @@ Implement trustline auto-setup so that on first deposit, `changeTrust` operation
 
 ## Tasks
 
-- [ ] 1. Add MissingTrustlineResult interface to blend.ts
+- [x] 1. Add MissingTrustlineResult interface to blend.ts
   - Add `export interface MissingTrustlineResult { missing: Asset[]; currentCount: number; }` to `frontend/src/blend.ts`
   - Place it alongside the other exported interfaces near the top of the file
 
-- [ ] 2. Implement getMissingTrustlines in blend.ts
+- [x] 2. Implement getMissingTrustlines in blend.ts
   - Add `export async function getMissingTrustlines(pool: PoolDef, userAddress: string, assetId: string): Promise<MissingTrustlineResult>` to `frontend/src/blend.ts`
   - Call `simulate(poolContract.call("get_reserve", new Address(assetId).toScVal()))` and throw if null
   - Extract `reserveRaw.config.b_token` and `reserveRaw.config.d_token` contract IDs
@@ -21,7 +21,7 @@ Implement trustline auto-setup so that on first deposit, `changeTrust` operation
   - Set `currentCount` to the number of non-native balances on the account
   - Return `{ missing, currentCount }`
 
-- [ ] 3. Implement prependTrustlineOps in blend.ts
+- [x] 3. Implement prependTrustlineOps in blend.ts
   - Add `export async function prependTrustlineOps(submitXdr: string, missingAssets: Asset[], userAddress: string): Promise<string>` to `frontend/src/blend.ts`
   - Return `submitXdr` immediately when `missingAssets.length === 0`
   - Deserialise with `TransactionBuilder.fromXDR(submitXdr, _cfg.passphrase)` cast to `Transaction`
@@ -32,7 +32,7 @@ Implement trustline auto-setup so that on first deposit, `changeTrust` operation
   - Return `builder.build().toXDR()`
   - Ensure `Transaction` type is imported from `@stellar/stellar-sdk` (add to existing import if absent)
 
-- [ ] 4. Update openPosition in main.ts
+- [x] 4. Update openPosition in main.ts
   - Import `getMissingTrustlines`, `prependTrustlineOps`, and `MissingTrustlineResult` from `./blend.ts`
   - After the approve step and before `buildOpenPositionXdr`, call `getMissingTrustlines(selectedPool, userAddress, liveAsset.id)`
   - If `currentCount + missing.length > 1000`, show a descriptive toast and return early without building the submit XDR
@@ -41,7 +41,7 @@ Implement trustline auto-setup so that on first deposit, `changeTrust` operation
   - Pass `bundledXdr` to `signAndSubmit` instead of `submitXdr`
   - Update the step label for the submit step to include `"(+ trustlines)"` suffix when `missing.length > 0`
 
-- [ ] 5. Build and type-check
+- [x] 5. Build and type-check
   - Run `npm run build` or `tsc --noEmit` in `frontend/` and fix any TypeScript errors
   - Confirm no new package dependencies are introduced
   - Confirm the no-op path: when all trustlines exist, `prependTrustlineOps` returns the original XDR and the stepper shows `["Approve", "Submit"]`

@@ -42,6 +42,8 @@ import {
   estimateBlndSwap,
   submitSignedXdr,
   submitClassicXdr,
+  getMissingTrustlines,
+  prependTrustlineOps,
   hfForLeverage,
   maxLeverageFor,
   type NetworkMode,
@@ -50,6 +52,7 @@ import {
   type ReserveStats,
   type AssetPosition,
   type UserPositions,
+  type MissingTrustlineResult,
   projectRates,
 } from "./blend.ts";
 
@@ -1370,12 +1373,42 @@ async function openPosition() {
 
   const initialStroops = BigInt(Math.round(initial * 1e7));
   setLoading($("open-btn") as HTMLButtonElement, true);
-  showTxStepper(["Approve", "Submit"]);
+
+  // Check for missing trustlines before building the submit tx.
+  // We do this after the early-exit guards so we only hit Horizon when we're
+  // actually going to proceed.
+  let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
+  try {
+    trustlineResult = await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
+  } catch (e: any) {
+    toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const STELLAR_TRUSTLINE_LIMIT = 1000;
+  if (trustlineResult.currentCount + trustlineResult.missing.length > STELLAR_TRUSTLINE_LIMIT) {
+    toast(
+      `Adding ${trustlineResult.missing.length} trustline(s) would exceed the Stellar limit of 1,000. ` +
+      `You currently have ${trustlineResult.currentCount}. Remove unused trustlines before depositing.`,
+      "error",
+    );
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const hasMissingTrustlines = trustlineResult.missing.length > 0;
+  const submitLabel = hasMissingTrustlines
+    ? `Open ${liveAsset.symbol} leverage (+ trustlines)`
+    : `Open ${liveAsset.symbol} leverage`;
+  showTxStepper(["Approve", hasMissingTrustlines ? "Setup Trustlines + Submit" : "Submit"]);
+
   try {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
+    const rawSubmitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const bundledXdr = await prependTrustlineOps(rawSubmitXdr, trustlineResult.missing, userAddress);
+    await signAndSubmit(bundledXdr, submitLabel, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
     await loadAll();
