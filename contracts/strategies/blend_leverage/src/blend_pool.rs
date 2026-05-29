@@ -15,6 +15,7 @@ use crate::{
     soroswap::internal_swap_exact_tokens_for_tokens,
     storage::Config,
 };
+use soroban_fixed_point_math::FixedPoint;
 
 // ── Leverage loop submission ─────────────────────────────────────────────────
 
@@ -302,6 +303,8 @@ pub fn submit_deleverage(
     e: &Env,
     unwind_loops: u32,
     config: &Config,
+    b_rate: i128,
+    d_rate: i128,
 ) -> Result<(i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
@@ -320,12 +323,14 @@ pub fn submit_deleverage(
         return Ok((0, 0));
     }
 
-    // Build all (withdraw, repay) pairs for a single atomic submit.
-    // Each layer amount = the borrow amount of the corresponding leverage step.
-    // Unwind in reverse order (last leverage step unwound first).
+    // Calculate equity to use as the base `initial_amount` for loop generation
+    let supply_value = pre_b.fixed_mul_floor(b_rate, SCALAR_12).unwrap_or(0);
+    let debt_value = pre_d.fixed_mul_floor(d_rate, SCALAR_12).unwrap_or(0);
+    let equity = supply_value.checked_sub(debt_value).unwrap_or(0);
+
     let count = loop_step_count(config.target_loops);
     let mut layers: Vec<i128> = Vec::new(e);
-    let mut orig_balance = pre_b; // approximate with total collateral
+    let mut orig_balance = equity.max(0);
     for i in 0..count {
         let is_final = i == config.target_loops.min(20);
         let (_, borrow) = compute_step(orig_balance, config.c_factor, is_final);

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "testnet-loop": "npx tsx testnet_loop.ts"
+    "testnet-loop": "npx tsx testnet_loop.ts",
+    "deploy:mainnet": "npx tsx deploy_mainnet_strategy.ts"
   },
   "dependencies": {
     "@creit-tech/stellar-router-sdk": "npm:@jsr/creit-tech__stellar-router-sdk@^0.2.0",

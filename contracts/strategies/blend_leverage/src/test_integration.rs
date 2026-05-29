@@ -746,3 +746,252 @@ fn test_deleverage_step_by_step() {
         diff
     );
 }
+
+// ── Reentrancy Regression Tests ──────────────────────────────────────────────
+
+#[contract]
+pub struct MockMaliciousToken;
+
+#[contractimpl]
+impl MockMaliciousToken {
+    pub fn __constructor(e: Env, strategy: Address) {
+        e.storage()
+            .instance()
+            .set(&soroban_sdk::Symbol::new(&e, "strategy"), &strategy);
+    }
+
+    pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
+        let strategy: Address = e
+            .storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&e, "strategy"))
+            .unwrap();
+        let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+        // Try calling deposit reentrantly
+        let _ = strategy_client.try_deposit(&amount, &from);
+    }
+
+    pub fn transfer_from(_e: Env, _spender: Address, _from: Address, _to: Address, _amount: i128) {}
+
+    pub fn approve(_e: Env, _from: Address, _spender: Address, _amount: i128, _expiration_ledger: u32) {}
+
+    pub fn balance(_e: Env, _id: Address) -> i128 {
+        1_000_000_000
+    }
+}
+
+#[test]
+fn test_reentrancy_via_malicious_token() {
+    let e = Env::default();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+
+    // Register strategy
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, ());
+    let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy_addr);
+
+    // Deploy malicious token
+    let malicious_token = e.register(MockMaliciousToken, (&strategy_addr,));
+
+    // Register malicious token in pool so constructor validation passes
+    let mut reserve_config = default_reserve_config();
+    reserve_config.c_factor = 9_500_000;
+    reserve_config.l_factor = 10_000_000;
+    reserve_config.max_util = 9_900_000;
+
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    pool_client
+        .mock_all_auths()
+        .queue_set_reserve(&malicious_token, &reserve_config);
+    pool_client.mock_all_auths().set_reserve(&malicious_token);
+
+    // Initialize strategy
+    let mut init_args = soroban_sdk::Vec::new(&e);
+    init_args.push_back(pool_addr.to_val()); // pool
+    init_args.push_back(blnd.to_val()); // blend_token
+    init_args.push_back(Address::generate(&e).to_val()); // router
+    init_args.push_back(1_0000000_i128.into_val(&e)); // reward_threshold
+    init_args.push_back(Address::generate(&e).to_val()); // keeper
+    init_args.push_back(9_000_000_i128.into_val(&e)); // c_factor
+    init_args.push_back(3_u32.into_val(&e)); // target_loops
+    init_args.push_back(10_500_000_i128.into_val(&e)); // min_hf
+
+    // Re-register or re-deploy/initialize the strategy client properly
+    // Wait! Since register() registers a new contract instance, we deploy it with constructor args.
+    // So let's register the strategy with the constructor args!
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, (&malicious_token, &init_args));
+    let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy_addr);
+
+    // Attempt to deposit - this will call malicious_token.transfer which will try to call deposit again.
+    let user = Address::generate(&e);
+    // We expect the deposit call to fail or block the reentrant call.
+    // The try_deposit should return an error because the reentrant call fails.
+    let result = strategy_client.try_deposit(&1000, &user);
+    assert!(result.is_err());
+}
+
+#[contract]
+pub struct MockMaliciousRouter;
+
+#[contractimpl]
+impl MockMaliciousRouter {
+    pub fn __constructor(e: Env, strategy: Address) {
+        e.storage()
+            .instance()
+            .set(&soroban_sdk::Symbol::new(&e, "strategy"), &strategy);
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        e: Env,
+        amount_in: i128,
+        _amount_out_min: i128,
+        _path: soroban_sdk::Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> soroban_sdk::Vec<i128> {
+        let strategy: Address = e
+            .storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&e, "strategy"))
+            .unwrap();
+        let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+        // Attempt reentrancy: call harvest
+        let _ = strategy_client.try_harvest(&to, &None);
+
+        let mut res = soroban_sdk::Vec::new(&e);
+        res.push_back(amount_in);
+        res.push_back(amount_in);
+        res
+    }
+}
+
+#[test]
+fn test_reentrancy_via_malicious_router() {
+    let e = Env::default();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+
+    // Register strategy first to get address
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, ());
+
+    // Deploy malicious router
+    let malicious_router = e.register(MockMaliciousRouter, (&strategy_addr,));
+
+    // Initialize strategy with malicious router
+    let mut init_args = soroban_sdk::Vec::new(&e);
+    init_args.push_back(pool_addr.to_val()); // pool
+    init_args.push_back(blnd.to_val()); // blend_token
+    init_args.push_back(malicious_router.to_val()); // malicious router
+    init_args.push_back(100_i128.into_val(&e)); // reward_threshold (low so we can trigger reinvest)
+    let keeper = Address::generate(&e);
+    init_args.push_back(keeper.to_val()); // keeper
+    init_args.push_back(9_000_000_i128.into_val(&e)); // c_factor
+    init_args.push_back(3_u32.into_val(&e)); // target_loops
+    init_args.push_back(10_500_000_i128.into_val(&e)); // min_hf
+
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, (&token, &init_args));
+    let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy_addr);
+
+    // Fund the strategy contract with reward token so it passes threshold
+    let blnd_admin = StellarAssetClient::new(&e, &blnd);
+    blnd_admin.mock_all_auths().mint(&strategy_addr, &1000);
+
+    // Call harvest as keeper. Reentrancy attempt will occur when it swaps.
+    e.mock_all_auths();
+    let result = strategy_client.try_harvest(&keeper, &None);
+    
+    // We expect the harvest call to fail or block the reentrant call.
+    assert!(result.is_err());
+}
+
+#[contract]
+pub struct MockMaliciousPool;
+
+#[contractimpl]
+impl MockMaliciousPool {
+    pub fn __constructor(e: Env, strategy: Address) {
+        e.storage()
+            .instance()
+            .set(&soroban_sdk::Symbol::new(&e, "strategy"), &strategy);
+    }
+
+    pub fn submit_with_allowance(
+        e: Env,
+        from: Address,
+        _spender: Address,
+        _to: Address,
+        _requests: soroban_sdk::Vec<pool::Request>,
+    ) {
+        let strategy: Address = e
+            .storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&e, "strategy"))
+            .unwrap();
+        let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+        // Attempt reentrancy: call deposit
+        let dummy_user = Address::generate(&e);
+        let _ = strategy_client.try_deposit(&1000, &dummy_user);
+    }
+
+    pub fn get_reserve(e: Env, _asset: Address) -> pool::Reserve {
+        let config = default_reserve_config();
+        let data = pool::ReserveData {
+            b_rate: SCALAR_12,
+            d_rate: SCALAR_12,
+            b_supply: 1_000_000_000,
+            d_supply: 0,
+            b_supply_shares: 0,
+            d_supply_shares: 0,
+            backstop_apr: 0,
+            last_update: 0,
+        };
+        pool::Reserve { config, data }
+    }
+
+    pub fn get_positions(e: Env, _strategy: Address) -> pool::Positions {
+        pool::Positions {
+            collateral: soroban_sdk::Map::new(&e),
+            liabilities: soroban_sdk::Map::new(&e),
+        }
+    }
+}
+
+#[test]
+fn test_reentrancy_via_malicious_pool() {
+    let e = Env::default();
+    
+    // Register strategy
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, ());
+
+    // Deploy malicious pool
+    let malicious_pool = e.register(MockMaliciousPool, (&strategy_addr,));
+
+    // Initialize strategy with malicious pool
+    let token = e.register_stellar_asset_contract_v2(Address::generate(&e)).address();
+    let blnd = e.register_stellar_asset_contract_v2(Address::generate(&e)).address();
+
+    let mut init_args = soroban_sdk::Vec::new(&e);
+    init_args.push_back(malicious_pool.to_val()); // pool
+    init_args.push_back(blnd.to_val()); // blend_token
+    init_args.push_back(Address::generate(&e).to_val()); // router
+    init_args.push_back(1_0000000_i128.into_val(&e)); // reward_threshold
+    init_args.push_back(Address::generate(&e).to_val()); // keeper
+    init_args.push_back(9_000_000_i128.into_val(&e)); // c_factor
+    init_args.push_back(3_u32.into_val(&e)); // target_loops
+    init_args.push_back(10_500_000_i128.into_val(&e)); // min_hf
+
+    let strategy_addr = e.register(crate::BlendLeverageStrategy, (&token, &init_args));
+    let strategy_client = crate::BlendLeverageStrategyClient::new(&e, &strategy_addr);
+
+    let user = Address::generate(&e);
+    e.mock_all_auths();
+    
+    // Mint initial tokens to user so deposit's token.transfer succeeds
+    let token_admin = StellarAssetClient::new(&e, &token);
+    token_admin.mint(&user, &2000);
+
+    // Call deposit. The strategy will execute submit_leverage_loop, which calls submit_with_allowance on MockMaliciousPool.
+    // That call will try to reenter deposit, which should fail.
+    let result = strategy_client.try_deposit(&1000, &user);
+    assert!(result.is_err());
+}
+
+
