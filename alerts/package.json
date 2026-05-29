@@ -5,11 +5,18 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
     "db:create": "wrangler d1 create turbolong-alerts",
-    "db:migrate": "wrangler d1 execute turbolong-alerts --file=src/schema.sql"
+    "db:migrate": "wrangler d1 execute turbolong-alerts --local --file=src/schema.sql",
+    "db:migrate:remote": "wrangler d1 execute turbolong-alerts --remote --file=src/schema.sql",
+    "vapid:generate": "npx @pushforge/builder vapid",
+    "setup:remote": "powershell -ExecutionPolicy Bypass -File scripts/deploy-remote.ps1"
   },
   "devDependencies": {
-    "wrangler": "^3.99.0",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "wrangler": "^3.99.0"
+  },
+  "dependencies": {
+    "@pushforge/builder": "^2.0.5"
   }
 }

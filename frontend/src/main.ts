@@ -2761,7 +2761,28 @@ document.addEventListener("keydown", (e) => {
 
 // ── APY Alert subscription ──────────────────────────────────────────────────
 
-const ALERTS_WORKER_URL = "https://turbolong-alerts.workers.dev";
+const ALERTS_WORKER_URL =
+  import.meta.env.VITE_ALERTS_WORKER_URL ?? "https://turbolong-alerts.workers.dev";
+
+function urlBase64ToUint8Array(base64: string): Uint8Array {
+  const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function registerAlertServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch (e) {
+    console.warn("Service worker registration failed:", e);
+    return null;
+  }
+}
+
+registerAlertServiceWorker();
 
 $("alert-bell-btn").addEventListener("click", () => {
   $("alert-pool-name").textContent = selectedPool.name;
@@ -2823,6 +2844,71 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     toast(`Subscription failed: ${e.message?.slice(0, 100)}`, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Subscribe";
+    btn.textContent = "Subscribe with email";
+  }
+});
+
+$("alert-push-btn").addEventListener("click", async () => {
+  if (!userAddress || demoMode) {
+    toast("Connect your wallet to enable push alerts.", "info");
+    return;
+  }
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    toast("Push notifications are not supported in this browser.", "error");
+    return;
+  }
+
+  const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const btn = $("alert-push-btn") as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = "Enabling...";
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Notification permission denied.", "error");
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    const keyRes = await fetch(`${ALERTS_WORKER_URL}/vapid-public-key`);
+    const keyData = await keyRes.json() as { ok?: boolean; publicKey?: string; error?: string };
+    if (!keyData.ok || !keyData.publicKey) {
+      toast(keyData.error || "Push is not configured on the server.", "error");
+      return;
+    }
+
+    let subscription = await reg.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
+      });
+    }
+
+    const subJson = subscription.toJSON();
+    const res = await fetch(`${ALERTS_WORKER_URL}/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscription: subJson,
+        pool_id: selectedPool.id,
+        asset_symbol: selectedAsset.symbol,
+        leverage_bracket: leverageBracket,
+      }),
+    });
+
+    const data = await res.json() as { ok?: boolean; error?: string };
+    if (data.ok) {
+      toast("Push alerts enabled for this position.", "success");
+      $("alert-modal-overlay").classList.add("hidden");
+    } else {
+      toast(data.error || "Push subscription failed.", "error");
+    }
+  } catch (e: any) {
+    toast(`Push subscription failed: ${e.message?.slice(0, 100)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enable push notifications";
   }
 });

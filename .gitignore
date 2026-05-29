@@ -11,3 +11,9 @@ src/.DS_Store
 frontend/node_modules/
 frontend/dist/
 frontend/package-lock.json
+frontend/.env.local
+
+alerts/node_modules/
+alerts/package-lock.json
+alerts/.dev.vars
+alerts/.wrangler/
