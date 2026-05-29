@@ -311,34 +311,35 @@
                 <div class="apr-card">
                   <div class="apr-card-label">Supply</div>
                   <div class="apr-row">
-                    <span class="apr-key">Interest APY</span>
+                    <span class="apr-key">Interest <span class="rate-convention-badge">APY</span> <span class="tooltip" data-tip="Continuously-compounded APY derived from Blend's interest rate model.">?</span></span>
                     <span class="apr-val" id="supply-interest-apr">—</span>
                   </div>
                   <div class="apr-row">
-                    <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards distributed by the pool. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
+                    <span class="apr-key">BLND emissions <span class="rate-convention-badge">APR</span> <span class="tooltip" data-tip="BLND token rewards distributed by the pool. Shown as APR — emissions are linear and do not auto-compound.">?</span></span>
                     <span class="apr-val apr-blnd" id="supply-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net supply <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
                     <span class="apr-val" id="supply-net-apr">—</span>
                   </div>
                 </div>
                 <div class="apr-card">
                   <div class="apr-card-label">Borrow</div>
                   <div class="apr-row">
-                    <span class="apr-key">Interest cost</span>
+                    <span class="apr-key">Interest cost <span class="rate-convention-badge">APY</span> <span class="tooltip" data-tip="Continuously-compounded APY derived from Blend's interest rate model.">?</span></span>
                     <span class="apr-val" id="borrow-interest-apr">—</span>
                   </div>
                   <div class="apr-row">
-                    <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards that offset borrow cost. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
+                    <span class="apr-key">BLND emissions <span class="rate-convention-badge">APR</span> <span class="tooltip" data-tip="BLND token rewards that offset borrow cost. Shown as APR — emissions are linear and do not auto-compound.">?</span></span>
                     <span class="apr-val apr-blnd" id="borrow-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net borrow cost <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
                     <span class="apr-val" id="borrow-net-cost">—</span>
                   </div>
                 </div>
               </div>
+              <p class="apr-footnote">* Net rows combine APY interest with APR BLND emissions — a slight overestimate of true compounded yield.</p>
             </div><!-- stats-body -->
           </div><!-- stats-collapsible -->
 
@@ -423,7 +424,7 @@
                     <span>Borrow headroom</span><strong id="prev-headroom" class="mono">—</strong>
                   </div>
                   <div class="preview-row preview-net-apr">
-                    <span>Est. net APY <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
+                    <span>Est. net APY <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
                   <div class="preview-row">
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
@@ -457,7 +458,7 @@
                   <span class="metric-hero-value" id="hero-leverage">—</span>
                 </div>
                 <div class="metric-hero">
-                  <span class="metric-hero-label">Net APY <span class="tooltip" id="hero-net-apy-tip" data-tip="">?</span></span>
+                  <span class="metric-hero-label">Net APY <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="hero-net-apy-tip" data-tip="">?</span></span>
                   <span class="metric-hero-value" id="hero-net-apy">—</span>
                 </div>
               </div>
@@ -512,7 +513,7 @@
                     <span class="metric-value" id="pos-pool-hf">—</span>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Net APY <span class="tooltip" id="pos-net-apr-tip" data-tip="">?</span></span>
+                    <span class="metric-label">Net APY <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="pos-net-apr-tip" data-tip="">?</span></span>
                     <span class="metric-value" id="pos-net-apr">—</span>
                   </div>
                   <div class="position-metric">
@@ -630,7 +631,7 @@
                   <span class="stat-value mono" id="vault-share-price">--</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label">Net APY <span class="tooltip" id="vault-apy-tip" data-tip="">?</span></span>
+                  <span class="stat-label">Net APY <span class="rate-convention-badge">APY*</span> <span class="tooltip" id="vault-apy-tip" data-tip="">?</span></span>
                   <span class="stat-value mono" id="vault-apy">--</span>
                 </div>
               </div>
@@ -667,11 +668,11 @@
                   <span class="metric-value mono" id="vault-equity">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Supply APY</span>
+                  <span class="metric-label">Supply APY <span class="rate-convention-badge">APY</span></span>
                   <span class="metric-value mono" id="vault-supply-apr">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Borrow APY</span>
+                  <span class="metric-label">Borrow APY <span class="rate-convention-badge">APY</span></span>
                   <span class="metric-value mono" id="vault-borrow-apr">--</span>
                 </div>
                 <div class="position-metric">

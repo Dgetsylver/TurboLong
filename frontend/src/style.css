@@ -420,6 +420,20 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .apr-net-row .apr-key { color: var(--text); font-weight: 600; }
 .apr-net-row .apr-val { font-size: 15px; }
 
+.rate-convention-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  letter-spacing: 0.03em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
 .apr-blnd   { color: var(--blnd); }
 .apr-great  { color: var(--success); }
 .apr-ok     { color: var(--text); }
