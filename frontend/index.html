@@ -55,6 +55,10 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <label class="settings-dropdown-item settings-fee-row">
+            Rebalances/yr
+            <input type="number" id="rebalances-input" class="input mono settings-rebalances-input" min="0" max="365" step="1" value="12" title="Assumed rebalances per year for fee-adjusted APY. Each rebalance = 2 txs × 0.00001 XLM." />
+          </label>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -428,6 +432,10 @@
                   <div class="preview-row">
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
                   </div>
+                  <details class="worst-case-panel" id="worst-case-panel">
+                    <summary class="worst-case-summary">Worst-case scenario ▸</summary>
+                    <div id="worst-case-body" class="worst-case-body"></div>
+                  </details>
                 </div>
                 <p class="hf-warning hidden" id="hf-warning">&#9888; HF too low — liquidation risk. Reduce leverage.</p>
                 <p class="hf-warning hidden" id="liquidity-warning"></p>
@@ -534,6 +542,11 @@
                 <details class="tx-history" id="tx-history" style="display:none">
                   <summary class="tx-history-toggle">Recent Transactions</summary>
                   <div id="tx-history-list" class="tx-history-list"></div>
+                </details>
+
+                <details class="pos-timeline" id="position-timeline" style="display:none">
+                  <summary class="tx-history-toggle">Position History</summary>
+                  <div id="position-timeline-list" class="pos-timeline-list"></div>
                 </details>
               </div>
             </section>

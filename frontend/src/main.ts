@@ -51,6 +51,9 @@ import {
   type AssetPosition,
   type UserPositions,
   projectRates,
+  fetchPositionEvents,
+  type PositionEvent,
+  type PositionEventKind,
 } from "./blend.ts";
 
 import {
@@ -89,6 +92,43 @@ let positions:   UserPositions   = { byAsset: new Map() };
 let selectedPool: PoolDef        = getKnownPools()[0]; // default: Etherfuse
 let assets: AssetInfo[]          = getPoolAssets(selectedPool);
 let selectedAsset: AssetInfo     = assets[2]; // default: CETES (index 2 in Etherfuse)
+
+// ── Fee-adjusted APY (B2) ─────────────────────────────────────────────────────
+// Default: 12 rebalances/year (monthly). Each rebalance = 2 txs (approve + submit).
+// Per-tx fee = BASE_FEE = 100 stroops = 0.00001 XLM.
+// fee_drag_%/yr = (rebalances × 2 × 0.00001 × xlm_price) / equity_usd × 100
+
+const FEE_REBALANCES_KEY = "blendlev_rebalances_per_year";
+const FEE_REBALANCES_DEFAULT = 12;
+const BASE_FEE_XLM = 0.00001; // 100 stroops
+const TXS_PER_REBALANCE = 2;  // approve + submit
+
+function getRebalancesPerYear(): number {
+  const raw = localStorage.getItem(FEE_REBALANCES_KEY);
+  const n = raw ? parseInt(raw, 10) : FEE_REBALANCES_DEFAULT;
+  return isNaN(n) || n < 0 ? FEE_REBALANCES_DEFAULT : n;
+}
+
+function setRebalancesPerYear(n: number) {
+  localStorage.setItem(FEE_REBALANCES_KEY, String(n));
+}
+
+/** XLM price in USD — use live reserve price if available, else fallback. */
+function xlmPriceUsd(): number {
+  const xlmReserve = reserves.find(r => r.asset.symbol === "XLM");
+  return xlmReserve?.priceUsd ?? 0.10;
+}
+
+/**
+ * Annual fee drag as a percentage of equity.
+ * fee_drag = (rebalances × TXS_PER_REBALANCE × BASE_FEE_XLM × xlm_price) / equity_usd × 100
+ */
+function feeDragPct(equityUsd: number): number {
+  if (equityUsd <= 0) return 0;
+  const rebalances = getRebalancesPerYear();
+  const feeUsdPerYear = rebalances * TXS_PER_REBALANCE * BASE_FEE_XLM * xlmPriceUsd();
+  return (feeUsdPerYear / equityUsd) * 100;
+}
 
 // ── Network switching ────────────────────────────────────────────────────────
 
@@ -445,6 +485,94 @@ function renderTxHistory() {
       <a class="tx-history-link" href="https://stellar.expert/explorer/public/tx/${tx.hash}" target="_blank" rel="noopener">View</a>
     </div>`;
   }).join("");
+}
+
+// ── Position event timeline (A25) ─────────────────────────────────────────────
+
+const POS_EVENTS_MAX = 50;
+
+function posEventsKey(assetId: string, poolId: string) {
+  return `pos_events_${poolId}_${assetId}`;
+}
+
+function getPositionEvents(assetId: string, poolId: string): PositionEvent[] {
+  const raw = localStorage.getItem(posEventsKey(assetId, poolId));
+  return raw ? JSON.parse(raw) : [];
+}
+
+function savePositionEvents(assetId: string, poolId: string, events: PositionEvent[]) {
+  localStorage.setItem(posEventsKey(assetId, poolId), JSON.stringify(events.slice(0, POS_EVENTS_MAX)));
+}
+
+function recordPositionEvent(kind: PositionEventKind, hash: string, hf: number | null) {
+  const events = getPositionEvents(selectedAsset.id, selectedPool.id);
+  // Deduplicate by hash
+  if (events.some(e => e.hash === hash)) return;
+  events.unshift({ kind, hash, timestamp: Date.now(), hf });
+  savePositionEvents(selectedAsset.id, selectedPool.id, events);
+}
+
+function explorerTxUrl(hash: string): string {
+  const net = getActiveNetwork() === "testnet" ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${net}/tx/${hash}`;
+}
+
+const EVENT_LABELS: Record<PositionEventKind, string> = {
+  open:      "Open",
+  rebalance: "Rebalance",
+  harvest:   "Harvest",
+  close:     "Close",
+};
+const EVENT_ICONS: Record<PositionEventKind, string> = {
+  open:      "⊕",
+  rebalance: "⇄",
+  harvest:   "✦",
+  close:     "⊗",
+};
+
+function renderPositionTimeline() {
+  const wrap = document.getElementById("position-timeline");
+  if (!wrap) return;
+  const events = getPositionEvents(selectedAsset.id, selectedPool.id);
+  if (events.length === 0) {
+    wrap.style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
+  const list = document.getElementById("position-timeline-list")!;
+  list.innerHTML = events.map(ev => {
+    const d = new Date(ev.timestamp);
+    const localStr = d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+    const utcStr   = d.toUTCString();
+    const hfStr    = ev.hf !== null ? ` · HF ${fmt(ev.hf, 3)}` : "";
+    const shortHash = ev.hash.slice(0, 8) + "…" + ev.hash.slice(-4);
+    return `<div class="pos-event-item pos-event-${ev.kind}">
+      <span class="pos-event-icon" aria-hidden="true">${EVENT_ICONS[ev.kind]}</span>
+      <span class="pos-event-label">${EVENT_LABELS[ev.kind]}</span>
+      <time class="pos-event-time" title="${utcStr}" datetime="${d.toISOString()}">${localStr}</time>
+      <span class="pos-event-hf">${hfStr}</span>
+      <a class="pos-event-link" href="${explorerTxUrl(ev.hash)}" target="_blank" rel="noopener">${shortHash}</a>
+    </div>`;
+  }).join("");
+}
+
+async function refreshTimelineFromChain() {
+  const events = await fetchPositionEvents(selectedPool, userAddress!, selectedAsset.id);
+  if (events.length === 0) return;
+  const stored = getPositionEvents(selectedAsset.id, selectedPool.id);
+  const storedHashes = new Set(stored.map(e => e.hash));
+  let changed = false;
+  for (const ev of events) {
+    if (!storedHashes.has(ev.hash)) {
+      stored.push(ev);
+      changed = true;
+    }
+  }
+  if (changed) {
+    stored.sort((a, b) => b.timestamp - a.timestamp);
+    savePositionEvents(selectedAsset.id, selectedPool.id, stored);
+    renderPositionTimeline();
+  }
 }
 
 // ── TX Stepper (#10) ─────────────────────────────────────────────────────────
@@ -993,7 +1121,9 @@ function renderPosition() {
   const heroApyEl = $("hero-net-apy");
   if (rs && pos.leverage > 0) {
     const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
-    const netApy = aprToApy(posNetApr);
+    const equityUsd = pos.equity * (rs.priceUsd || 1);
+    const drag = feeDragPct(equityUsd);
+    const netApy = aprToApy(posNetApr - drag);
     const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
     netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     netAprEl.className   = `metric-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
@@ -1001,7 +1131,7 @@ function renderPosition() {
     heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
     heroApyEl.className   = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
     // Tooltips with actual APR
-    const aprTip = `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(posNetApr, 2)}%`;
+    const aprTip = `Fee-adjusted APY. Net APR: ${fmt(posNetApr, 2)}% − fee drag: ${fmt(drag, 3)}%/yr (${getRebalancesPerYear()} rebalances/yr). Blend does not auto-compound.`;
     const posTip = $("pos-net-apr-tip");
     if (posTip) posTip.setAttribute("data-tip", aprTip);
     const heroTip = $("hero-net-apy-tip");
@@ -1040,6 +1170,8 @@ function renderPosition() {
 
   // Compound row: show swap estimate if there's pending BLND
   updateCompoundEstimate();
+  // Position event timeline (A25)
+  renderPositionTimeline();
 }
 
 async function updateCompoundEstimate() {
@@ -1165,6 +1297,73 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
   updatePreview();
 }
 
+// ── Worst-case scenario panel (B14) ──────────────────────────────────────────
+
+/**
+ * Compute borrow APR at a given utilization using the real IR curve parameters.
+ * Mirrors the exact formula in blend.ts / fetchAllReserves.
+ */
+function irAtUtil(util: number, rc: { rBase: number; rOne: number; rTwo: number; rThree: number; utilOpt: number; irMod: number }): number {
+  const SCALAR_F  = 10_000_000;
+  const FIXED_95  = 9_500_000;
+  const utilFp    = Math.round(util * SCALAR_F);
+  const { rBase, rOne, rTwo, rThree, utilOpt, irMod } = rc;
+  let base: number;
+  if (utilFp <= utilOpt) {
+    base = rBase + Math.ceil(rOne * utilFp / utilOpt);
+  } else if (utilFp <= FIXED_95) {
+    const slope = Math.ceil((utilFp - utilOpt) * SCALAR_F / (FIXED_95 - utilOpt));
+    base = rBase + rOne + Math.ceil(rTwo * slope / SCALAR_F);
+  } else {
+    const slope = Math.ceil((utilFp - FIXED_95) * SCALAR_F / (SCALAR_F - FIXED_95));
+    base = rBase + rOne + rTwo + Math.ceil(rThree * slope / SCALAR_F);
+  }
+  return (Math.ceil(base * irMod / SCALAR_F) / SCALAR_F) * 100; // → APR %
+}
+
+function renderWorstCase(lev: number, hf: number, rs: ReserveStats | null) {
+  const body = document.getElementById("worst-case-body");
+  if (!body) return;
+
+  if (!rs || !isFinite(hf) || hf <= 1 || lev <= 1) {
+    body.innerHTML = `<span class="wc-na">Open a position to see worst-case projection.</span>`;
+    return;
+  }
+
+  const rc = rs.rateConfig;
+  const BACKSTOP = rc.backstopFP / 10_000_000;
+
+  // Worst-case: r_three kicks in at 99% util
+  const UTIL_WORST = 0.99;
+  const borrowApr  = irAtUtil(UTIL_WORST, rc);
+  const supplyApr  = borrowApr * UTIL_WORST * (1 - BACKSTOP);
+  const spread     = borrowApr - supplyApr; // %/yr
+
+  // HF(t) = HF(0) × e^(−spread/100 × t/365)  where t is days
+  const scenarios = [30, 90, 180];
+  const rows = scenarios.map(days => {
+    const hfFuture = hf * Math.exp(-(spread / 100) * (days / 365));
+    const cls = hfFuture > 1.1 ? "hf-ok" : hfFuture > 1.03 ? "hf-warn" : "hf-bad";
+    return `<div class="wc-row">
+      <span class="wc-days">${days}d</span>
+      <span class="wc-arrow">→</span>
+      <span class="wc-hf ${cls}">HF ${fmt(hfFuture, 3)}</span>
+    </div>`;
+  }).join("");
+
+  // Days until HF = 1.0 at worst-case spread
+  const daysToLiq = spread > 0 ? Math.log(hf) / (spread / 100) * 365 : Infinity;
+  const daysStr   = daysToLiq > 3650 ? ">10 years" : `~${Math.round(daysToLiq)} days`;
+  const daysClass = daysToLiq < 30 ? "hf-bad" : daysToLiq < 90 ? "hf-warn" : "hf-ok";
+
+  body.innerHTML = `
+    <p class="wc-premise">If r_three kicks in and util stays at 99%:<br>
+      borrow ${fmt(borrowApr, 2)}%/yr · supply ${fmt(supplyApr, 2)}%/yr · spread <strong>${fmt(spread, 2)}%/yr</strong>
+    </p>
+    <div class="wc-rows">${rows}</div>
+    <p class="wc-liq">Liquidation in <span class="${daysClass}">${daysStr}</span> at this spread.</p>`;
+}
+
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
 function updatePreview() {
@@ -1212,12 +1411,15 @@ function updatePreview() {
   if (rs) {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
-    const netApy = aprToApy(netApr);
+    // Fee-adjusted APY (B2): subtract annualised XLM fee drag from net APR
+    const equityUsd = equity * (rs.priceUsd || 1);
+    const drag = feeDragPct(equityUsd);
+    const netApy = aprToApy(netApr - drag);
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Fee-adjusted APY. Net APR: ${fmt(netApr, 2)}% − fee drag: ${fmt(drag, 3)}%/yr (${getRebalancesPerYear()} rebalances × 2 txs × ${BASE_FEE_XLM} XLM @ $${fmt(xlmPriceUsd(), 3)}). Blend does not auto-compound.`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -1304,6 +1506,9 @@ function updatePreview() {
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
       : "Add Funds";
   }
+
+  // Worst-case scenario panel (B14)
+  renderWorstCase(lev, hf, rs ?? null);
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
@@ -1335,6 +1540,10 @@ async function loadAll() {
 
     renderSelectedAsset();
     startFreshnessTimer();
+    // Refresh timeline from chain in background (A25)
+    if (positions.byAsset.has(selectedAsset.id)) {
+      refreshTimelineFromChain().catch(() => {});
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Failed to load pool data:", e);
@@ -1375,9 +1584,10 @@ async function openPosition() {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
+    const openHash = await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
+    recordPositionEvent("open", openHash, hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1));
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1403,8 +1613,9 @@ async function closePosition() {
   showTxStepper(["Close Position"]);
   try {
     const submitXdr = await buildCloseSubmitXdr(selectedPool, userAddress, pos);
-    await signAndSubmit(submitXdr, `Close ${selectedAsset.symbol} position`, 0);
+    const closeHash = await signAndSubmit(submitXdr, `Close ${selectedAsset.symbol} position`, 0);
     hideTxStepper();
+    recordPositionEvent("close", closeHash, null);
     removePnlEntry(selectedAsset.id, selectedPool.id);
     await loadAll();
   } catch (e: any) {
@@ -1494,8 +1705,9 @@ async function claimBlnd() {
   showTxStepper(["Claim BLND"]);
   try {
     const claimXdr = await buildClaimXdr(selectedPool, userAddress, tokenIds);
-    await signAndSubmit(claimXdr, "Claim BLND", 0);
+    const claimHash = await signAndSubmit(claimXdr, "Claim BLND", 0);
     hideTxStepper();
+    recordPositionEvent("harvest", claimHash, null);
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
@@ -1530,10 +1742,12 @@ async function adjustLeverage() {
   try {
     if (targetLev > curLev) {
       const xdr = await buildIncreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
-      await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      const h = await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      recordPositionEvent("rebalance", h, hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1));
     } else {
       const xdr = await buildDecreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
-      await signAndSubmit(xdr, `Decrease leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      const h = await signAndSubmit(xdr, `Decrease leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      recordPositionEvent("rebalance", h, hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1));
     }
     hideTxStepper();
     await loadAll();
@@ -1650,7 +1864,8 @@ async function claimAndConvert() {
   try {
     // Claim
     const claimXdr = await buildClaimXdr(selectedPool, userAddress, tokenIds);
-    await signAndSubmit(claimXdr, "Claim BLND", 0);
+    const claimHash = await signAndSubmit(claimXdr, "Claim BLND", 0);
+    recordPositionEvent("harvest", claimHash, null);
 
     // Check actual BLND balance after claim
     const blndBalance = await fetchAssetBalance(userAddress, getBlndId());
@@ -2022,6 +2237,17 @@ function toggleTheme() {
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
 document.getElementById("mobile-theme-toggle")?.addEventListener("click", toggleTheme);
+
+// Rebalances/yr input (B2) — persist and re-render APY on change
+const rebalancesInput = $("rebalances-input") as HTMLInputElement;
+rebalancesInput.value = String(getRebalancesPerYear());
+rebalancesInput.addEventListener("change", () => {
+  const n = Math.max(0, Math.min(365, parseInt(rebalancesInput.value, 10) || 0));
+  rebalancesInput.value = String(n);
+  setRebalancesPerYear(n);
+  updatePreview();
+  renderPosition();
+});
 
 // Settings dropdown toggle
 $("settings-btn").addEventListener("click", (e) => {
