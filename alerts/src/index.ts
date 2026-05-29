@@ -11,7 +11,7 @@
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { sendVerificationEmail, sendApyAlert, sendRateSpikeAlert } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -180,6 +180,47 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 </html>`);
 }
 
+// ── Rate-spike subscription handler (E3) ─────────────────────────────────────
+
+async function handleSubscribeSpike(request: Request, env: Env): Promise<Response> {
+  let body: any;
+  try { body = await request.json(); } catch {
+    return jsonResponse({ ok: false, error: "Invalid JSON" }, 400, env);
+  }
+
+  const { email, pool_id, asset_symbol, threshold_pp = 2.0 } = body;
+
+  if (!email || !EMAIL_RE.test(email))       return jsonResponse({ ok: false, error: "Invalid email" }, 400, env);
+  if (!KNOWN_POOL_IDS.has(pool_id))          return jsonResponse({ ok: false, error: "Unknown pool" }, 400, env);
+  if (!KNOWN_SYMBOLS.has(asset_symbol))      return jsonResponse({ ok: false, error: "Unknown asset" }, 400, env);
+  const thr = Number(threshold_pp);
+  if (isNaN(thr) || thr <= 0 || thr > 100)  return jsonResponse({ ok: false, error: "threshold_pp must be 0–100" }, 400, env);
+
+  const verifyToken = generateToken();
+  const unsubToken  = generateToken();
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO rate_spike_subscriptions (email, pool_id, asset_symbol, threshold_pp, verify_token, unsub_token)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT(email, pool_id, asset_symbol) DO UPDATE
+        SET threshold_pp = ?4, verify_token = ?5, unsub_token = ?6, verified = 0
+    `).bind(email, pool_id, asset_symbol, thr, verifyToken, unsubToken).run();
+  } catch (e: any) {
+    console.error("DB insert failed:", e);
+    return jsonResponse({ ok: false, error: "Database error" }, 500, env);
+  }
+
+  const verifyUrl = `${workerUrl(request)}/verify?token=${verifyToken}`;
+  const result = await sendVerificationEmail(
+    { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+    email, verifyUrl,
+  );
+  if (!result.ok) return jsonResponse({ ok: false, error: "Failed to send verification email" }, 500, env);
+
+  return jsonResponse({ ok: true, message: "Check your email to verify your rate-spike subscription." }, 200, env);
+}
+
 // ── Cron handler ─────────────────────────────────────────────────────────────
 
 async function handleCron(env: Env): Promise<void> {
@@ -200,6 +241,68 @@ async function handleCron(env: Env): Promise<void> {
         continue;
       }
 
+      // ── E3: record snapshot and check for rate spikes ─────────────────────
+      const currentBorrowApr = rates.interestBorrowApr;
+
+      // Store snapshot
+      await env.DB.prepare(
+        "INSERT INTO rate_snapshots (pool_id, asset_symbol, borrow_apr) VALUES (?1, ?2, ?3)"
+      ).bind(pool.id, asset.symbol, currentBorrowApr).run();
+
+      // Prune snapshots older than 24h
+      await env.DB.prepare(
+        "DELETE FROM rate_snapshots WHERE pool_id = ?1 AND asset_symbol = ?2 AND recorded_at < datetime('now', '-24 hours')"
+      ).bind(pool.id, asset.symbol).run();
+
+      // Get the snapshot from ~15 min ago (the previous cron tick)
+      const prevSnap = await env.DB.prepare(`
+        SELECT borrow_apr FROM rate_snapshots
+        WHERE pool_id = ?1 AND asset_symbol = ?2
+          AND recorded_at <= datetime('now', '-14 minutes')
+        ORDER BY recorded_at DESC LIMIT 1
+      `).bind(pool.id, asset.symbol).first<{ borrow_apr: number }>();
+
+      if (prevSnap) {
+        const deltapp = currentBorrowApr - prevSnap.borrow_apr;
+
+        if (deltapp > 0) {
+          // Find verified spike subscribers whose threshold is exceeded and haven't been alerted in 1h
+          const spikeSubs = await env.DB.prepare(`
+            SELECT id, email, unsub_token, threshold_pp
+            FROM rate_spike_subscriptions
+            WHERE pool_id = ?1 AND asset_symbol = ?2 AND verified = 1
+              AND threshold_pp <= ?3
+              AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-1 hour'))
+          `).bind(pool.id, asset.symbol, deltapp).all();
+
+          for (const sub of spikeSubs.results ?? []) {
+            const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+            const result = await sendRateSpikeAlert(
+              { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+              sub.email as string,
+              {
+                poolName: pool.name,
+                assetSymbol: asset.symbol,
+                borrowAprBefore: prevSnap.borrow_apr,
+                borrowAprAfter: currentBorrowApr,
+                deltapp,
+                thresholdPp: sub.threshold_pp as number,
+                unsubscribeUrl: unsubUrl,
+                appUrl: env.FRONTEND_ORIGIN,
+              },
+            );
+            if (result.ok) {
+              await env.DB.prepare(
+                "UPDATE rate_spike_subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+              ).bind(sub.id).run();
+            } else {
+              console.error(`[cron] Failed to send spike alert to ${sub.email}:`, result.error);
+            }
+          }
+        }
+      }
+
+      // ── Existing APY alert logic ───────────────────────────────────────────
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
 
@@ -271,6 +374,12 @@ export default {
           return jsonResponse({ error: "Method not allowed" }, 405, env);
         }
         return handleSubscribe(request, env);
+
+      case "/subscribe-spike":
+        if (request.method !== "POST") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
+        return handleSubscribeSpike(request, env);
 
       case "/verify":
         return handleVerify(request, env);
