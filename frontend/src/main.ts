@@ -68,6 +68,21 @@ import {
   type UserVaultPosition,
 } from "./defindex.ts";
 
+// ── Privacy-preserving Analytics ──────────────────────────────────────────────
+if (navigator.doNotTrack !== "1" && window.doNotTrack !== "1") {
+  const s = document.createElement('script');
+  s.defer = true;
+  s.setAttribute('data-domain', 'app.turbolong.com');
+  s.src = 'https://plausible.io/js/script.js';
+  document.head.appendChild(s);
+}
+(window as any).plausible = (window as any).plausible || function() { ((window as any).plausible.q = (window as any).plausible.q || []).push(arguments) };
+
+function trackEvent(eventName: string) {
+  if (navigator.doNotTrack === "1" || window.doNotTrack === "1") return;
+  (window as any).plausible(eventName);
+}
+
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
 StellarWalletsKit.init({
@@ -1378,6 +1393,7 @@ async function openPosition() {
     await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
+    trackEvent('Deposit');
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1585,6 +1601,7 @@ async function addFundsToPosition() {
     const newDeposit = (existingPnl?.deposit ?? 0) + additional;
     savePnlEntry(liveAsset.id, selectedPool.id, newDeposit);
     ($("add-funds-input") as HTMLInputElement).value = "";
+    trackEvent('Deposit');
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1621,6 +1638,7 @@ async function resupply() {
     const supplyXdr = await buildResupplyXdr(selectedPool, userAddress, selectedAsset.id, amountStroops);
     await signAndSubmit(supplyXdr, `Resupply ${fmt(bal, 4)} ${selectedAsset.symbol}`, 1);
     hideTxStepper();
+    trackEvent('Deposit');
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1720,6 +1738,7 @@ async function connect() {
     buildPoolTabs();
     buildAssetTabs();
     renderPoolFooter();
+    trackEvent('Connect Wallet');
     await loadAll();
   } catch (e: any) {
     if (e?.message !== "User closed the modal") toast("Failed to connect wallet", "error");
