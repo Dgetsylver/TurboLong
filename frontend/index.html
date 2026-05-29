@@ -3,6 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    (function () {
+      var key = "theme";
+      var stored = localStorage.getItem(key);
+      var theme =
+        stored === "light" || stored === "dark"
+          ? stored
+          : window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
+      document.documentElement.setAttribute("data-theme", theme);
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
   <title>Turbolong</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -54,7 +68,7 @@
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
-          <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="theme-toggle" type="button" class="settings-dropdown-item" aria-label="Toggle light/dark mode">Theme <span class="settings-badge">&#9790;</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -113,7 +127,7 @@
       </div>
       <div class="sidebar-bottom">
         <button id="mobile-expert-toggle" class="sidebar-btn expert-toggle" data-tip="Expert mode: lower minimum HF to 1.005">Expert</button>
-        <button id="mobile-theme-toggle" class="sidebar-btn theme-toggle" data-tip="Toggle light/dark mode">&#9790;</button>
+        <button id="mobile-theme-toggle" type="button" class="sidebar-btn theme-toggle" data-tip="Toggle light/dark mode" aria-label="Toggle light/dark mode">&#9790;</button>
       </div>
     </aside>
     <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
@@ -787,8 +801,10 @@
                 <option value="10">10x</option>
               </select>
             </div>
-            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe</button>
-            <p class="alert-hint">We never store your wallet address.</p>
+            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe with email</button>
+            <p class="alert-or">or</p>
+            <button id="alert-push-btn" class="btn btn-secondary btn-lg">Enable push notifications</button>
+            <p class="alert-hint">We never store your wallet address. Push works on mobile without an app.</p>
           </div>
         </div>
 

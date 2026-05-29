@@ -1,0 +1,2 @@
+RESEND_API_KEY=re_xxxxxxxx
+VAPID_PRIVATE_KEY={"alg":"ES256","key_ops":["sign"],"ext":true,"kty":"EC","x":"...","y":"...","crv":"P-256","d":"..."}

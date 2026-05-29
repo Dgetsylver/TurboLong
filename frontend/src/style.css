@@ -37,7 +37,7 @@
   --primary-grad2-h: #2DE8A3;
   --text:           #E8ECF4;
   --text-2:         #8892A8;
-  --text-3:         #4A5568;
+  --text-3:         #6B7280;
   --shadow:         0 8px 40px rgba(0,0,0,.5);
   --header-bg:      rgba(11,14,20,.95);
   --input-bg:       #111621;
@@ -95,7 +95,7 @@
   --primary-grad2-h: #1aad7a;
   --text:           #111827;
   --text-2:         #6b7280;
-  --text-3:         #9ca3af;
+  --text-3:         #64748b;
   --shadow:         0 8px 40px rgba(0,0,0,.06);
   --header-bg:      rgba(255,255,255,.95);
   --input-bg:       #f4f5f9;
@@ -972,6 +972,12 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   background: var(--input-bg); border: 1px solid var(--border);
   border-radius: var(--r-xs); color: var(--text); font-family: var(--mono);
   cursor: pointer;
+}
+.alert-or {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 12px 0;
 }
 .alert-hint {
   font-size: 12px; color: var(--text-3); text-align: center;

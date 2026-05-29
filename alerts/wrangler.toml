@@ -13,4 +13,7 @@ database_id = "<run `npm run db:create` and paste the ID here>"
 [vars]
 RESEND_FROM = "alerts@turbolong.com"
 FRONTEND_ORIGIN = "https://app.turbolong.com"
+# URL-safe base64 public key (`npm run vapid:generate`). Private JWK via `wrangler secret put VAPID_PRIVATE_KEY`
+VAPID_PUBLIC_KEY = "BNR21aZuQZMC7UzKshdQAi40Irko_OSm0b0xFLza69Lnemrw947grj4utI1ZpjVgsrWd4jOtjS1XGS_PJAABPHk"
 # RESEND_API_KEY: set via `wrangler secret put RESEND_API_KEY`
+# VAPID_PRIVATE_KEY: JWK JSON string via `wrangler secret put VAPID_PRIVATE_KEY`

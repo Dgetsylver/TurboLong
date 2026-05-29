@@ -270,32 +270,47 @@ async function fundTestnetWallet() {
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
+const THEME_STORAGE_KEY = "theme";
 type Theme = "light" | "dark";
 
 function getSystemTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-function applyTheme(theme: Theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  // Update theme badge in settings dropdown
-  const btn = document.getElementById("theme-toggle");
-  if (btn) {
-    const badge = btn.querySelector(".settings-badge");
-    if (badge) badge.innerHTML = theme === "dark" ? "&#9790;" : "&#9728;";
-  }
-  // Also update mobile theme toggle
-  const mobileBtn = document.getElementById("mobile-theme-toggle");
-  if (mobileBtn) mobileBtn.innerHTML = theme === "dark" ? "&#9790;" : "&#9728;";
+function readStoredTheme(): Theme | null {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "light" || stored === "dark" ? stored : null;
 }
 
-// Initialize: check localStorage override, else follow system
-const savedTheme = localStorage.getItem("theme") as Theme | null;
-applyTheme(savedTheme ?? getSystemTheme());
+function resolveTheme(): Theme {
+  return readStoredTheme() ?? getSystemTheme();
+}
 
-// Listen for system changes (only when no manual override)
+function applyTheme(theme: Theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.style.colorScheme = theme;
+
+  const icon = theme === "dark" ? "&#9790;" : "&#9728;";
+  const ariaLabel = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+
+  const settingsBtn = document.getElementById("theme-toggle");
+  if (settingsBtn) {
+    settingsBtn.setAttribute("aria-label", ariaLabel);
+    const badge = settingsBtn.querySelector(".settings-badge");
+    if (badge) badge.innerHTML = icon;
+  }
+
+  const mobileBtn = document.getElementById("mobile-theme-toggle");
+  if (mobileBtn) {
+    mobileBtn.setAttribute("aria-label", ariaLabel);
+    mobileBtn.innerHTML = icon;
+  }
+}
+
+applyTheme(resolveTheme());
+
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-  if (!localStorage.getItem("theme")) applyTheme(getSystemTheme());
+  if (!readStoredTheme()) applyTheme(getSystemTheme());
 });
 
 // ── Disclaimer ───────────────────────────────────────────────────────────
@@ -2013,11 +2028,11 @@ function toggleExpert() {
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
 
-// Theme toggle (settings dropdown)
+// Theme toggle (settings dropdown + mobile sidebar)
 function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme") as Theme || getSystemTheme();
+  const current = (document.documentElement.getAttribute("data-theme") as Theme) || resolveTheme();
   const next: Theme = current === "dark" ? "light" : "dark";
-  localStorage.setItem("theme", next);
+  localStorage.setItem(THEME_STORAGE_KEY, next);
   applyTheme(next);
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
@@ -2761,7 +2776,28 @@ document.addEventListener("keydown", (e) => {
 
 // ── APY Alert subscription ──────────────────────────────────────────────────
 
-const ALERTS_WORKER_URL = "https://turbolong-alerts.workers.dev";
+const ALERTS_WORKER_URL =
+  import.meta.env.VITE_ALERTS_WORKER_URL ?? "https://turbolong-alerts.workers.dev";
+
+function urlBase64ToUint8Array(base64: string): Uint8Array {
+  const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function registerAlertServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch (e) {
+    console.warn("Service worker registration failed:", e);
+    return null;
+  }
+}
+
+registerAlertServiceWorker();
 
 $("alert-bell-btn").addEventListener("click", () => {
   $("alert-pool-name").textContent = selectedPool.name;
@@ -2823,6 +2859,71 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     toast(`Subscription failed: ${e.message?.slice(0, 100)}`, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Subscribe";
+    btn.textContent = "Subscribe with email";
+  }
+});
+
+$("alert-push-btn").addEventListener("click", async () => {
+  if (!userAddress || demoMode) {
+    toast("Connect your wallet to enable push alerts.", "info");
+    return;
+  }
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    toast("Push notifications are not supported in this browser.", "error");
+    return;
+  }
+
+  const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const btn = $("alert-push-btn") as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = "Enabling...";
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Notification permission denied.", "error");
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    const keyRes = await fetch(`${ALERTS_WORKER_URL}/vapid-public-key`);
+    const keyData = await keyRes.json() as { ok?: boolean; publicKey?: string; error?: string };
+    if (!keyData.ok || !keyData.publicKey) {
+      toast(keyData.error || "Push is not configured on the server.", "error");
+      return;
+    }
+
+    let subscription = await reg.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
+      });
+    }
+
+    const subJson = subscription.toJSON();
+    const res = await fetch(`${ALERTS_WORKER_URL}/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscription: subJson,
+        pool_id: selectedPool.id,
+        asset_symbol: selectedAsset.symbol,
+        leverage_bracket: leverageBracket,
+      }),
+    });
+
+    const data = await res.json() as { ok?: boolean; error?: string };
+    if (data.ok) {
+      toast("Push alerts enabled for this position.", "success");
+      $("alert-modal-overlay").classList.add("hidden");
+    } else {
+      toast(data.error || "Push subscription failed.", "error");
+    }
+  } catch (e: any) {
+    toast(`Push subscription failed: ${e.message?.slice(0, 100)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enable push notifications";
   }
 });
