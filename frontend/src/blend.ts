@@ -1346,6 +1346,96 @@ export async function submitSignedXdr(signedXdr: string): Promise<string> {
   throw new Error("Confirmation timed out");
 }
 
+// ── APY stress-test ───────────────────────────────────────────────────────────
+
+/**
+ * Result of a single stress-test scenario.
+ */
+export interface StressScenario {
+  /** Target pool utilization (0–1) used for this scenario. */
+  util: number;
+  /** Borrow APR (%) at this utilization, with ir_mod applied. */
+  borrowApr: number;
+  /** Supply APR (%) at this utilization (after backstop take). */
+  supplyApr: number;
+  /** Net APY on equity at the given leverage. */
+  netApy: number;
+  /** Health factor at the given leverage (unchanged — util doesn't affect HF). */
+  hf: number;
+  /** Estimated days until liquidation at this spread, or Infinity if never. */
+  daysToLiq: number;
+  /** True when this scenario crosses the r_three kink (util > 95%). */
+  inRThreeKink: boolean;
+}
+
+/**
+ * Compute a stress-test scenario for a given pool reserve at a hypothetical
+ * utilization level, using the live rate config from `rs.rateConfig`.
+ *
+ * This is a pure function — it does not mutate any state or make RPC calls.
+ *
+ * @param rs        Live reserve stats (provides rate config, cFactor, lFactor)
+ * @param targetUtil Target pool utilization as a fraction (e.g. 0.90 for 90%)
+ * @param leverage  User's leverage multiplier
+ * @returns         StressScenario with APY, HF, and days-to-liquidation
+ */
+export function computeStressScenario(
+  rs: ReserveStats,
+  targetUtil: number,
+  leverage: number,
+): StressScenario {
+  const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
+  const FIXED_95PCT = 9_500_000;
+  const SCALAR_F_LOCAL = 10_000_000;
+
+  const utilFp = Math.round(targetUtil * SCALAR_F_LOCAL);
+
+  // 3-kink interest rate model (same formula as projectRates / fetchAllReserves)
+  let baseRate: number;
+  if (utilFp <= utilOpt) {
+    baseRate = rBase + Math.ceil(rOne * utilFp / utilOpt);
+  } else if (utilFp <= FIXED_95PCT) {
+    const slope = Math.ceil((utilFp - utilOpt) * SCALAR_F_LOCAL / (FIXED_95PCT - utilOpt));
+    baseRate = rBase + rOne + Math.ceil(rTwo * slope / SCALAR_F_LOCAL);
+  } else {
+    const slope = Math.ceil((utilFp - FIXED_95PCT) * SCALAR_F_LOCAL / (SCALAR_F_LOCAL - FIXED_95PCT));
+    baseRate = rBase + rOne + rTwo + Math.ceil(rThree * slope / SCALAR_F_LOCAL);
+  }
+
+  const curIr = Math.ceil(baseRate * irMod / SCALAR_F_LOCAL);
+  const borrowApr = (curIr / SCALAR_F_LOCAL) * 100;
+
+  const supplyCapture = Math.floor((SCALAR_F_LOCAL - backstopFP) * utilFp / SCALAR_F_LOCAL);
+  const supplyApr = (Math.floor(curIr * supplyCapture / SCALAR_F_LOCAL) / SCALAR_F_LOCAL) * 100;
+
+  // Net APY on equity at this leverage
+  // netApr = supplyApr * lev - borrowApr * (lev - 1)
+  const netApr = supplyApr * leverage - borrowApr * (leverage - 1);
+  const netApy = (Math.exp(netApr / 100) - 1) * 100;
+
+  // HF is purely a function of leverage and collateral/liability factors
+  const hf = leverage <= 1 ? Infinity : (rs.cFactor * leverage) / ((leverage - 1) / rs.lFactor);
+
+  // Days to liquidation: HF decays at rate (borrowApr - supplyApr) per year
+  const spreadPct = borrowApr - supplyApr;
+  let daysToLiq: number;
+  if (spreadPct <= 0 || !isFinite(hf) || hf <= 1) {
+    daysToLiq = Infinity;
+  } else {
+    daysToLiq = (Math.log(hf) / (spreadPct / 100)) * 365;
+  }
+
+  return {
+    util: targetUtil,
+    borrowApr,
+    supplyApr,
+    netApy,
+    hf,
+    daysToLiq,
+    inRThreeKink: utilFp > FIXED_95PCT,
+  };
+}
+
 /** Submit a classic (non-Soroban) transaction via Horizon. */
 export async function submitClassicXdr(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
