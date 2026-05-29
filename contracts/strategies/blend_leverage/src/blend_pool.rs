@@ -12,7 +12,7 @@ use crate::{
         REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
     },
     leverage::{compute_step, loop_step_count},
-    soroswap::internal_swap_exact_tokens_for_tokens,
+    soroswap::{compute_amount_out_min, internal_swap_exact_tokens_for_tokens},
     storage::Config,
 };
 
@@ -417,11 +417,19 @@ pub fn claim(e: &Env, config: &Config) -> i128 {
 // ── Harvest: claim + swap + re-leverage ──────────────────────────────────────
 
 /// Claim BLND, swap to underlying via Soroswap, and re-leverage the proceeds.
+///
+/// `caller_min` is the minimum output the keeper supplied via `harvest` data
+/// bytes (0 if not provided). The effective minimum is
+/// `max(caller_min, compute_amount_out_min(...))`.
+///
+/// If the swap fails due to slippage (InternalSwapError), returns `Ok((0, 0))`
+/// so BLND stays in the contract and the harvest transaction does not revert.
+///
 /// Returns the additional (b_tokens, d_tokens) from re-leveraging.
 pub fn perform_reinvest(
     e: &Env,
     config: &Config,
-    amount_out_min: i128,
+    caller_min: i128,
 ) -> Result<(i128, i128), StrategyError> {
     let blnd_balance =
         TokenClient::new(e, &config.blend_token).balance(&e.current_contract_address());
@@ -438,16 +446,31 @@ pub fn perform_reinvest(
         .checked_add(1)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // Swap BLND → underlying asset
-    let swapped_amounts = internal_swap_exact_tokens_for_tokens(
+    // Compute slippage-protected minimum from stored bps, then take the
+    // stricter of the two bounds (keeper-supplied vs. auto-computed).
+    let computed_min = compute_amount_out_min(e, blnd_balance, swap_path.clone(), config);
+    let effective_min = computed_min.max(caller_min);
+
+    // Attempt the swap. A slippage rejection (InternalSwapError) is a soft
+    // failure — BLND stays in the contract for the next harvest attempt.
+    let swap_result = internal_swap_exact_tokens_for_tokens(
         e,
         &blnd_balance,
-        &amount_out_min,
+        &effective_min,
         swap_path,
         &e.current_contract_address(),
         &deadline,
         config,
-    )?;
+    );
+
+    let swapped_amounts = match swap_result {
+        Ok(amounts) => amounts,
+        Err(StrategyError::InternalSwapError) => {
+            // Slippage exceeded or swap unavailable — leave BLND in contract.
+            return Ok((0, 0));
+        }
+        Err(e) => return Err(e),
+    };
 
     let amount_out: i128 = swapped_amounts
         .get(1)

@@ -46,6 +46,9 @@ pub struct Config {
     pub target_loops: u32,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
+    /// Maximum acceptable slippage for BLND harvest swaps, in basis points.
+    /// 1 bp = 0.01%. Default: 50 (0.50%). Valid range: 0–10_000.
+    pub slippage_bps: u32,
 }
 
 pub fn set_config(e: &Env, config: Config) {
