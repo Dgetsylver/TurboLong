@@ -1210,3 +1210,10 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── Yield explainer link (A23) ──────────────────────────────────────────── */
+.apy-explain-link {
+  color: var(--text-3); font-size: 12px; text-decoration: none;
+  vertical-align: middle; margin-left: 2px; transition: color .15s;
+}
+.apy-explain-link:hover { color: var(--primary); }
