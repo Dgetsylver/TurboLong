@@ -11,7 +11,7 @@
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { sendVerificationEmail, sendApyAlert, sendDailyDigest, type DigestPosition } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -98,13 +98,37 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   const verifyToken = generateToken();
   const unsubToken  = generateToken();
 
+  // Parse and validate optional digest_hour
+  const rawDigestHour = body.digest_hour;
+  let digestEnabled = 0;
+  let digestHour: number | null = null;
+
+  if (rawDigestHour !== undefined && rawDigestHour !== null) {
+    const dh = Number(rawDigestHour);
+    if (!Number.isInteger(dh) || dh < 0 || dh > 23) {
+      return jsonResponse(
+        { ok: false, error: "digest_hour must be an integer between 0 and 23 (UTC hour)" },
+        400,
+        env,
+      );
+    }
+    digestEnabled = 1;
+    digestHour = dh;
+  }
+
   try {
     await env.DB.prepare(`
-      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      INSERT INTO subscriptions
+        (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token,
+         digest_enabled, digest_hour)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, verified = 0
-    `).bind(email, pool_id, asset_symbol, lev, verifyToken, unsubToken).run();
+        SET verify_token   = ?5,
+            unsub_token    = ?6,
+            verified       = 0,
+            digest_enabled = ?7,
+            digest_hour    = ?8
+    `).bind(email, pool_id, asset_symbol, lev, verifyToken, unsubToken, digestEnabled, digestHour).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
     return jsonResponse({ ok: false, error: "Database error" }, 500, env);
@@ -178,6 +202,128 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
   <p>You will no longer receive APY alerts for this subscription.</p>
 </body>
 </html>`);
+}
+
+// ── Digest cron handler ───────────────────────────────────────────────────────
+
+async function handleDigestCron(env: Env): Promise<void> {
+  const currentHour = new Date().getUTCHours();
+  console.log(`[digest] Starting daily digest for UTC hour ${currentHour}...`);
+
+  // Query all verified subscribers due for a digest at this hour.
+  // The 23-hour guard prevents duplicate sends if the cron fires more than once per hour.
+  let rows: any[];
+  try {
+    const result = await env.DB.prepare(`
+      SELECT id, email, pool_id, asset_symbol, leverage_bracket, unsub_token
+      FROM subscriptions
+      WHERE verified = 1
+        AND digest_enabled = 1
+        AND digest_hour = ?1
+        AND (last_digest_at IS NULL OR last_digest_at < datetime('now', '-23 hours'))
+      ORDER BY email
+    `).bind(currentHour).all();
+    rows = result.results ?? [];
+  } catch (e) {
+    console.error("[digest] DB query failed:", e);
+    return;
+  }
+
+  if (!rows.length) {
+    console.log("[digest] No subscribers due for a digest this hour.");
+    return;
+  }
+
+  // Group rows by email
+  const byEmail = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const email = row.email as string;
+    if (!byEmail.has(email)) byEmail.set(email, []);
+    byEmail.get(email)!.push(row);
+  }
+
+  console.log(`[digest] Sending digests to ${byEmail.size} subscriber(s)...`);
+
+  // Build a pool+asset lookup for fast access
+  const poolMap = new Map<string, typeof POOLS[0]>();
+  for (const pool of POOLS) poolMap.set(pool.id, pool);
+
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  for (const [email, emailRows] of byEmail) {
+    // Fetch rates for each position and build digest data
+    const positions: DigestPosition[] = [];
+
+    for (const row of emailRows) {
+      const pool = poolMap.get(row.pool_id as string);
+      const asset = pool?.assets.find(a => a.symbol === (row.asset_symbol as string));
+
+      if (!pool || !asset) {
+        console.warn(`[digest] Unknown pool/asset for row id=${row.id}: ${row.pool_id}/${row.asset_symbol}`);
+        positions.push({
+          poolName: (row.pool_id as string).slice(0, 8) + "…",
+          assetSymbol: row.asset_symbol as string,
+          leverage: row.leverage_bracket as number,
+          hf: null,
+          yield24h: null,
+          netApy: null,
+        });
+        continue;
+      }
+
+      let rates: ReserveRates | null = null;
+      try {
+        rates = await fetchReserveRates(pool, asset);
+      } catch (e) {
+        console.error(`[digest] fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
+      }
+
+      if (!rates) {
+        positions.push({
+          poolName: pool.name,
+          assetSymbol: asset.symbol,
+          leverage: row.leverage_bracket as number,
+          hf: null,
+          yield24h: null,
+          netApy: null,
+        });
+        continue;
+      }
+
+      const leverage = row.leverage_bracket as number;
+      const netApy   = computeNetApy(rates, leverage);
+      const yield24h = netApy / 365;
+      const hf       = rates.totalBorrow > 0
+        ? rates.totalSupply / rates.totalBorrow
+        : Infinity;
+
+      positions.push({ poolName: pool.name, assetSymbol: asset.symbol, leverage, hf, yield24h, netApy });
+    }
+
+    // Use the first row's unsub_token — all rows share the same email
+    const unsubToken = emailRows[0].unsub_token as string;
+    const unsubUrl   = `https://turbolong-alerts.workers.dev/unsubscribe?token=${unsubToken}`;
+
+    const result = await sendDailyDigest(
+      { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+      email,
+      { date: today, positions, unsubscribeUrl: unsubUrl, appUrl: env.FRONTEND_ORIGIN },
+    );
+
+    if (result.ok) {
+      // Update last_digest_at for all rows in this email group
+      const ids = emailRows.map(r => r.id as number);
+      const placeholders = ids.map((_, i) => `?${i + 1}`).join(", ");
+      await env.DB.prepare(
+        `UPDATE subscriptions SET last_digest_at = datetime('now') WHERE id IN (${placeholders})`
+      ).bind(...ids).run();
+      console.log(`[digest] Sent digest to ${email} (${positions.length} position(s))`);
+    } else {
+      console.error(`[digest] Failed to send digest to ${email}:`, result.error);
+    }
+  }
+
+  console.log("[digest] Daily digest run complete.");
 }
 
 // ── Cron handler ─────────────────────────────────────────────────────────────
@@ -284,6 +430,15 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(handleCron(env));
+    switch (event.cron) {
+      case "*/15 * * * *":
+        ctx.waitUntil(handleCron(env));
+        break;
+      case "0 * * * *":
+        ctx.waitUntil(handleDigestCron(env));
+        break;
+      default:
+        console.warn(`[scheduled] Unknown cron expression: ${event.cron}`);
+    }
   },
 };
