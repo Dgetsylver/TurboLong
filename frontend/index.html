@@ -11,6 +11,28 @@
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
+  <!-- Session Replay Consent Dialog -->
+  <div id="replay-consent-overlay" class="disclaimer-overlay hidden"
+       role="dialog" aria-modal="true" aria-labelledby="replay-consent-title">
+    <div class="disclaimer-modal">
+      <div class="disclaimer-modal-icon">&#128247;</div>
+      <h2 id="replay-consent-title">Session Replay &mdash; Opt In</h2>
+      <div class="disclaimer-body">
+        <p>When a transaction error occurs, Turbolong can record a short session replay
+           (up to 60 seconds) to help diagnose the issue.</p>
+        <p><strong>What is recorded:</strong> browser interactions during the error window only.
+           No recording happens on normal page visits.</p>
+        <p><strong>What is masked:</strong> all input field values (amounts, leverage settings),
+           wallet addresses, and any text marked as sensitive.</p>
+        <p>You can turn this off at any time from the Settings menu.</p>
+      </div>
+      <div class="disclaimer-actions" style="display:flex;gap:12px;justify-content:center;margin-top:16px">
+        <button id="replay-consent-accept" class="btn btn-primary">Enable Session Replay</button>
+        <button id="replay-consent-decline" class="btn btn-ghost">No thanks</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Disclaimer modal -->
   <div id="disclaimer-overlay" class="disclaimer-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
     <div class="disclaimer-modal">
@@ -55,13 +77,14 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="replay-toggle" class="settings-dropdown-item" role="switch" aria-checked="false">Session Replay <span class="settings-badge">Off</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
         <div id="wallet-connected" class="wallet-connected hidden">
           <div class="wallet-info">
             <span class="wallet-dot"></span>
-            <span id="wallet-address" class="mono"></span>
+            <span id="wallet-address" class="mono wallet-address-display"></span>
           </div>
           <button id="switch-wallet-btn" class="btn btn-ghost btn-sm" data-tip="Switch to a different account">Switch</button>
           <button id="disconnect-btn" class="btn btn-ghost btn-sm">Disconnect</button>
