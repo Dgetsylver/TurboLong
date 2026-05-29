@@ -825,6 +825,101 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   </svg>`;
 }
 
+// ── APY history chart (B4) ────────────────────────────────────────────────────
+
+let _histWin: "7d" | "30d" | "1y" = "30d";
+
+const HIST_WIN_MS: Record<string, number> = {
+  "7d":  7  * 24 * 3600_000,
+  "30d": 30 * 24 * 3600_000,
+  "1y":  365 * 24 * 3600_000,
+};
+
+function renderHistoryChart() {
+  const container = $("hist-chart");
+  const raw = localStorage.getItem(`blendlev_rate_history:${selectedPool.id}:${selectedAsset.id}:supply-net`);
+  const all: { ts: number; val: number }[] = raw ? JSON.parse(raw) : [];
+  const cutoff = Date.now() - HIST_WIN_MS[_histWin];
+  const snaps = all.filter(s => s.ts >= cutoff);
+
+  if (snaps.length < 2) {
+    container.innerHTML = `<div class="hist-chart-empty">Not enough history yet — check back after data accumulates.</div>`;
+    return;
+  }
+
+  const W = 400, H = 80, padL = 32, padR = 8, padT = 10, padB = 18;
+  const vals = snaps.map(s => s.val);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const rangeV = maxV - minV || 0.01;
+  const minTs = snaps[0].ts, maxTs = snaps[snaps.length - 1].ts;
+  const rangeTs = maxTs - minTs || 1;
+
+  const px = (ts: number) => padL + (ts - minTs) / rangeTs * (W - padL - padR);
+  const py = (v: number)  => padT + (1 - (v - minV) / rangeV) * (H - padT - padB);
+
+  const pts = snaps.map(s => `${px(s.ts).toFixed(1)},${py(s.val).toFixed(1)}`).join(" ");
+
+  // X-axis tick labels (3 ticks: start, mid, end)
+  const fmtDate = (ts: number) => {
+    const d = new Date(ts);
+    return _histWin === "1y"
+      ? d.toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+      : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+  const ticks = [minTs, (minTs + maxTs) / 2, maxTs];
+  const tickSvg = ticks.map(ts =>
+    `<text x="${px(ts).toFixed(1)}" y="${H - 2}" text-anchor="middle" class="hist-chart-label">${fmtDate(ts)}</text>`
+  ).join("");
+
+  // Y-axis labels
+  const yLabelSvg =
+    `<text x="${padL - 3}" y="${padT + 6}" text-anchor="end" class="hist-chart-label">${fmt(maxV, 1)}%</text>` +
+    `<text x="${padL - 3}" y="${H - padB + 4}" text-anchor="end" class="hist-chart-label">${fmt(minV, 1)}%</text>`;
+
+  // Invisible hit-area rects for tooltip
+  const segW = (W - padL - padR) / snaps.length;
+  const hitRects = snaps.map((s, i) => {
+    const cx = px(s.ts);
+    const cy = py(s.val);
+    const tip = `${fmtDate(s.ts)}: ${fmt(s.val, 2)}%`;
+    return `<rect x="${(cx - segW / 2).toFixed(1)}" y="${padT}" width="${segW.toFixed(1)}" height="${H - padT - padB}"
+      fill="transparent" class="hist-hit"
+      data-tip="${tip}" data-cx="${cx.toFixed(1)}" data-cy="${cy.toFixed(1)}"/>`;
+  }).join("");
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="hist-chart-svg" id="hist-chart-svg">
+      <polyline points="${pts}" class="hist-chart-line"/>
+      ${yLabelSvg}${tickSvg}${hitRects}
+      <circle id="hist-cursor" r="3.5" class="hist-cursor" style="display:none"/>
+      <text id="hist-tip-text" class="hist-tip-text" style="display:none"/>
+    </svg>`;
+
+  // Pointer tooltip
+  const svg = document.getElementById("hist-chart-svg")!;
+  svg.addEventListener("mouseleave", () => {
+    (document.getElementById("hist-cursor") as SVGCircleElement | null)?.setAttribute("style", "display:none");
+    (document.getElementById("hist-tip-text") as SVGTextElement | null)?.setAttribute("style", "display:none");
+  });
+  svg.querySelectorAll<SVGRectElement>(".hist-hit").forEach(rect => {
+    rect.addEventListener("mouseenter", () => {
+      const cx = rect.dataset.cx!, cy = rect.dataset.cy!, tip = rect.dataset.tip!;
+      const cursor = document.getElementById("hist-cursor") as SVGCircleElement | null;
+      const tipEl  = document.getElementById("hist-tip-text") as SVGTextElement | null;
+      if (!cursor || !tipEl) return;
+      cursor.setAttribute("cx", cx);
+      cursor.setAttribute("cy", cy);
+      cursor.setAttribute("style", "");
+      const tx = Math.min(Number(cx), W - padR - 60);
+      const ty = Number(cy) > padT + 20 ? Number(cy) - 8 : Number(cy) + 14;
+      tipEl.setAttribute("x", String(tx));
+      tipEl.setAttribute("y", String(ty));
+      tipEl.textContent = tip;
+      tipEl.setAttribute("style", "");
+    });
+  });
+}
+
 // ── Render reserve stats for selected asset ───────────────────────────────────
 
 function renderSelectedAsset() {
@@ -896,6 +991,8 @@ function renderSelectedAsset() {
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
   );
+
+  renderHistoryChart();
 
   updatePreview();
   renderPosition();
@@ -2190,6 +2287,16 @@ document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => 
 // Collapsible stats (#23)
 $("stats-toggle").addEventListener("click", () => {
   $("stats-collapsible").classList.toggle("collapsed");
+});
+
+// History chart window selector (B4)
+$("hist-win-btns").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".hist-win-btn");
+  if (!btn) return;
+  _histWin = btn.dataset.win as "7d" | "30d" | "1y";
+  $("hist-win-btns").querySelectorAll(".hist-win-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderHistoryChart();
 });
 
 // Vault deposit/withdraw tabs
