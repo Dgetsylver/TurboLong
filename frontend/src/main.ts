@@ -2810,6 +2810,17 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+
+  const hfThresholdRaw = ($("alert-hf-threshold") as HTMLInputElement).value.trim();
+  let hfThreshold: number | null = null;
+  if (hfThresholdRaw !== "") {
+    hfThreshold = Number(hfThresholdRaw);
+    if (isNaN(hfThreshold) || hfThreshold < 1.0) {
+      toast("Health factor threshold must be ≥ 1.0 (e.g. 1.05).", "error");
+      return;
+    }
+  }
+
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Subscribing...";
@@ -2818,12 +2829,11 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     const res = await fetch(`${ALERTS_WORKER_URL}/subscribe`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email,
-        pool_id: selectedPool.id,
-        asset_symbol: selectedAsset.symbol,
-        leverage_bracket: leverageBracket,
-      }),
+      body: JSON.stringify(
+        hfThreshold !== null
+          ? { email, pool_id: selectedPool.id, asset_symbol: selectedAsset.symbol, leverage_bracket: leverageBracket, hf_threshold: hfThreshold }
+          : { email, pool_id: selectedPool.id, asset_symbol: selectedAsset.symbol, leverage_bracket: leverageBracket }
+      ),
     });
 
     const data = await res.json() as any;
@@ -2832,6 +2842,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
       toast("Check your email to verify your alert subscription.", "success");
       $("alert-modal-overlay").classList.add("hidden");
       ($("alert-email") as HTMLInputElement).value = "";
+      ($("alert-hf-threshold") as HTMLInputElement).value = "";
     } else {
       toast(data.error || "Subscription failed.", "error");
     }
