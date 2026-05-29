@@ -95,12 +95,18 @@ function buildSimulateBody(contractId: string, method: string, args: any[]): obj
 import { encodeInvokeTransaction, decodeSimResult, decodeXdrValue } from "./xdr.ts";
 
 export interface ReserveRates {
+  asset: { id: string; symbol: string; reserveIndex: number };
   netSupplyApr: number;
   netBorrowCost: number;
   interestSupplyApr: number;
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  bRate: bigint;
+  dRate: bigint;
+  cFactor: number;
+  lFactor: number;
+  priceUsd: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -217,13 +223,22 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const blndSupplyApr = totalSupplyUsd > 0 ? (supplyBlndYr * blndPrice / totalSupplyUsd) * 100 : 0;
     const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
 
+    const cFactor = reserveRaw.config?.c_factor != null ? reserveRaw.config.c_factor / SCALAR : 0;
+    const lFactor = reserveRaw.config?.l_factor != null ? reserveRaw.config.l_factor / SCALAR : 1;
+
     return {
+      asset,
       netSupplyApr:     interestSupplyApr + blndSupplyApr,
       netBorrowCost:    interestBorrowApr - blndBorrowApr,
       interestSupplyApr,
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      bRate,
+      dRate,
+      cFactor,
+      lFactor,
+      priceUsd,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
@@ -234,4 +249,37 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
 /** Compute net APY at a given leverage. */
 export function computeNetApy(rates: ReserveRates, leverage: number): number {
   return rates.netSupplyApr * leverage - rates.netBorrowCost * (leverage - 1);
+}
+
+/** Compute user Health Factor for a pool. */
+export async function fetchUserHF(pool: PoolDef, userAddress: string): Promise<number> {
+  try {
+    const raw = await simulate(pool.id, "get_positions", [{ type: "address", value: userAddress }]);
+    if (!raw) return Infinity;
+
+    // Fetch rates for all assets in the pool to get prices and factors
+    const rates = await Promise.all(pool.assets.map(a => fetchReserveRates(pool, a)));
+
+    let weightedCollateral = 0;
+    let totalDebt = 0;
+
+    for (const r of rates) {
+      if (!r) continue;
+      const bTokens = BigInt(raw.collateral?.[r.asset.reserveIndex] ?? 0);
+      const dTokens = BigInt(raw.liabilities?.[r.asset.reserveIndex] ?? 0);
+
+      if (bTokens === 0n && dTokens === 0n) continue;
+
+      const collateral = Number(bTokens * r.bRate / BigInt(RATE_DEC)) / SCALAR;
+      const debt       = Number(dTokens * r.dRate / BigInt(RATE_DEC)) / SCALAR;
+
+      weightedCollateral += collateral * r.cFactor * r.priceUsd;
+      totalDebt          += (debt / r.lFactor) * r.priceUsd;
+    }
+
+    return totalDebt > 0 ? weightedCollateral / totalDebt : Infinity;
+  } catch (e) {
+    console.error(`fetchUserHF failed for ${userAddress} on ${pool.name}:`, e);
+    return Infinity;
+  }
 }

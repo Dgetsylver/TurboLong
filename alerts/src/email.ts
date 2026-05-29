@@ -100,3 +100,47 @@ export async function sendApyAlert(
     html,
   );
 }
+
+export async function sendLiquidationAlert(
+  env: Env,
+  to: string,
+  opts: {
+    poolName: string;
+    userAddress: string;
+    hf: number;
+    unsubscribeUrl: string;
+    appUrl: string;
+  },
+): Promise<SendResult> {
+  const { poolName, userAddress, hf, unsubscribeUrl, appUrl } = opts;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
+  <h2 style="margin: 0 0 8px; color: #FF3B30;">LIQUIDATION IMMINENT</h2>
+  <p style="font-size: 14px; color: #555; margin: 0 0 20px;">Your position on <strong>${poolName}</strong> is dangerously close to liquidation.</p>
+
+  <div style="background: #fff6f6; border-radius: 8px; padding: 16px; margin-bottom: 20px; border: 1px solid #ffe6e6;">
+    <p style="margin: 0 0 8px; font-size: 13px; color: #888;">Health Factor</p>
+    <p style="margin: 0; font-size: 20px; font-weight: 700; color: #FF3B30;">${hf.toFixed(3)}</p>
+  </div>
+
+  <p style="line-height: 1.6; color: #555;">Your account (${userAddress}) has a health factor below 1.05 and may be liquidated by a small adverse move. Act immediately to reduce leverage or add collateral.</p>
+
+  <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #FF3B30; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
+
+  <p style="font-size: 12px; color: #aaa; margin-top: 32px;">
+    <a href="${unsubscribeUrl}" style="color: #aaa;">Unsubscribe</a> from these liquidation warnings.
+  </p>
+</body>
+</html>`.trim();
+
+  return sendEmail(
+    env,
+    to,
+    `\u26A0 LIQUIDATION IMMINENT: ${poolName} (HF ${hf.toFixed(3)})`,
+    html,
+  );
+}

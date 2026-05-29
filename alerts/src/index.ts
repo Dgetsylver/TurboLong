@@ -10,8 +10,8 @@
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
  */
 
-import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, fetchUserHF, type ReserveRates } from "./stellar.ts";
+import { sendVerificationEmail, sendApyAlert, sendLiquidationAlert } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -252,6 +252,98 @@ async function handleCron(env: Env): Promise<void> {
   }
 
   console.log("[cron] APY alert check complete.");
+
+  // ── High-priority: Health Factor (liquidation) warnings ──────────────────
+  console.log("[cron] Checking user health factors for liquidation warnings...");
+
+  const hfSubs = await env.DB.prepare(`
+    SELECT id, email, user_address, webhook_url, pool_id, unsub_token
+    FROM subscriptions
+    WHERE user_address IS NOT NULL
+      AND verified = 1
+      AND (last_liquidation_alert_at IS NULL OR last_liquidation_alert_at < datetime('now', '-6 hours'))
+  `).all();
+
+  if (hfSubs.results?.length) {
+    // Group subscriptions by user_address to rate-limit per user
+    const byUser = new Map<string, any[]>();
+    for (const s of hfSubs.results) {
+      const addr = s.user_address as string;
+      const arr = byUser.get(addr) ?? [];
+      arr.push(s);
+      byUser.set(addr, arr);
+    }
+
+    for (const [userAddr, subs] of byUser.entries()) {
+      let alerted = false;
+      for (const s of subs) {
+        const pool = POOLS.find(p => p.id === s.pool_id);
+        if (!pool) continue;
+
+        let hf = Infinity;
+        try {
+          hf = await fetchUserHF(pool, userAddr);
+        } catch (e) {
+          console.error(`[cron] fetchUserHF failed for ${userAddr} on ${pool.name}:`, e);
+          continue;
+        }
+
+        if (!isFinite(hf)) continue;
+        if (hf >= 1.05) continue;
+
+        // Fire a high-priority LIQUIDATION IMMINENT notification (rate-limited per user)
+        console.log(`[cron] LIQUIDATION IMMINENT for ${userAddr} on ${pool.name} (HF=${hf.toFixed(3)})`);
+
+        const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${s.unsub_token}`;
+
+        // Send email and optional webhook in parallel
+        const senders: Promise<any>[] = [];
+        senders.push(sendLiquidationAlert(
+          { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+          s.email as string,
+          {
+            poolName: pool.name,
+            userAddress: userAddr,
+            hf,
+            unsubscribeUrl: unsubUrl,
+            appUrl: env.FRONTEND_ORIGIN,
+          },
+        ));
+
+        if (s.webhook_url) {
+          const body = JSON.stringify({
+            template: "LIQUIDATION IMMINENT",
+            poolName: pool.name,
+            userAddress: userAddr,
+            hf,
+            unsubscribeUrl: unsubUrl,
+            appUrl: env.FRONTEND_ORIGIN,
+          });
+          senders.push(fetch(s.webhook_url as string, { method: "POST", headers: { "Content-Type": "application/json" }, body }));
+        }
+
+        const results = await Promise.allSettled(senders);
+        for (const r of results) {
+          if (r.status === "rejected") console.error("[cron] Liquidation notifier failed:", r.reason);
+        }
+
+        // Update all subscriptions for this user to mark the liquidation alert time
+        try {
+          await env.DB.prepare(
+            "UPDATE subscriptions SET last_liquidation_alert_at = datetime('now') WHERE user_address = ?1"
+          ).bind(userAddr).run();
+        } catch (e) {
+          console.error(`[cron] Failed updating last_liquidation_alert_at for ${userAddr}:`, e);
+        }
+
+        alerted = true;
+        break; // only send one alert per user this run
+      }
+      if (!alerted) {
+        // no pools with HF < 1.05 found for this user
+      }
+    }
+  }
 }
 
 // ── Worker entry ─────────────────────────────────────────────────────────────
