@@ -12,22 +12,28 @@
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
 import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { checkSubscribeRateLimit } from "./rateLimit.ts";
 
 interface Env {
   DB: D1Database;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   FRONTEND_ORIGIN: string;
+  RATE_LIMIT_IP_MAX?: string;
+  RATE_LIMIT_IP_WINDOW_S?: string;
+  RATE_LIMIT_EMAIL_MAX?: string;
+  RATE_LIMIT_EMAIL_WINDOW_S?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function jsonResponse(body: object, status = 200, env?: Env): Response {
+function jsonResponse(body: object, status = 200, env?: Env, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "Content-Type": "application/json",
       ...(env ? corsHeaders(env) : {}),
+      ...extraHeaders,
     },
   });
 }
@@ -83,6 +89,24 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   // Validate
   if (!email || !EMAIL_RE.test(email)) {
     return jsonResponse({ ok: false, error: "Invalid email" }, 400, env);
+  }
+
+  // Rate Limiting Check (IP & Email)
+  const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
+  const rateLimitResult = await checkSubscribeRateLimit(env.DB, clientIp, email, env);
+  if (rateLimitResult) {
+    return jsonResponse(
+      {
+        ok: false,
+        error: "Too many requests. Please try again later.",
+        retryAfter: rateLimitResult.retryAfter,
+      },
+      429,
+      env,
+      {
+        "Retry-After": rateLimitResult.retryAfter.toString(),
+      }
+    );
   }
   if (!KNOWN_POOL_IDS.has(pool_id)) {
     return jsonResponse({ ok: false, error: "Unknown pool" }, 400, env);
