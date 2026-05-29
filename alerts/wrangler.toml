@@ -14,3 +14,10 @@ database_id = "<run `npm run db:create` and paste the ID here>"
 RESEND_FROM = "alerts@turbolong.com"
 FRONTEND_ORIGIN = "https://app.turbolong.com"
 # RESEND_API_KEY: set via `wrangler secret put RESEND_API_KEY`
+
+# Rate Limiting Configuration (H2)
+RATE_LIMIT_IP_MAX = "5"
+RATE_LIMIT_IP_WINDOW_S = "900"       # 15 minutes
+RATE_LIMIT_EMAIL_MAX = "3"
+RATE_LIMIT_EMAIL_WINDOW_S = "3600"   # 1 hour
+

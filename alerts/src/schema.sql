@@ -14,3 +14,16 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_subs_pool_asset_lev
   ON subscriptions(pool_id, asset_symbol, leverage_bracket);
+
+-- ── Rate-limit hits ───────────────────────────────────────────────────────────
+-- Sliding-window counters for /subscribe abuse prevention.
+-- key   = "ip:<ip>" | "email:<email>"
+-- Each row is one hit timestamp; old rows are pruned on every check.
+CREATE TABLE IF NOT EXISTS rate_limit_hits (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT    NOT NULL,
+  hit_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_key_hit_at
+  ON rate_limit_hits(key, hit_at);

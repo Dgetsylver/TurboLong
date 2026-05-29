@@ -6,7 +6,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create turbolong-alerts",
-    "db:migrate": "wrangler d1 execute turbolong-alerts --file=src/schema.sql"
+    "db:migrate": "wrangler d1 execute turbolong-alerts --file=src/schema.sql",
+    "test": "npx tsx src/test-rate-limit.ts"
   },
   "devDependencies": {
     "wrangler": "^3.99.0",
