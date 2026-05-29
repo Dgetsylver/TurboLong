@@ -42,6 +42,8 @@ import {
   estimateBlndSwap,
   submitSignedXdr,
   submitClassicXdr,
+  getMissingTrustlines,
+  prependTrustlineOps,
   hfForLeverage,
   maxLeverageFor,
   type NetworkMode,
@@ -50,6 +52,9 @@ import {
   type ReserveStats,
   type AssetPosition,
   type UserPositions,
+  type MissingTrustlineResult,
+  type StressScenario,
+  computeStressScenario,
   projectRates,
 } from "./blend.ts";
 
@@ -749,6 +754,155 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   </svg>`;
 }
 
+// ── APY Stress-Test Panel ────────────────────────────────────────────────────
+
+// Tracks which scenario is currently active: a preset util value or "custom"
+let _stressActiveUtil: number | "custom" = "custom";
+let _stressCustomUtil = 0.85; // default custom value
+
+const STRESS_PRESETS = [0.80, 0.90, 0.95, 0.99];
+
+/**
+ * Render the stress-test panel for the currently selected asset.
+ * Called from renderSelectedAsset() whenever reserve data is available.
+ */
+function renderStressPanel(rs: ReserveStats) {
+  const panel = document.getElementById("stress-panel");
+  if (!panel) return;
+
+  const lev = parseFloat(($("leverage-slider") as HTMLInputElement).value) || 2.0;
+
+  // Determine which utils to show: presets + custom if active
+  const utilsToShow: number[] = _stressActiveUtil === "custom"
+    ? [_stressCustomUtil]
+    : STRESS_PRESETS;
+
+  // Always compute all 4 presets for the results table
+  const allScenarios: StressScenario[] = STRESS_PRESETS.map(u =>
+    computeStressScenario(rs, u, lev)
+  );
+
+  // Custom scenario (shown as extra row when custom is active)
+  const customScenario: StressScenario | null = _stressActiveUtil === "custom"
+    ? computeStressScenario(rs, _stressCustomUtil, lev)
+    : null;
+
+  // Scenarios to render in the table
+  const tableScenarios: Array<StressScenario & { isCustom?: boolean }> =
+    _stressActiveUtil === "custom"
+      ? [{ ...customScenario!, isCustom: true }]
+      : allScenarios.map(s => ({ ...s, isCustom: false }));
+
+  // When a preset is active, show all 4 presets; highlight the active one
+  const renderScenarios: Array<StressScenario & { isCustom?: boolean; isActive?: boolean }> =
+    _stressActiveUtil === "custom"
+      ? [{ ...customScenario!, isCustom: true, isActive: true }]
+      : allScenarios.map(s => ({
+          ...s,
+          isCustom: false,
+          isActive: s.util === _stressActiveUtil,
+        }));
+
+  const anyKink = renderScenarios.some(s => s.inRThreeKink);
+
+  // Update the summary hint in the <summary> bar
+  const activeScenario = renderScenarios.find(s => s.isActive) ?? renderScenarios[0];
+  const hintEl = document.getElementById("stress-panel-hint");
+  if (hintEl && activeScenario) {
+    const utilPct = Math.round(activeScenario.util * 100);
+    const apyStr = `${activeScenario.netApy >= 0 ? "+" : ""}${fmt(activeScenario.netApy, 1)}% APY`;
+    const liqStr = isFinite(activeScenario.daysToLiq)
+      ? `~${Math.round(activeScenario.daysToLiq)}d to liq`
+      : "no liq";
+    hintEl.textContent = `${utilPct}% util → ${apyStr}, ${liqStr}`;
+  }
+
+  // Render result rows
+  const resultsEl = document.getElementById("stress-results");
+  if (!resultsEl) return;
+
+  const fmtDays = (d: number) => {
+    if (!isFinite(d)) return "Never";
+    if (d > 3650) return ">10yr";
+    if (d > 365) return `~${Math.round(d / 365)}yr`;
+    return `~${Math.round(d)}d`;
+  };
+
+  const rowsHtml = renderScenarios.map(s => {
+    const utilPct = Math.round(s.util * 100);
+    const apyClass = s.netApy > 0 ? "apr-great" : s.netApy > -5 ? "apr-warn" : "apr-bad";
+    const liqClass = !isFinite(s.daysToLiq) ? "hf-ok"
+      : s.daysToLiq < 30 ? "hf-bad"
+      : s.daysToLiq < 90 ? "hf-warn"
+      : "hf-ok";
+    const rowClass = [
+      "stress-result-row",
+      s.isActive ? "stress-row-active" : "",
+      s.inRThreeKink ? "stress-row-kink" : "",
+    ].filter(Boolean).join(" ");
+    const kinkBadge = s.inRThreeKink ? ' <span title="r_three kink active">⚡</span>' : "";
+
+    return `<div class="${rowClass}">
+      <span class="stress-result-util">${utilPct}%${kinkBadge}</span>
+      <span class="stress-result-borrow">${fmt(s.borrowApr, 1)}%</span>
+      <span class="stress-result-apy ${apyClass}">${s.netApy >= 0 ? "+" : ""}${fmt(s.netApy, 1)}%</span>
+      <span class="stress-result-liq ${liqClass}">${fmtDays(s.daysToLiq)}</span>
+    </div>`;
+  }).join("");
+
+  resultsEl.innerHTML = `<div class="stress-result-row stress-result-header">
+    <span>Utilization</span><span>Borrow APR</span><span>Net APY</span><span>Days to Liq</span>
+  </div>${rowsHtml}`;
+
+  // Show/hide kink warning
+  const kinkWarnEl = document.getElementById("stress-kink-warn");
+  if (kinkWarnEl) kinkWarnEl.classList.toggle("hidden", !anyKink);
+}
+
+/** Wire up stress panel preset buttons and custom slider. Called once on init. */
+function initStressPanel() {
+  // Preset buttons
+  document.querySelectorAll<HTMLButtonElement>(".stress-preset-btn[data-util]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const util = parseFloat(btn.dataset.util!);
+      _stressActiveUtil = util;
+      // Update active state on all preset buttons
+      document.querySelectorAll<HTMLButtonElement>(".stress-preset-btn").forEach(b => {
+        b.classList.toggle("active", b === btn);
+      });
+      // Hide custom slider
+      document.getElementById("stress-custom-row")?.classList.add("hidden");
+      // Re-render
+      const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+      if (rs) renderStressPanel(rs);
+    });
+  });
+
+  // Custom button
+  const customBtn = document.getElementById("stress-custom-btn") as HTMLButtonElement | null;
+  customBtn?.addEventListener("click", () => {
+    _stressActiveUtil = "custom";
+    document.querySelectorAll<HTMLButtonElement>(".stress-preset-btn").forEach(b => {
+      b.classList.toggle("active", b === customBtn);
+    });
+    document.getElementById("stress-custom-row")?.classList.remove("hidden");
+    const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+    if (rs) renderStressPanel(rs);
+  });
+
+  // Custom slider
+  const slider = document.getElementById("stress-util-slider") as HTMLInputElement | null;
+  const label  = document.getElementById("stress-util-label");
+  slider?.addEventListener("input", () => {
+    _stressCustomUtil = parseInt(slider.value, 10) / 100;
+    if (label) label.textContent = `${slider.value}%`;
+    if (_stressActiveUtil === "custom") {
+      const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+      if (rs) renderStressPanel(rs);
+    }
+  });
+}
+
 // ── Render reserve stats for selected asset ───────────────────────────────────
 
 function renderSelectedAsset() {
@@ -798,6 +952,7 @@ function renderSelectedAsset() {
   // Don't auto-collapse — user controls visibility via the toggle
 
   updatePreview();
+  renderStressPanel(rs);
   renderPosition();
   renderPortfolioSummary();
 }
@@ -1304,6 +1459,9 @@ function updatePreview() {
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
       : "Add Funds";
   }
+
+  // Update stress panel whenever leverage changes
+  if (rs) renderStressPanel(rs);
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
@@ -1370,12 +1528,42 @@ async function openPosition() {
 
   const initialStroops = BigInt(Math.round(initial * 1e7));
   setLoading($("open-btn") as HTMLButtonElement, true);
-  showTxStepper(["Approve", "Submit"]);
+
+  // Check for missing trustlines before building the submit tx.
+  // We do this after the early-exit guards so we only hit Horizon when we're
+  // actually going to proceed.
+  let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
+  try {
+    trustlineResult = await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
+  } catch (e: any) {
+    toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const STELLAR_TRUSTLINE_LIMIT = 1000;
+  if (trustlineResult.currentCount + trustlineResult.missing.length > STELLAR_TRUSTLINE_LIMIT) {
+    toast(
+      `Adding ${trustlineResult.missing.length} trustline(s) would exceed the Stellar limit of 1,000. ` +
+      `You currently have ${trustlineResult.currentCount}. Remove unused trustlines before depositing.`,
+      "error",
+    );
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const hasMissingTrustlines = trustlineResult.missing.length > 0;
+  const submitLabel = hasMissingTrustlines
+    ? `Open ${liveAsset.symbol} leverage (+ trustlines)`
+    : `Open ${liveAsset.symbol} leverage`;
+  showTxStepper(["Approve", hasMissingTrustlines ? "Setup Trustlines + Submit" : "Submit"]);
+
   try {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
+    const rawSubmitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const bundledXdr = await prependTrustlineOps(rawSubmitXdr, trustlineResult.missing, userAddress);
+    await signAndSubmit(bundledXdr, submitLabel, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
     await loadAll();
@@ -2260,6 +2448,7 @@ updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+initStressPanel();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 

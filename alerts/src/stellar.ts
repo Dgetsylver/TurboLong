@@ -101,6 +101,12 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  /** Total tokens supplied to the pool (full token units, 7 decimals). */
+  totalSupply: number;
+  /** Total tokens borrowed from the pool (full token units, 7 decimals). */
+  totalBorrow: number;
+  /** Oracle price in USD per full token. */
+  priceUsd: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -224,6 +230,9 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      totalSupply,
+      totalBorrow,
+      priceUsd,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);

@@ -6,6 +6,44 @@ use soroban_sdk::{
 
 use crate::storage::Config;
 
+/// Basis-point denominator: 10_000 bp = 100%.
+const BPS_DENOMINATOR: u32 = 10_000;
+
+/// Query the Soroswap router for a spot-price quote and apply the stored
+/// slippage tolerance to derive `amount_out_min`.
+///
+/// Returns `quoted_out × (10_000 − slippage_bps) / 10_000`.
+/// Falls back to `0` (no protection) if the router query fails or returns
+/// an empty result, so a harvest is never blocked by a query failure alone.
+pub fn compute_amount_out_min(
+    e: &Env,
+    amount_in: i128,
+    path: Vec<Address>,
+    config: &Config,
+) -> i128 {
+    // Query router for expected output amounts along the path.
+    // Use try_invoke_contract so a failure returns Err rather than panicking.
+    let quoted: Vec<i128> = e
+        .try_invoke_contract::<Vec<i128>, InvokeError>(
+            &config.router,
+            &Symbol::new(e, "get_amounts_out"),
+            vec![e, amount_in.into_val(e), path.into_val(e)].into_val(e),
+        )
+        .unwrap_or_else(|_| Ok(Vec::new(e)))
+        .unwrap_or_else(|_| Vec::new(e));
+
+    // Index 0 = amount_in, index 1 = amount_out for a two-token path.
+    let quoted_out: i128 = quoted.get(1).unwrap_or(0);
+    if quoted_out == 0 {
+        return 0; // No quote available — fall back to no protection
+    }
+
+    // amount_out_min = quoted_out × (10_000 − slippage_bps) / 10_000
+    let numerator = quoted_out
+        .saturating_mul((BPS_DENOMINATOR - config.slippage_bps) as i128);
+    numerator / BPS_DENOMINATOR as i128
+}
+
 /// Performs a token swap using the Soroswap router.
 ///
 /// Swaps the specified amount of input tokens for a minimum amount of output tokens

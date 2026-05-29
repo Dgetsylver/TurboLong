@@ -83,6 +83,16 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .expect("Missing: min_hf")
             .into_val(&e);
 
+        // slippage_bps is optional — defaults to 50 (0.50%) if not provided
+        let slippage_bps: u32 = init_args
+            .get(8)
+            .map(|v| v.into_val(&e))
+            .unwrap_or(50u32);
+
+        if slippage_bps > 10_000 {
+            panic_with_error!(&e, StrategyError::InvalidArgument);
+        }
+
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
         let reserve = pool_client.get_reserve(&asset);
@@ -107,6 +117,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             c_factor,
             target_loops,
             min_hf,
+            slippage_bps,
         };
 
         storage::set_config(&e, config);
@@ -218,8 +229,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // Claim BLND from both supply and borrow sides
         let harvested_blnd = blend_pool::claim(&e, &config);
 
-        // Parse minimum swap output from data bytes
-        let amount_out_min: i128 = match &data {
+        // Parse minimum swap output from data bytes (keeper-supplied bound).
+        // The contract will also compute a bound from slippage_bps; the
+        // effective minimum is max(caller_min, computed_from_bps).
+        let caller_min: i128 = match &data {
             Some(bytes) if !bytes.is_empty() => {
                 let mut slice = [0u8; 16];
                 bytes.copy_into_slice(&mut slice);
@@ -229,7 +242,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         };
 
         // Swap BLND → underlying, then re-leverage
-        let (b_delta, d_delta) = blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
+        let (b_delta, d_delta) = blend_pool::perform_reinvest(&e, &config, caller_min)?;
 
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
@@ -345,6 +358,24 @@ impl BlendLeverageStrategy {
         let old_keeper = storage::get_keeper(&e);
         old_keeper.require_auth();
         storage::set_keeper(&e, &new_keeper);
+        Ok(())
+    }
+
+    /// Update the slippage tolerance for BLND harvest swaps.
+    /// Only the keeper may call this.
+    ///
+    /// `bps` must be in the range 0–10_000 (0–100%). Returns
+    /// `Err(InvalidArgument)` if the value is out of range.
+    pub fn set_slippage_bps(e: Env, bps: u32) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+        if bps > 10_000 {
+            return Err(StrategyError::InvalidArgument);
+        }
+        let mut config = storage::get_config(&e);
+        config.slippage_bps = bps;
+        storage::set_config(&e, config);
         Ok(())
     }
 

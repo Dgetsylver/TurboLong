@@ -427,6 +427,72 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .apr-warn   { color: var(--warning); }
 .apr-bad    { color: var(--danger); }
 
+/* ── APY Stress-Test Panel ───────────────────────────────────────────────── */
+
+.stress-panel { margin-top: 8px; border-radius: var(--r); border: 1px solid var(--border); overflow: hidden; }
+.stress-panel[open] { border-color: var(--border-h); }
+.stress-panel-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+  color: var(--text-2); list-style: none; user-select: none;
+  background: var(--surface2); transition: color .15s, background .15s;
+}
+.stress-panel-toggle::-webkit-details-marker { display: none; }
+.stress-panel-toggle:hover { color: var(--text); background: var(--surface3); }
+.stress-panel[open] .stress-panel-toggle { color: var(--text); border-bottom: 1px solid var(--border); }
+.stress-panel-hint { font-size: 11px; font-weight: 400; color: var(--text-3); font-family: var(--mono); }
+
+.stress-panel-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.stress-panel-desc { font-size: 12px; color: var(--text-2); line-height: 1.5; margin: 0; }
+.stress-panel-desc code { font-family: var(--mono); color: var(--warning); font-size: 11px; }
+
+.stress-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.stress-preset-btn {
+  padding: 4px 12px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--surface2); color: var(--text-2);
+  cursor: pointer; transition: all .15s; font-family: var(--mono);
+}
+.stress-preset-btn:hover { border-color: var(--border-h); color: var(--text); background: var(--surface3); }
+.stress-preset-btn.active { border-color: var(--primary); color: var(--primary); background: var(--primary-glow); }
+.stress-preset-danger { border-color: var(--danger-border); color: var(--danger); }
+.stress-preset-danger:hover { border-color: var(--danger-border-h); background: var(--danger-bg); }
+.stress-preset-danger.active { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.stress-preset-custom { border-style: dashed; }
+
+.stress-custom-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 0;
+}
+.stress-custom-row .slider { flex: 1; }
+.stress-util-label { font-size: 13px; font-weight: 700; min-width: 38px; text-align: right; color: var(--text); }
+
+.stress-results { display: flex; flex-direction: column; gap: 4px; }
+.stress-result-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 4px; align-items: center; padding: 6px 8px;
+  border-radius: var(--r-xs); font-size: 12px;
+}
+.stress-result-header {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-3); padding: 4px 8px;
+}
+.stress-result-row:not(.stress-result-header) { background: var(--surface2); }
+.stress-result-row:not(.stress-result-header):hover { background: var(--surface3); }
+.stress-result-row.stress-row-active { background: var(--primary-glow); border: 1px solid var(--primary); }
+.stress-result-row.stress-row-kink { background: var(--danger-bg); border: 1px solid var(--danger-border); }
+.stress-result-row.stress-row-kink.stress-row-active { background: var(--danger-bg-h); border-color: var(--danger); }
+.stress-result-util { font-family: var(--mono); font-weight: 700; }
+.stress-result-borrow { font-family: var(--mono); color: var(--danger); }
+.stress-result-apy { font-family: var(--mono); font-weight: 600; }
+.stress-result-liq { font-family: var(--mono); font-size: 11px; }
+
+.stress-kink-warn {
+  font-size: 12px; line-height: 1.5; padding: 8px 12px;
+  border-radius: var(--r-xs); color: var(--warning);
+  background: var(--warning-bg); border: 1px solid var(--warning-border);
+}
+.stress-kink-warn strong { font-weight: 700; }
+
 /* ── Frozen banner ───────────────────────────────────────────────────────── */
 
 .pool-frozen-banner {
