@@ -106,4 +106,6 @@ discussion respectful, focused, and constructive.
 If the project adds a CLA or a maintainer requests one for a contribution, complete
 that process before the pull request is merged.
 
+[**Security & Vulnerability Reporting**]: See [SECURITY.md](SECURITY.md) for our responsible disclosure policy, PGP key, and reporting channels.
+
 [github-community-guidelines]: https://docs.github.com/en/site-policy/github-terms/github-community-guidelines
