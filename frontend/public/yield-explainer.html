@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Where does the yield come from? — Turbolong</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --mono: 'JetBrains Mono', monospace;
+      --sans: 'Inter', sans-serif;
+      --bg: #0B0E14; --surface: #141820; --surface2: #1A1F2B;
+      --border: #1E2536; --primary: #2DE8A3; --text: #E8ECF4;
+      --text-2: #8892A8; --text-3: #4A5568;
+      --danger: #FF4D6A; --warning: #FFB547; --success: #2DE8A3;
+      --r: 12px; --r-sm: 8px;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f5f9; --surface: #fff; --surface2: #f0f1f5;
+        --border: #e0e3ea; --primary: #1aad7a; --text: #111827;
+        --text-2: #6b7280; --text-3: #9ca3af;
+        --danger: #dc2626; --warning: #d97706; --success: #16a34a;
+      }
+    }
+    html, body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.7; }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { font-family: var(--mono); font-size: 13px; background: var(--surface2); padding: 2px 6px; border-radius: 4px; }
+
+    .nav {
+      display: flex; align-items: center; gap: 12px;
+      padding: 0 24px; height: 52px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 10;
+    }
+    .nav-logo { font-weight: 800; font-size: 16px; letter-spacing: -.4px; }
+    .nav-logo span { color: var(--primary); }
+    .nav-back { font-size: 13px; color: var(--text-2); margin-left: auto; }
+
+    .page { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+
+    h1 { font-size: 32px; font-weight: 800; letter-spacing: -.5px; line-height: 1.2; margin-bottom: 12px; }
+    .subtitle { font-size: 16px; color: var(--text-2); margin-bottom: 40px; }
+
+    h2 { font-size: 20px; font-weight: 700; letter-spacing: -.3px; margin: 40px 0 12px; }
+    h3 { font-size: 16px; font-weight: 700; margin: 24px 0 8px; }
+    p { margin-bottom: 14px; color: var(--text-2); }
+    p strong { color: var(--text); }
+    ul, ol { padding-left: 20px; margin-bottom: 14px; color: var(--text-2); }
+    li { margin-bottom: 6px; }
+    li strong { color: var(--text); }
+
+    .formula-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 20px 24px; margin: 16px 0;
+      font-family: var(--mono); font-size: 14px; line-height: 2;
+    }
+    .formula-box .eq { color: var(--text); font-weight: 600; }
+    .formula-box .comment { color: var(--text-3); font-size: 12px; }
+    .formula-box .positive { color: var(--success); }
+    .formula-box .negative { color: var(--danger); }
+    .formula-box .neutral  { color: var(--warning); }
+
+    .callout {
+      border-radius: var(--r); padding: 16px 20px; margin: 20px 0; font-size: 14px; line-height: 1.6;
+    }
+    .callout-warn  { background: rgba(255,181,71,.07); border: 1px solid rgba(255,181,71,.25); color: var(--warning); }
+    .callout-danger{ background: rgba(255,77,106,.07); border: 1px solid rgba(255,77,106,.2); color: var(--danger); }
+    .callout-info  { background: rgba(45,232,163,.05); border: 1px solid rgba(45,232,163,.2); color: var(--success); }
+    .callout strong { color: inherit; }
+    .callout p { color: inherit; margin: 0; }
+
+    .example-table {
+      width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0;
+    }
+    .example-table th {
+      text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .5px; color: var(--text-3);
+      border-bottom: 1px solid var(--border);
+    }
+    .example-table td {
+      padding: 10px 12px; border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+    }
+    .example-table tr:last-child td { border-bottom: none; }
+    .pos { color: var(--success); }
+    .neg { color: var(--danger); }
+    .warn { color: var(--warning); }
+
+    .section-divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    .toc {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 16px 20px; margin-bottom: 40px;
+    }
+    .toc-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--text-3); margin-bottom: 10px; }
+    .toc ol { margin: 0; padding-left: 18px; }
+    .toc li { margin-bottom: 4px; font-size: 14px; }
+
+    footer { text-align: center; padding: 24px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <span class="nav-logo">Turbo<span>long</span></span>
+  <a href="/" class="nav-back">← Back to app</a>
+</nav>
+
+<div class="page">
+
+  <h1>Where does the yield come from?</h1>
+  <p class="subtitle">A plain-English breakdown of how leveraged supply APY is calculated, what can go wrong, and how liquidation works.</p>
+
+  <div class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#base-yield">Base yield: supply interest</a></li>
+      <li><a href="#blnd">BLND emissions</a></li>
+      <li><a href="#borrow-cost">Borrow cost</a></li>
+      <li><a href="#leverage-math">How leverage amplifies (and risks)</a></li>
+      <li><a href="#net-apy">The net APY formula</a></li>
+      <li><a href="#worst-case">Worst-case scenarios</a></li>
+      <li><a href="#liquidation">Liquidation mechanics</a></li>
+    </ol>
+  </div>
+
+  <!-- ── 1. Base yield ── -->
+  <h2 id="base-yield">1. Base yield: supply interest</h2>
+
+  <p>When you deposit an asset into a Blend pool, you earn interest paid by borrowers. The interest rate follows a <strong>3-kink utilisation curve</strong> — the more of the pool that is borrowed, the higher the rate.</p>
+
+  <div class="formula-box">
+    <div class="eq"><span class="positive">Supply APR</span> = BorrowRate × (1 − BackstopTake) × Utilisation</div>
+    <div class="comment">// BackstopTake ≈ 20% — goes to the Blend backstop insurance fund</div>
+    <div class="comment">// Utilisation = totalBorrow / totalSupply</div>
+  </div>
+
+  <p>The borrow rate itself is determined by which segment of the curve the pool is in:</p>
+
+  <div class="formula-box">
+    <div class="comment">// Segment 1: util ≤ target (e.g. 80%)</div>
+    <div class="eq">BorrowRate = r_base + r_one × (util / target)</div>
+    <div class="comment">// Segment 2: target &lt; util ≤ 95%</div>
+    <div class="eq">BorrowRate = r_base + r_one + r_two × slope</div>
+    <div class="comment">// Segment 3: util &gt; 95% — steep cliff</div>
+    <div class="eq">BorrowRate = r_base + r_one + r_two + r_three × slope</div>
+  </div>
+
+  <p>This is the exact model in <code>blend.ts::fetchAllReserves</code> and <code>projectRates</code>. The UI re-runs it with your projected deposit to show how your position will affect rates.</p>
+
+  <!-- ── 2. BLND ── -->
+  <h2 id="blnd">2. BLND emissions</h2>
+
+  <p>Blend distributes its governance token (BLND) to both suppliers and borrowers at a fixed rate per second (<code>eps</code> — emissions per second). This is an <em>additional</em> yield on top of interest.</p>
+
+  <div class="formula-box">
+    <div class="eq"><span class="positive">BLND Supply APR</span> = (eps × seconds_per_year × BLND_price) / (totalSupply × asset_price) × 100</div>
+  </div>
+
+  <p>Key properties of BLND emissions:</p>
+  <ul>
+    <li><strong>They are linear, not compounding.</strong> The UI shows them as APR, not APY.</li>
+    <li><strong>They dilute as the pool grows.</strong> More depositors = smaller share per depositor.</li>
+    <li><strong>BLND price is volatile.</strong> If BLND falls, this component of yield falls with it.</li>
+    <li><strong>You must claim them manually</strong> — use "Claim" or "Claim &amp; Convert" to realise them.</li>
+  </ul>
+
+  <div class="callout callout-warn">
+    <strong>⚠ BLND emissions are not guaranteed.</strong> The Blend governance can change emission rates. Do not rely on BLND APR as the primary source of yield.
+  </div>
+
+  <!-- ── 3. Borrow cost ── -->
+  <h2 id="borrow-cost">3. Borrow cost</h2>
+
+  <p>To lever up, Turbolong borrows the same asset you deposited. You pay the borrow interest rate on the borrowed portion. Borrowers also receive BLND emissions, which partially offset this cost.</p>
+
+  <div class="formula-box">
+    <div class="eq"><span class="negative">Net Borrow Cost</span> = BorrowInterestAPR − BLND Borrow APR</div>
+  </div>
+
+  <p>At high utilisation (above 95%), borrow rates spike sharply. This is intentional — it protects the pool from running out of liquidity. If you open a large position near the utilisation cap, your borrow cost can be significantly higher than the displayed rate.</p>
+
+  <!-- ── 4. Leverage math ── -->
+  <h2 id="leverage-math">4. How leverage amplifies (and risks)</h2>
+
+  <p>At leverage <strong>L</strong> on an initial deposit of <strong>E</strong>:</p>
+
+  <div class="formula-box">
+    <div class="eq">Total supply  = E × L</div>
+    <div class="eq">Total borrow  = E × (L − 1)</div>
+    <div class="eq">Equity        = E  <span class="comment">// unchanged</span></div>
+  </div>
+
+  <p>Leverage multiplies your supply yield — but also your borrow cost. The net effect on your equity:</p>
+
+  <div class="formula-box">
+    <div class="eq"><span class="positive">Gross yield on equity</span> = NetSupplyAPR × L</div>
+    <div class="eq"><span class="negative">Borrow cost on equity</span> = NetBorrowCost × (L − 1)</div>
+    <div class="eq"><span class="neutral">Net APR on equity</span>    = NetSupplyAPR × L − NetBorrowCost × (L − 1)</div>
+  </div>
+
+  <p>This is the exact formula used in <code>updatePreview()</code> and <code>renderPosition()</code> in the UI.</p>
+
+  <table class="example-table">
+    <thead><tr><th>Leverage</th><th>Supply yield</th><th>Borrow cost</th><th>Net APR on equity</th></tr></thead>
+    <tbody>
+      <tr><td>1×</td><td class="pos">+5.0%</td><td class="neg">—</td><td class="pos">+5.0%</td></tr>
+      <tr><td>3×</td><td class="pos">+15.0%</td><td class="neg">−8.0%</td><td class="pos">+7.0%</td></tr>
+      <tr><td>5×</td><td class="pos">+25.0%</td><td class="neg">−16.0%</td><td class="pos">+9.0%</td></tr>
+      <tr><td>8×</td><td class="pos">+40.0%</td><td class="neg">−28.0%</td><td class="pos">+12.0%</td></tr>
+      <tr><td>8× (rates spike)</td><td class="warn">+40.0%</td><td class="neg">−45.0%</td><td class="neg">−5.0%</td></tr>
+    </tbody>
+  </table>
+
+  <p>The last row illustrates the key risk: if borrow rates rise above supply rates, the position bleeds equity every day.</p>
+
+  <!-- ── 5. Net APY ── -->
+  <h2 id="net-apy">5. The net APY formula</h2>
+
+  <p>The UI converts APR to APY for interest (which compounds) but keeps BLND as APR (which does not auto-compound). The displayed "Net APY" is therefore an approximation:</p>
+
+  <div class="formula-box">
+    <div class="eq"><span class="neutral">Net APY ≈</span> APR_to_APY(interestSupplyAPR) × L</div>
+    <div class="eq">         <span class="negative">− APR_to_APY(interestBorrowAPR) × (L − 1)</span></div>
+    <div class="eq">         <span class="positive">+ blndSupplyAPR × L</span></div>
+    <div class="eq">         <span class="negative">− blndBorrowAPR × (L − 1)</span></div>
+    <div class="comment">// APR_to_APY(r) = (e^(r/100) − 1) × 100</div>
+  </div>
+
+  <p>The tooltip on every APY figure in the app shows the underlying APR for comparison.</p>
+
+  <div class="callout callout-info">
+    <strong>Note:</strong> Blend does not auto-compound. Interest accrues continuously on-chain, but your bToken balance only grows when you interact with the pool. The APY figure assumes continuous compounding — actual returns will be slightly lower unless you actively reinvest.
+  </div>
+
+  <!-- ── 6. Worst case ── -->
+  <hr class="section-divider" />
+  <h2 id="worst-case">6. Worst-case scenarios</h2>
+
+  <h3>Borrow rate spike</h3>
+  <p>If pool utilisation exceeds 95%, borrow rates enter the steep third segment and can reach 100%+ APR. This can flip a profitable position negative within days. The "Days until liquidation" counter in the UI estimates this using the current interest spread.</p>
+
+  <h3>BLND price collapse</h3>
+  <p>If BLND falls to near zero, the BLND APR component disappears. At high leverage, this can make the net APR negative even if interest rates are unchanged.</p>
+
+  <h3>Asset price drop</h3>
+  <p>Turbolong uses recursive lending on a <em>single asset</em> — you supply and borrow the same token. This means you have <strong>no directional price exposure</strong> to that asset. However, if the oracle price drops, your Health Factor can still fall because the pool values your collateral at the new lower price.</p>
+
+  <h3>Oracle failure / exploit</h3>
+  <p>Blend relies on on-chain oracles. A manipulated or stale price can cause incorrect liquidations. The Etherfuse pool was frozen in February 2026 following an oracle-related exploit — this is a real, non-theoretical risk.</p>
+
+  <div class="callout callout-danger">
+    <strong>⚠ You can lose your entire deposit.</strong> Leveraged positions can be liquidated faster than you can react, especially during periods of high volatility or network congestion. Never deposit more than you can afford to lose.
+  </div>
+
+  <!-- ── 7. Liquidation ── -->
+  <hr class="section-divider" />
+  <h2 id="liquidation">7. Liquidation mechanics</h2>
+
+  <p>Blend liquidates positions when the <strong>Health Factor (HF)</strong> drops to or below 1.0:</p>
+
+  <div class="formula-box">
+    <div class="eq">HF = (collateral × c_factor) / (debt / l_factor)</div>
+    <div class="comment">// c_factor: collateral discount (e.g. 0.95 = 95%)</div>
+    <div class="comment">// l_factor: liability factor (e.g. 1.0 = no discount on debt)</div>
+    <div class="comment">// HF &lt; 1.0 → liquidatable</div>
+  </div>
+
+  <p>HF decays over time because borrow interest accrues faster than supply interest (the spread). The rate of decay:</p>
+
+  <div class="formula-box">
+    <div class="eq">Days to liquidation ≈ ln(HF) / (borrowAPR − supplyAPR) × 365</div>
+    <div class="comment">// This is the formula used in the "Days until liquidation" metric</div>
+  </div>
+
+  <p>When a position is liquidated:</p>
+  <ol>
+    <li>A liquidator repays some or all of your debt.</li>
+    <li>They receive your collateral at a discount (the liquidation bonus).</li>
+    <li>You keep whatever collateral remains after the liquidator is paid — which may be very little at high leverage.</li>
+  </ol>
+
+  <h3>How to protect yourself</h3>
+  <ul>
+    <li><strong>Keep HF above 1.1</strong> — the UI warns at 1.01 but the safe zone is higher.</li>
+    <li><strong>Claim &amp; Convert BLND regularly</strong> — reinvesting emissions extends your runway.</li>
+    <li><strong>Use Resupply</strong> — depositing extra collateral raises HF without closing the position.</li>
+    <li><strong>Watch the "Days until liquidation" counter</strong> — if it drops below 30 days, act.</li>
+    <li><strong>Set APY alerts</strong> — subscribe to email alerts when net APY turns negative.</li>
+  </ul>
+
+  <div class="callout callout-warn">
+    <strong>There is no stop-loss.</strong> Blend does not support conditional orders. If you are not monitoring your position, it can be liquidated without warning.
+  </div>
+
+</div>
+
+<footer>
+  <a href="/">← Back to Turbolong</a> &nbsp;·&nbsp;
+  <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a> &nbsp;·&nbsp;
+  <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
+</footer>
+
+</body>
+</html>
