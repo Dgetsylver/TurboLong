@@ -18,6 +18,8 @@ interface Env {
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   FRONTEND_ORIGIN: string;
+  /** Optional Bearer token required to access /metrics. If unset, endpoint is public. */
+  METRICS_TOKEN?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -159,11 +161,19 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
 
-  if (!token) return htmlResponse("<h2>Missing token.</h2>", 400);
+  if (!token) {
+    if (request.method === "POST") return new Response("Missing token", { status: 400 });
+    return htmlResponse("<h2>Missing token.</h2>", 400);
+  }
 
   const result = await env.DB.prepare(
     "DELETE FROM subscriptions WHERE unsub_token = ?1"
   ).bind(token).run();
+
+  // RFC 8058 one-click: mail client POSTs List-Unsubscribe=One-Click; respond 200 with no body
+  if (request.method === "POST") {
+    return new Response(null, { status: result.meta.changes ? 200 : 404 });
+  }
 
   if (!result.meta.changes) {
     return htmlResponse("<h2>Subscription not found or already removed.</h2>", 404);
@@ -178,6 +188,76 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
   <p>You will no longer receive APY alerts for this subscription.</p>
 </body>
 </html>`);
+}
+
+// ── Metrics handler ──────────────────────────────────────────────────────────
+
+/**
+ * Exposes subscriber-level metrics in Prometheus text format (v0.0.4).
+ *
+ * Auth:   set METRICS_TOKEN secret → endpoint requires "Authorization: Bearer <token>".
+ *         If METRICS_TOKEN is unset the endpoint is public (safe for read-only counters).
+ * Rate-limiting: configure a Cloudflare WAF rate-limit rule on /metrics at the
+ *         dashboard level (e.g. 60 req/min per IP) — no Worker state needed.
+ */
+async function handleMetrics(request: Request, env: Env): Promise<Response> {
+  if (env.METRICS_TOKEN) {
+    const auth = request.headers.get("Authorization") ?? "";
+    if (auth !== `Bearer ${env.METRICS_TOKEN}`) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: { "WWW-Authenticate": 'Bearer realm="metrics"' },
+      });
+    }
+  }
+
+  const [totalRow, poolRows, leverageRows, assetRows] = await Promise.all([
+    env.DB.prepare(
+      "SELECT COUNT(*) as n FROM subscriptions WHERE verified = 1"
+    ).first<{ n: number }>(),
+    env.DB.prepare(
+      "SELECT pool_id, COUNT(*) as n FROM subscriptions WHERE verified = 1 GROUP BY pool_id"
+    ).all<{ pool_id: string; n: number }>(),
+    env.DB.prepare(
+      "SELECT leverage_bracket, COUNT(*) as n FROM subscriptions WHERE verified = 1 GROUP BY leverage_bracket"
+    ).all<{ leverage_bracket: number; n: number }>(),
+    env.DB.prepare(
+      "SELECT asset_symbol, COUNT(*) as n FROM subscriptions WHERE verified = 1 GROUP BY asset_symbol"
+    ).all<{ asset_symbol: string; n: number }>(),
+  ]);
+
+  const lines: string[] = [];
+
+  lines.push("# HELP turbolong_subscribers_total Total verified alert subscribers");
+  lines.push("# TYPE turbolong_subscribers_total gauge");
+  lines.push(`turbolong_subscribers_total ${totalRow?.n ?? 0}`);
+  lines.push("");
+
+  lines.push("# HELP turbolong_subscribers_by_pool Verified subscribers per pool");
+  lines.push("# TYPE turbolong_subscribers_by_pool gauge");
+  for (const row of poolRows.results ?? []) {
+    const name = POOL_NAMES[row.pool_id] ?? row.pool_id;
+    lines.push(`turbolong_subscribers_by_pool{pool="${name}"} ${row.n}`);
+  }
+  lines.push("");
+
+  lines.push("# HELP turbolong_subscribers_by_leverage Verified subscribers per leverage bracket");
+  lines.push("# TYPE turbolong_subscribers_by_leverage gauge");
+  for (const row of leverageRows.results ?? []) {
+    lines.push(`turbolong_subscribers_by_leverage{leverage="${row.leverage_bracket}x"} ${row.n}`);
+  }
+  lines.push("");
+
+  lines.push("# HELP turbolong_subscribers_by_asset Verified subscribers per asset symbol");
+  lines.push("# TYPE turbolong_subscribers_by_asset gauge");
+  for (const row of assetRows.results ?? []) {
+    lines.push(`turbolong_subscribers_by_asset{asset="${row.asset_symbol}"} ${row.n}`);
+  }
+  lines.push("");
+
+  return new Response(lines.join("\n") + "\n", {
+    headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" },
+  });
 }
 
 // ── Cron handler ─────────────────────────────────────────────────────────────
@@ -276,7 +356,16 @@ export default {
         return handleVerify(request, env);
 
       case "/unsubscribe":
+        if (request.method !== "GET" && request.method !== "POST") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
         return handleUnsubscribe(request, env);
+
+      case "/metrics":
+        if (request.method !== "GET") {
+          return jsonResponse({ error: "Method not allowed" }, 405);
+        }
+        return handleMetrics(request, env);
 
       default:
         return jsonResponse({ error: "Not found" }, 404);

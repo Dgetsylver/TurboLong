@@ -6,9 +6,13 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create turbolong-alerts",
-    "db:migrate": "wrangler d1 execute turbolong-alerts --file=src/schema.sql"
+    "db:migrate": "wrangler d1 execute turbolong-alerts --file=src/schema.sql",
+    "lint": "biome lint .",
+    "format": "biome format . --write",
+    "format:check": "biome format ."
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "wrangler": "^3.99.0",
     "typescript": "^5.7.3"
   }
