@@ -44,6 +44,7 @@ import {
   submitClassicXdr,
   hfForLeverage,
   maxLeverageFor,
+  fetchEwmaRates,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -324,6 +325,50 @@ const MIN_HF_NORMAL = 1.01;
 const MIN_HF_EXPERT = 1.00001;
 function minHF() { return expertMode ? MIN_HF_EXPERT : MIN_HF_NORMAL; }
 
+// ── APY display mode (instant | smoothed) ────────────────────────────────────
+
+type ApyMode = "instant" | "smoothed";
+let apyMode: ApyMode = "instant";
+// Cache: keyed by `${poolId}:${assetSymbol}`
+const ewmaCache = new Map<string, { netSupplyApr: number; netBorrowCost: number }>();
+
+function ewmaCacheKey() { return `${selectedPool.id}:${selectedAsset.symbol}`; }
+
+/** Return the active rates for the selected asset — instant or EWMA. */
+function activeRates(rs: ReserveStats): { netSupplyApr: number; netBorrowCost: number } {
+  if (apyMode === "smoothed") {
+    const cached = ewmaCache.get(ewmaCacheKey());
+    if (cached) return cached;
+  }
+  return { netSupplyApr: rs.netSupplyApr, netBorrowCost: rs.netBorrowCost };
+}
+
+async function loadEwmaForAsset() {
+  const key = ewmaCacheKey();
+  if (ewmaCache.has(key)) { applyEwmaToUI(); return; }
+  const result = await fetchEwmaRates(selectedPool.id, selectedAsset.symbol);
+  if (result) {
+    ewmaCache.set(key, result);
+    applyEwmaToUI();
+  }
+}
+
+function applyEwmaToUI() {
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  if (!rs) return;
+  renderSelectedAsset();
+  updatePreview();
+}
+
+function setApyMode(mode: ApyMode) {
+  apyMode = mode;
+  const btn = $("apy-mode-toggle");
+  btn.textContent = mode === "instant" ? "Instant" : "Smoothed (7d EWMA)";
+  btn.classList.toggle("apy-mode-smoothed", mode === "smoothed");
+  if (mode === "smoothed") loadEwmaForAsset();
+  else applyEwmaToUI();
+}
+
 // ── Demo mode ────────────────────────────────────────────────────────────────
 
 let demoMode = false;
@@ -592,8 +637,7 @@ function selectPool(pool: PoolDef) {
   renderPoolFooter();
   closeDrawer();
 
-  if (userAddress) loadAll();
-}
+  if (userAddress) loadAll();}
 
 // ── Asset tabs ────────────────────────────────────────────────────────────────
 
@@ -657,6 +701,7 @@ function selectAsset(asset: AssetInfo) {
 
   renderSelectedAsset();
   if (userAddress) refreshTabData();
+  if (apyMode === "smoothed") loadEwmaForAsset();
 }
 
 /** Fetch only balance for the current asset (BLND is pool-wide, fetched in loadAll). */
@@ -782,18 +827,20 @@ function renderSelectedAsset() {
 
   renderAprLine("supply-interest-apr", rs.interestSupplyApr, false);
   renderAprLine("supply-blnd-apr",     rs.blndSupplyApr,     false, true);
-  renderAprLine("supply-net-apr",      aprToApy(rs.interestSupplyApr) + rs.blndSupplyApr, false, false, undefined, true);
+  const ar = activeRates(rs);
+  renderAprLine("supply-net-apr",      aprToApy(ar.netSupplyApr), false, false, undefined, true);
   renderAprLine("borrow-interest-apr", rs.interestBorrowApr, true);
   renderAprLine("borrow-blnd-apr",     rs.blndBorrowApr,     false, true, "-");
-  renderAprLine("borrow-net-cost",     aprToApy(rs.interestBorrowApr) - rs.blndBorrowApr, true, false, undefined, true);
+  renderAprLine("borrow-net-cost",     aprToApy(ar.netBorrowCost), true, false, undefined, true);
 
   // Update net tooltips with actual APR
   const supplyTip = $("supply-net-tip");
+  const modeLabel = apyMode === "smoothed" ? "7-day EWMA smoothed" : "instant";
   if (supplyTip) supplyTip.setAttribute("data-tip",
-    `Approximate APY: interest compounds but BLND emissions don't. Actual net APR: ${fmt(rs.netSupplyApr, 2)}%`);
+    `${modeLabel} net APR: ${fmt(ar.netSupplyApr, 2)}%. Approximate APY: interest compounds but BLND emissions don't.`);
   const borrowTip = $("borrow-net-tip");
   if (borrowTip) borrowTip.setAttribute("data-tip",
-    `Approximate APY: interest compounds but BLND emissions don't. Actual net APR: ${fmt(rs.netBorrowCost, 2)}%`);
+    `${modeLabel} net APR: ${fmt(ar.netBorrowCost, 2)}%. Approximate APY: interest compounds but BLND emissions don't.`);
 
   // Don't auto-collapse — user controls visibility via the toggle
 
@@ -992,7 +1039,8 @@ function renderPosition() {
   const netAprEl = $("pos-net-apr");
   const heroApyEl = $("hero-net-apy");
   if (rs && pos.leverage > 0) {
-    const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
+    const ar = activeRates(rs);
+    const posNetApr = ar.netSupplyApr * pos.leverage - ar.netBorrowCost * (pos.leverage - 1);
     const netApy = aprToApy(posNetApr);
     const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
     netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
@@ -2012,6 +2060,11 @@ function toggleExpert() {
 }
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
+
+// APY mode toggle (instant ↔ smoothed)
+$("apy-mode-toggle").addEventListener("click", () => {
+  setApyMode(apyMode === "instant" ? "smoothed" : "instant");
+});
 
 // Theme toggle (settings dropdown)
 function toggleTheme() {

@@ -1340,3 +1340,43 @@ export async function submitClassicXdr(signedXdr: string): Promise<string> {
   const result = await horizon.submitTransaction(tx);
   return (result as any).hash;
 }
+
+// ── EWMA from B3 snapshot series ─────────────────────────────────────────────
+
+const ALERTS_BASE = "https://turbolong-alerts.workers.dev";
+const EWMA_HALF_LIFE_DAYS = 7;
+
+export interface EwmaRates {
+  netSupplyApr: number;
+  netBorrowCost: number;
+}
+
+/**
+ * Fetch the last 30 days of rate snapshots and compute an exponentially-weighted
+ * moving average with a 7-day half-life.
+ *
+ * α per interval = 1 − exp(−ln2 / halfLifeIntervals)
+ * where halfLifeIntervals = halfLifeDays × 24 × 4  (15-min ticks)
+ */
+export async function fetchEwmaRates(poolId: string, assetSymbol: string): Promise<EwmaRates | null> {
+  try {
+    const url = `${ALERTS_BASE}/rates?pool=${encodeURIComponent(poolId)}&asset=${encodeURIComponent(assetSymbol)}&window=720`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const json = await res.json() as { ok: boolean; data: { ts: string; supply_rate: number; borrow_rate: number }[] };
+    if (!json.ok || !json.data.length) return null;
+
+    const halfLifeIntervals = EWMA_HALF_LIFE_DAYS * 24 * 4; // 15-min ticks
+    const alpha = 1 - Math.exp(-Math.LN2 / halfLifeIntervals);
+
+    let ewmaSupply = json.data[0].supply_rate;
+    let ewmaBorrow = json.data[0].borrow_rate;
+    for (let i = 1; i < json.data.length; i++) {
+      ewmaSupply = alpha * json.data[i].supply_rate + (1 - alpha) * ewmaSupply;
+      ewmaBorrow = alpha * json.data[i].borrow_rate + (1 - alpha) * ewmaBorrow;
+    }
+    return { netSupplyApr: ewmaSupply, netBorrowCost: ewmaBorrow };
+  } catch {
+    return null;
+  }
+}

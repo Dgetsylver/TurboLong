@@ -307,6 +307,10 @@
               </div>
 
               <!-- APR breakdown -->
+              <div class="apr-grid-header">
+                <span class="apr-grid-title">Rates</span>
+                <button id="apy-mode-toggle" class="apy-mode-toggle tooltip" data-tip="Toggle between live rates and a 7-day exponentially-weighted moving average (EWMA) to smooth out short-term noise.">Instant</button>
+              </div>
               <div class="apr-grid">
                 <div class="apr-card">
                   <div class="apr-card-label">Supply</div>
@@ -541,6 +545,34 @@
           </div><!-- .two-col -->
 
           <footer id="pool-footer" class="pool-footer"></footer>
+
+          <!-- EWMA docs panel -->
+          <details class="ewma-docs" id="ewma-docs">
+            <summary>What is the Smoothed (EWMA) rate?</summary>
+            <div class="ewma-docs-body">
+              <p>
+                Pool rates fluctuate every 15 minutes as utilisation changes. A single snapshot can be
+                misleading — a brief liquidity spike may show an unusually high borrow rate that reverts
+                within hours.
+              </p>
+              <p>
+                The <strong>Smoothed</strong> mode applies an <em>exponentially-weighted moving average</em>
+                (EWMA) with a <strong>7-day half-life</strong> to the last 30 days of snapshots. Older
+                observations decay exponentially, so recent data still matters more, but short-lived noise
+                is dampened.
+              </p>
+              <p>
+                <strong>Formula:</strong> for each 15-min tick <em>i</em>,
+                <code>EWMA<sub>i</sub> = α × rate<sub>i</sub> + (1 − α) × EWMA<sub>i−1</sub></code>,
+                where <code>α = 1 − e<sup>−ln2 / (7 × 24 × 4)</sup> ≈ 0.0029</code>.
+              </p>
+              <p>
+                Use <strong>Instant</strong> when you want to see the current on-chain rate.
+                Use <strong>Smoothed</strong> when comparing assets or deciding whether a rate is
+                sustainably attractive.
+              </p>
+            </div>
+          </details>
 
         </div><!-- #dashboard -->
 
