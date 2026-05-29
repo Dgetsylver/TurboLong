@@ -339,6 +339,48 @@
                   </div>
                 </div>
               </div>
+
+              <!-- APY Stress-Test Panel -->
+              <details class="stress-panel" id="stress-panel">
+                <summary class="stress-panel-toggle">
+                  <span>&#9889; APY Stress-Test</span>
+                  <span class="stress-panel-hint" id="stress-panel-hint"></span>
+                </summary>
+                <div class="stress-panel-body">
+                  <p class="stress-panel-desc">See how your position performs if pool utilization spikes. Uses the live rate model — including the steep <code>r_three</code> kink above 95%.</p>
+
+                  <!-- Preset scenario buttons -->
+                  <div class="stress-presets" role="group" aria-label="Utilization presets">
+                    <button class="stress-preset-btn" data-util="0.80">80%</button>
+                    <button class="stress-preset-btn" data-util="0.90">90%</button>
+                    <button class="stress-preset-btn stress-preset-danger" data-util="0.95">95%</button>
+                    <button class="stress-preset-btn stress-preset-danger" data-util="0.99">99%</button>
+                    <button class="stress-preset-btn stress-preset-custom active" id="stress-custom-btn">Custom</button>
+                  </div>
+
+                  <!-- Custom utilization slider (shown when Custom is active) -->
+                  <div class="stress-custom-row" id="stress-custom-row">
+                    <input type="range" id="stress-util-slider" class="slider" min="1" max="99" step="1" value="85" />
+                    <span class="stress-util-label mono" id="stress-util-label">85%</span>
+                  </div>
+
+                  <!-- Results table -->
+                  <div class="stress-results" id="stress-results">
+                    <div class="stress-result-row stress-result-header">
+                      <span>Utilization</span>
+                      <span>Borrow APR</span>
+                      <span>Net APY</span>
+                      <span>Days to Liq</span>
+                    </div>
+                    <!-- Rows injected by renderStressPanel() -->
+                  </div>
+
+                  <p class="stress-kink-warn hidden" id="stress-kink-warn">
+                    &#9888; One or more scenarios cross the <strong>r_three kink</strong> (&gt;95% utilization). Borrow rates spike steeply here — liquidation risk is high.
+                  </p>
+                </div>
+              </details>
+
             </div><!-- stats-body -->
           </div><!-- stats-collapsible -->
 
