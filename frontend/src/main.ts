@@ -270,32 +270,47 @@ async function fundTestnetWallet() {
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
+const THEME_STORAGE_KEY = "theme";
 type Theme = "light" | "dark";
 
 function getSystemTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-function applyTheme(theme: Theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  // Update theme badge in settings dropdown
-  const btn = document.getElementById("theme-toggle");
-  if (btn) {
-    const badge = btn.querySelector(".settings-badge");
-    if (badge) badge.innerHTML = theme === "dark" ? "&#9790;" : "&#9728;";
-  }
-  // Also update mobile theme toggle
-  const mobileBtn = document.getElementById("mobile-theme-toggle");
-  if (mobileBtn) mobileBtn.innerHTML = theme === "dark" ? "&#9790;" : "&#9728;";
+function readStoredTheme(): Theme | null {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "light" || stored === "dark" ? stored : null;
 }
 
-// Initialize: check localStorage override, else follow system
-const savedTheme = localStorage.getItem("theme") as Theme | null;
-applyTheme(savedTheme ?? getSystemTheme());
+function resolveTheme(): Theme {
+  return readStoredTheme() ?? getSystemTheme();
+}
 
-// Listen for system changes (only when no manual override)
+function applyTheme(theme: Theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.style.colorScheme = theme;
+
+  const icon = theme === "dark" ? "&#9790;" : "&#9728;";
+  const ariaLabel = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+
+  const settingsBtn = document.getElementById("theme-toggle");
+  if (settingsBtn) {
+    settingsBtn.setAttribute("aria-label", ariaLabel);
+    const badge = settingsBtn.querySelector(".settings-badge");
+    if (badge) badge.innerHTML = icon;
+  }
+
+  const mobileBtn = document.getElementById("mobile-theme-toggle");
+  if (mobileBtn) {
+    mobileBtn.setAttribute("aria-label", ariaLabel);
+    mobileBtn.innerHTML = icon;
+  }
+}
+
+applyTheme(resolveTheme());
+
 window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-  if (!localStorage.getItem("theme")) applyTheme(getSystemTheme());
+  if (!readStoredTheme()) applyTheme(getSystemTheme());
 });
 
 // ── Disclaimer ───────────────────────────────────────────────────────────
@@ -2013,11 +2028,11 @@ function toggleExpert() {
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
 
-// Theme toggle (settings dropdown)
+// Theme toggle (settings dropdown + mobile sidebar)
 function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme") as Theme || getSystemTheme();
+  const current = (document.documentElement.getAttribute("data-theme") as Theme) || resolveTheme();
   const next: Theme = current === "dark" ? "light" : "dark";
-  localStorage.setItem("theme", next);
+  localStorage.setItem(THEME_STORAGE_KEY, next);
   applyTheme(next);
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
