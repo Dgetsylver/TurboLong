@@ -324,6 +324,43 @@ const MIN_HF_NORMAL = 1.01;
 const MIN_HF_EXPERT = 1.00001;
 function minHF() { return expertMode ? MIN_HF_EXPERT : MIN_HF_NORMAL; }
 
+// ── Beginner mode (A5) ───────────────────────────────────────────────────────
+
+const BEGINNER_MAX_LEVERAGE = 2.0;
+let beginnerMode: boolean = localStorage.getItem("beginnerMode") === "1";
+
+function applyBeginnerMode() {
+  // Cap leverage slider
+  const slider = document.getElementById("leverage-slider") as HTMLInputElement | null;
+  const numIn  = document.getElementById("leverage-input")  as HTMLInputElement | null;
+  if (slider && numIn) {
+    if (beginnerMode) {
+      const cap = String(BEGINNER_MAX_LEVERAGE);
+      if (parseFloat(slider.max) > BEGINNER_MAX_LEVERAGE) slider.max = numIn.max = cap;
+      if (parseFloat(slider.value) > BEGINNER_MAX_LEVERAGE) { slider.value = numIn.value = cap; }
+    }
+  }
+  // Hide/show advanced stat card (c_factor)
+  document.querySelectorAll<HTMLElement>(".stat-card-advanced").forEach(el => {
+    el.classList.toggle("hidden", beginnerMode);
+  });
+  // Rename HF labels
+  document.querySelectorAll<HTMLElement>("[data-hf-label]").forEach(el => {
+    el.textContent = beginnerMode ? el.dataset.hfLabelBeginner ?? "Safety Score" : el.dataset.hfLabel ?? "HF";
+  });
+  // Update badge
+  const badge = document.querySelector<HTMLElement>("#beginner-toggle .settings-badge");
+  if (badge) badge.textContent = beginnerMode ? "On" : "Off";
+}
+
+function toggleBeginner() {
+  beginnerMode = !beginnerMode;
+  localStorage.setItem("beginnerMode", beginnerMode ? "1" : "0");
+  applyBeginnerMode();
+  renderSelectedAsset();
+  updatePreview();
+}
+
 // ── Demo mode ────────────────────────────────────────────────────────────────
 
 let demoMode = false;
@@ -601,7 +638,9 @@ function selectPool(pool: PoolDef) {
 function updateLeverageSlider(c: number, l: number = 1) {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
-  const maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
+  let maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
+  // Beginner mode cap (A5)
+  if (beginnerMode) maxLev = Math.min(maxLev, BEGINNER_MAX_LEVERAGE);
   // Looping requires the same asset to be both collateral (c > 0) and borrowable (l > 0).
   // If either is 0 the pool blocks one side and maxLev collapses to 1.0 — disable the slider
   // and surface an accurate notice instead of leaving min == max (appearing stuck).
@@ -1351,8 +1390,10 @@ async function openPosition() {
   if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
   if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot open new positions", "error"); return; }
   const initial  = parseFloat(($("initial-input") as HTMLInputElement).value);
-  const leverage = parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  let leverage = parseFloat(($("leverage-slider") as HTMLInputElement).value);
   if (isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
+  // Beginner mode safety net: clamp leverage at tx-builder layer (A5)
+  if (beginnerMode && leverage > BEGINNER_MAX_LEVERAGE) leverage = BEGINNER_MAX_LEVERAGE;
 
   // Use live cFactor from reserves so intermediate borrow steps don't exceed pool limits
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -2012,6 +2053,11 @@ function toggleExpert() {
 }
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
+
+// Beginner toggle (A5)
+document.getElementById("beginner-toggle")?.addEventListener("click", toggleBeginner);
+// Apply persisted beginner mode on load
+applyBeginnerMode();
 
 // Theme toggle (settings dropdown)
 function toggleTheme() {
@@ -2737,25 +2783,46 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
   await loadAll();
 })();
 
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// ── Keyboard shortcuts (A12) ──────────────────────────────────────────────────
+
+function isInTextField(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement;
+  return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable;
+}
 
 document.addEventListener("keydown", (e) => {
   // Ignore shortcuts when typing in inputs
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (isInTextField(e)) return;
 
-  // R = refresh
-  if (e.key === "r" || e.key === "R") {
-    if (activeView === "leverage" && userAddress) loadAll();
-    else if (activeView === "overview" && userAddress) loadOverview();
-    else if (activeView === "vault") refreshVaultView();
-  }
-  // Escape = close modals/dropdowns
-  if (e.key === "Escape") {
-    $("pool-dropdown").classList.add("hidden");
-    $("settings-dropdown").classList.add("hidden");
-    $("alert-modal-overlay").classList.add("hidden");
-    closeDrawer();
+  switch (e.key) {
+    case "r":
+    case "R":
+      if (activeView === "leverage" && userAddress) loadAll();
+      else if (activeView === "overview" && userAddress) loadOverview();
+      else if (activeView === "vault") refreshVaultView();
+      break;
+    case "l":
+    case "L":
+      if (activeView === "leverage") {
+        ($("leverage-slider") as HTMLInputElement).focus();
+      }
+      break;
+    case "c":
+    case "C": {
+      const closeBtn = $("close-btn") as HTMLButtonElement;
+      if (!closeBtn.disabled) closeBtn.click();
+      break;
+    }
+    case "Escape":
+      $("pool-dropdown").classList.add("hidden");
+      $("settings-dropdown").classList.add("hidden");
+      $("alert-modal-overlay").classList.add("hidden");
+      document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      closeDrawer();
+      break;
+    case "?":
+      document.getElementById("shortcut-modal-overlay")?.classList.toggle("hidden");
+      break;
   }
 });
 
@@ -2825,4 +2892,18 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     btn.disabled = false;
     btn.textContent = "Subscribe";
   }
+});
+
+// ── Shortcut help modal (A12) ─────────────────────────────────────────────────
+
+document.getElementById("shortcut-modal-close")?.addEventListener("click", () => {
+  document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcut-modal-overlay")?.addEventListener("click", (e) => {
+  if (e.target === document.getElementById("shortcut-modal-overlay"))
+    document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
+  document.getElementById("settings-dropdown")?.classList.add("hidden");
+  document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
 });

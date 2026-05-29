@@ -54,7 +54,9 @@
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
+          <button id="beginner-toggle" class="settings-dropdown-item">Beginner Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="shortcuts-help-btn" class="settings-dropdown-item">Keyboard Shortcuts <span class="settings-badge">?</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -283,7 +285,7 @@
             <div id="stats-body" class="stats-body">
               <!-- Stats row -->
               <div class="stats-row">
-                <div class="stat-card">
+                <div class="stat-card stat-card-advanced">
                   <span class="stat-label">c_factor <span class="tooltip" data-tip="Collateral factor — the fraction of your collateral that counts toward borrowing power. 95% means $100 of collateral lets you borrow up to $95.">?</span></span>
                   <span class="stat-value" id="stat-cfactor">—</span>
                 </div>
@@ -449,7 +451,7 @@
               <!-- Hero metrics -->
               <div id="metrics-hero" class="metrics-hero hidden">
                 <div class="metric-hero">
-                  <span class="metric-hero-label">Health Factor</span>
+                  <span class="metric-hero-label" data-hf-label="Health Factor" data-hf-label-beginner="Safety Score">Health Factor</span>
                   <span class="metric-hero-value" id="hero-hf">—</span>
                 </div>
                 <div class="metric-hero">
@@ -502,13 +504,13 @@
                     <span class="metric-value mono" id="pos-leverage">—</span>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Asset HF <span class="tooltip" data-tip="Health Factor for this asset only. HF = (collateral x c_factor) / (debt / l_factor). Below 1.0 = liquidatable.">?</span></span>
+                    <span class="metric-label"><span data-hf-label="Asset HF" data-hf-label-beginner="Asset Safety Score">Asset HF</span> <span class="tooltip" data-tip="Health Factor for this asset only. HF = (collateral x c_factor) / (debt / l_factor). Below 1.0 = liquidatable.">?</span></span>
                     <span class="metric-value" id="pos-hf">—</span>
                     <div class="hf-bar-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="hf-bar" id="hf-bar"></div></div>
                     <div class="hf-gauge-container"></div>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Pool HF <span class="tooltip" data-tip="Health Factor across ALL your positions in this pool, weighted by oracle price.">?</span></span>
+                    <span class="metric-label"><span data-hf-label="Pool HF" data-hf-label-beginner="Pool Safety Score">Pool HF</span> <span class="tooltip" data-tip="Health Factor across ALL your positions in this pool, weighted by oracle price.">?</span></span>
                     <span class="metric-value" id="pos-pool-hf">—</span>
                   </div>
                   <div class="position-metric">
@@ -789,6 +791,23 @@
             </div>
             <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe</button>
             <p class="alert-hint">We never store your wallet address.</p>
+          </div>
+        </div>
+
+        <!-- Keyboard Shortcuts modal (A12) -->
+        <div id="shortcut-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+          <div class="alert-modal">
+            <button id="shortcut-modal-close" class="alert-modal-close">&times;</button>
+            <h3>Keyboard Shortcuts</h3>
+            <table class="shortcut-table">
+              <tbody>
+                <tr><td><kbd>L</kbd></td><td>Focus leverage slider</td></tr>
+                <tr><td><kbd>C</kbd></td><td>Close selected position</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Dismiss modals &amp; dropdowns</td></tr>
+                <tr><td><kbd>?</kbd></td><td>Show this help</td></tr>
+              </tbody>
+            </table>
+            <p class="alert-hint">Shortcuts are disabled when a text field is focused.</p>
           </div>
         </div>
 
