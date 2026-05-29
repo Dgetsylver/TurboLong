@@ -101,6 +101,8 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  util: number;        // utilisation ratio 0-1
+  blndEps: number;     // raw supply-side eps
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -224,6 +226,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      util,
+      blndEps: supplyEps,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
