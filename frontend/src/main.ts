@@ -1236,6 +1236,25 @@ function updatePreview() {
 
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
+
+    // Return calculator (#36)
+    const depositUsd = parseFloat(($("calc-deposit-usd") as HTMLInputElement).value);
+    const weeklyEl  = $("calc-weekly");
+    const monthlyEl = $("calc-monthly");
+    if (!isNaN(depositUsd) && depositUsd > 0) {
+      const weekly  = depositUsd * netApy / 100 / 52;
+      const monthly = depositUsd * netApy / 100 / 12;
+      const cls = netApy > 0 ? "apr-great" : netApy < 0 ? "apr-bad" : "";
+      weeklyEl.textContent  = `$${fmt(weekly, 2)}`;
+      monthlyEl.textContent = `$${fmt(monthly, 2)}`;
+      weeklyEl.className  = cls;
+      monthlyEl.className = cls;
+    } else {
+      weeklyEl.textContent  = "\u2014";
+      monthlyEl.textContent = "\u2014";
+      weeklyEl.className  = "";
+      monthlyEl.className = "";
+    }
   }
 
   // Risk zone labels (#9)
@@ -2224,6 +2243,7 @@ async function refreshAddFundsBalance() {
 });
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
+($("calc-deposit-usd") as HTMLInputElement).addEventListener("input", updatePreview);
 
 // ── Demo mode (#17) ──────────────────────────────────────────────────────────
 
