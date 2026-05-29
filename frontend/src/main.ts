@@ -45,6 +45,11 @@ import {
   hfForLeverage,
   maxLeverageFor,
   fetchEwmaRates,
+  dryRunSubmit,
+  buildOpenRequestsVec,
+  buildCloseRequestsVec,
+  buildIncreaseRequestsVec,
+  buildDecreaseRequestsVec,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -545,6 +550,69 @@ function getPnlEntry(assetId: string, poolId: string): { deposit: number; timest
 }
 function removePnlEntry(assetId: string, poolId: string) {
   localStorage.removeItem(`pnl_${poolId}_${assetId}`);
+}
+
+// ── Dry-run preview modal ─────────────────────────────────────────────────────
+
+interface DryRunContext {
+  label:        string;
+  netTokens:    string;   // e.g. "+5,000.00 CETES"
+  hfBefore:     number;
+  hfAfter:      number;
+  symbol:       string;
+}
+
+/**
+ * Simulate the submit call, then show the preview modal.
+ * Returns true if the user clicks "Sign & Submit", false if they cancel.
+ */
+async function showDryRunModal(
+  pool: PoolDef,
+  userAddress: string,
+  context: DryRunContext,
+  requests: ReturnType<typeof buildOpenRequestsVec>,
+): Promise<boolean> {
+  // Run simulation
+  const result = await dryRunSubmit(pool, userAddress, requests);
+
+  // Populate modal
+  const feeXlm = (result.fee / 1e7).toFixed(5);
+  $("dryrun-net-tokens").textContent = context.netTokens;
+
+  const hfBeforeEl = $("dryrun-hf-before");
+  hfBeforeEl.textContent = isFinite(context.hfBefore) ? fmt(context.hfBefore, 3) : "∞";
+  hfBeforeEl.className = context.hfBefore > 1.1 ? "hf-ok" : context.hfBefore > 1.03 ? "hf-warn" : "hf-bad";
+
+  const hfAfterEl = $("dryrun-hf-after");
+  hfAfterEl.textContent = isFinite(context.hfAfter) ? fmt(context.hfAfter, 3) : "∞";
+  hfAfterEl.className = context.hfAfter > 1.1 ? "hf-ok" : context.hfAfter > 1.03 ? "hf-warn" : "hf-bad";
+
+  $("dryrun-fee").textContent = result.ok ? `~${feeXlm} XLM` : "—";
+
+  const errEl = $("dryrun-error");
+  if (!result.ok && result.error) {
+    errEl.textContent = result.error;
+    errEl.classList.remove("hidden");
+  } else {
+    errEl.classList.add("hidden");
+  }
+
+  ($("dryrun-confirm-btn") as HTMLButtonElement).disabled = !result.ok;
+  $("dryrun-modal-overlay").classList.remove("hidden");
+
+  return new Promise<boolean>((resolve) => {
+    function cleanup() {
+      $("dryrun-modal-overlay").classList.add("hidden");
+      $("dryrun-confirm-btn").removeEventListener("click", onConfirm);
+      $("dryrun-cancel-btn").removeEventListener("click", onCancel);
+      $("dryrun-modal-close").removeEventListener("click", onCancel);
+    }
+    function onConfirm() { cleanup(); resolve(true); }
+    function onCancel()  { cleanup(); resolve(false); }
+    $("dryrun-confirm-btn").addEventListener("click", onConfirm);
+    $("dryrun-cancel-btn").addEventListener("click", onCancel);
+    $("dryrun-modal-close").addEventListener("click", onCancel);
+  });
 }
 
 // ── Sign + submit ─────────────────────────────────────────────────────────────
@@ -1420,6 +1488,18 @@ async function openPosition() {
   setLoading($("open-btn") as HTMLButtonElement, true);
   showTxStepper(["Approve", "Submit"]);
   try {
+    // Dry-run preview before signing
+    const requests = buildOpenRequestsVec(liveAsset, initialStroops, leverage);
+    const hfAfter  = hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1);
+    const confirmed = await showDryRunModal(selectedPool, userAddress, {
+      label:     `Open ${liveAsset.symbol} ${leverage.toFixed(1)}×`,
+      netTokens: `-${fmt(initial, 4)} ${liveAsset.symbol} (deposit)`,
+      hfBefore:  Infinity,
+      hfAfter,
+      symbol:    liveAsset.symbol,
+    }, requests);
+    if (!confirmed) { setLoading($("open-btn") as HTMLButtonElement, false); hideTxStepper(0); return; }
+
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
@@ -1576,6 +1656,20 @@ async function adjustLeverage() {
   const direction = targetLev > curLev ? "Increase" : "Decrease";
   showTxStepper([`${direction} Leverage`]);
   try {
+    // Dry-run preview before signing
+    const requests = targetLev > curLev
+      ? buildIncreaseRequestsVec(liveAsset, pos, targetLev)
+      : buildDecreaseRequestsVec(liveAsset, pos, targetLev);
+    const hfAfter = hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1);
+    const confirmed = await showDryRunModal(selectedPool, userAddress, {
+      label:     `${direction} leverage to ${targetLev.toFixed(1)}×`,
+      netTokens: `${targetLev > curLev ? "+" : "−"}${fmt(Math.abs(pos.equity * (targetLev - curLev)), 4)} ${liveAsset.symbol} collateral`,
+      hfBefore:  pos.hf,
+      hfAfter,
+      symbol:    liveAsset.symbol,
+    }, requests);
+    if (!confirmed) { setLoading($("adjust-btn") as HTMLButtonElement, false); hideTxStepper(0); return; }
+
     if (targetLev > curLev) {
       const xdr = await buildIncreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
       await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
@@ -1623,6 +1717,18 @@ async function addFundsToPosition() {
   setLoading($("add-funds-btn") as HTMLButtonElement, true);
   showTxStepper(["Approve", "Submit"]);
   try {
+    // Dry-run preview before signing
+    const requests = buildOpenRequestsVec(liveAsset, additionalStroops, leverage);
+    const hfAfter  = hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1);
+    const confirmed = await showDryRunModal(selectedPool, userAddress, {
+      label:     `Add ${fmt(additional, 4)} ${liveAsset.symbol} at ${leverage.toFixed(1)}×`,
+      netTokens: `-${fmt(additional, 4)} ${liveAsset.symbol} (deposit)`,
+      hfBefore:  pos.hf,
+      hfAfter,
+      symbol:    liveAsset.symbol,
+    }, requests);
+    if (!confirmed) { setLoading($("add-funds-btn") as HTMLButtonElement, false); hideTxStepper(0); return; }
+
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, additionalStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, additionalStroops, leverage);

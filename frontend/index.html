@@ -791,6 +791,28 @@
         <!-- TX Stepper -->
         <div id="tx-stepper" class="tx-stepper hidden" role="status"></div>
 
+        <!-- Dry-run preview modal -->
+        <div id="dryrun-modal-overlay" class="alert-modal-overlay hidden">
+          <div class="alert-modal">
+            <button id="dryrun-modal-close" class="alert-modal-close">&times;</button>
+            <h3>Transaction Preview</h3>
+            <p class="alert-modal-desc">Simulated result — no signature required yet.</p>
+            <div id="dryrun-error" class="dryrun-error hidden"></div>
+            <table class="dryrun-table" id="dryrun-table">
+              <tbody>
+                <tr><td>Net tokens moved</td><td id="dryrun-net-tokens">—</td></tr>
+                <tr><td>Current HF</td><td id="dryrun-hf-before">—</td></tr>
+                <tr><td>Projected HF</td><td id="dryrun-hf-after">—</td></tr>
+                <tr><td>Estimated fee</td><td id="dryrun-fee">—</td></tr>
+              </tbody>
+            </table>
+            <div class="dryrun-actions">
+              <button id="dryrun-cancel-btn" class="btn btn-secondary">Cancel</button>
+              <button id="dryrun-confirm-btn" class="btn btn-primary">Sign &amp; Submit</button>
+            </div>
+          </div>
+        </div>
+
         <!-- APY Alert modal -->
         <div id="alert-modal-overlay" class="alert-modal-overlay hidden">
           <div class="alert-modal">
