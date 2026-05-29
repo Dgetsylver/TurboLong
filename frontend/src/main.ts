@@ -502,6 +502,82 @@ function removePnlEntry(assetId: string, poolId: string) {
   localStorage.removeItem(`pnl_${poolId}_${assetId}`);
 }
 
+// ── Rate history (B3) ────────────────────────────────────────────────────────
+
+const RATE_HISTORY_KEY = "blendlev_rate_history";
+const RATE_HISTORY_MAX = 200; // keep up to 200 snapshots per key
+
+interface RateSnapshot { ts: number; val: number; }
+
+function _rateKey(poolId: string, assetId: string, field: string) {
+  return `${RATE_HISTORY_KEY}:${poolId}:${assetId}:${field}`;
+}
+
+function recordRateSnapshot(poolId: string, assetId: string, field: string, val: number) {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  const snaps: RateSnapshot[] = raw ? JSON.parse(raw) : [];
+  const now = Date.now();
+  // Deduplicate: skip if last snapshot is < 5 min old
+  if (snaps.length > 0 && now - snaps[snaps.length - 1].ts < 5 * 60_000) {
+    snaps[snaps.length - 1] = { ts: now, val }; // update in place
+  } else {
+    snaps.push({ ts: now, val });
+    if (snaps.length > RATE_HISTORY_MAX) snaps.splice(0, snaps.length - RATE_HISTORY_MAX);
+  }
+  localStorage.setItem(key, JSON.stringify(snaps));
+}
+
+function getRateAtWindow(poolId: string, assetId: string, field: string, windowMs: number): number | null {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  const snaps: RateSnapshot[] = JSON.parse(raw);
+  const cutoff = Date.now() - windowMs;
+  // Find the oldest snapshot within the window (closest to windowMs ago)
+  const candidates = snaps.filter(s => s.ts <= cutoff);
+  if (candidates.length === 0) return null;
+  return candidates[candidates.length - 1].val;
+}
+
+/** Render a trend arrow element next to an APY value element. */
+function renderTrendArrow(
+  targetEl: HTMLElement,
+  current: number,
+  past24h: number | null,
+  past7d: number | null
+) {
+  // Remove any existing arrow
+  const existing = targetEl.parentElement?.querySelector(".rate-trend");
+  if (existing) existing.remove();
+
+  if (past24h === null && past7d === null) return;
+
+  const arrow = document.createElement("span");
+  arrow.className = "rate-trend";
+
+  const parts: string[] = [];
+  const tipParts: string[] = [];
+
+  for (const [label, past, ms] of [
+    ["24h", past24h, 24 * 3600_000],
+    ["7d",  past7d,  7 * 24 * 3600_000],
+  ] as [string, number | null, number][]) {
+    if (past === null) continue;
+    const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
+    const up = delta >= 0;
+    const sym = up ? "▲" : "▼";
+    const cls = up ? "rate-trend-up" : "rate-trend-down";
+    parts.push(`<span class="${cls}">${sym}${fmt(Math.abs(delta), 1)}%</span><span class="rate-trend-label">${label}</span>`);
+    tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
+  }
+
+  if (parts.length === 0) return;
+  arrow.innerHTML = parts.join(" ");
+  arrow.setAttribute("title", tipParts.join(" | "));
+  targetEl.insertAdjacentElement("afterend", arrow);
+}
+
 // ── Sign + submit ─────────────────────────────────────────────────────────────
 
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
@@ -796,6 +872,30 @@ function renderSelectedAsset() {
     `Approximate APY: interest compounds but BLND emissions don't. Actual net APR: ${fmt(rs.netBorrowCost, 2)}%`);
 
   // Don't auto-collapse — user controls visibility via the toggle
+
+  // Rate-trend arrows (A10 / B3) ─────────────────────────────────────────────
+  const supplyNetVal  = aprToApy(rs.interestSupplyApr) + rs.blndSupplyApr;
+  const borrowNetVal  = aprToApy(rs.interestBorrowApr) - rs.blndBorrowApr;
+  const W24 = 24 * 3600_000;
+  const W7D = 7 * 24 * 3600_000;
+
+  // Record current values
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "supply-net", supplyNetVal);
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "borrow-net", borrowNetVal);
+
+  // Render arrows on net rows
+  renderTrendArrow(
+    $("supply-net-apr"),
+    supplyNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W7D),
+  );
+  renderTrendArrow(
+    $("borrow-net-cost"),
+    borrowNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
+  );
 
   updatePreview();
   renderPosition();
