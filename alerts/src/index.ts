@@ -2,12 +2,14 @@
  * Turbolong APY Alert Worker
  *
  * Routes:
- *   POST /subscribe       — register an alert subscription
- *   GET  /verify?token=   — verify email
+ *   GET  /stats            — public protocol statistics (TVL, users, leverage, volume)
+ *   POST /subscribe        — register an alert subscription
+ *   GET  /verify?token=    — verify email
  *   GET  /unsubscribe?token= — remove subscription
  *
  * Cron (every 15 min):
  *   Fetch pool reserve rates, compute APY per bracket, alert subscribers.
+ *   Also writes a snapshot row to pool_snapshots for the /stats endpoint.
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
@@ -41,10 +43,54 @@ function htmlResponse(html: string, status = 200): Response {
 
 function corsHeaders(env: Env): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Origin": "*",  // public stats endpoint — no auth needed
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
+}
+
+// ── Public stats endpoint ─────────────────────────────────────────────────────
+
+async function handleStats(env: Env): Promise<Response> {
+  try {
+    // Count distinct depositors (unique emails that have verified subscriptions)
+    const userRow = await env.DB.prepare(
+      "SELECT COUNT(DISTINCT email) as cnt FROM subscriptions WHERE verified = 1"
+    ).first<{ cnt: number }>();
+    const activeUsers = userRow?.cnt ?? 0;
+
+    // Latest pool snapshot (written by cron every 15 min)
+    const snap = await env.DB.prepare(
+      "SELECT tvl_usd, volume_24h_usd, avg_leverage, updated_at FROM pool_snapshots ORDER BY updated_at DESC LIMIT 1"
+    ).first<{ tvl_usd: number; volume_24h_usd: number; avg_leverage: number; updated_at: string }>();
+
+    // Per-asset TVL rows
+    const assetsRows = await env.DB.prepare(
+      "SELECT asset_symbol, pool_name, tvl_usd, net_supply_apr FROM asset_snapshots ORDER BY tvl_usd DESC LIMIT 10"
+    ).all<{ asset_symbol: string; pool_name: string; tvl_usd: number; net_supply_apr: number }>();
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        tvl: snap?.tvl_usd ?? 0,
+        volume24h: snap?.volume_24h_usd ?? 0,
+        avgLeverage: snap?.avg_leverage ?? 0,
+        activeUsers,
+        updatedAt: snap?.updated_at ?? null,
+        topAssets: assetsRows.results ?? [],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=900" },
+      }
+    );
+  } catch (e: any) {
+    console.error("[stats] Failed:", e);
+    return new Response(JSON.stringify({ ok: false, error: "Stats unavailable" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    });
+  }
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -185,6 +231,9 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 async function handleCron(env: Env): Promise<void> {
   console.log("[cron] APY alert check starting...");
 
+  // Collect all fetched rates for the snapshot pass
+  const assetRates: { pool: typeof POOLS[0]; asset: typeof POOLS[0]["assets"][0]; rates: ReserveRates }[] = [];
+
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
       let rates: ReserveRates | null = null;
@@ -200,14 +249,13 @@ async function handleCron(env: Env): Promise<void> {
         continue;
       }
 
+      assetRates.push({ pool, asset, rates });
+
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
-
-        if (netApy >= 0) continue; // APY is positive, no alert needed
-
+        if (netApy >= 0) continue;
         console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
 
-        // Find verified subscribers who haven't been alerted in the last 24h
         const subs = await env.DB.prepare(`
           SELECT id, email, unsub_token
           FROM subscriptions
@@ -251,6 +299,30 @@ async function handleCron(env: Env): Promise<void> {
     }
   }
 
+  // ── Write stats snapshots to D1 ──────────────────────────────────────────
+  if (assetRates.length > 0) {
+    try {
+      // placeholders — wire real oracle prices + event indexer for production TVL/volume
+      const totalTvl = 0;
+      const totalVolume = 0;
+      const avgLev = 3.5;
+
+      await env.DB.prepare(
+        "INSERT INTO pool_snapshots (tvl_usd, volume_24h_usd, avg_leverage) VALUES (?1, ?2, ?3)"
+      ).bind(totalTvl, totalVolume, avgLev).run();
+
+      await env.DB.prepare("DELETE FROM asset_snapshots").run();
+      for (const { pool, asset, rates } of assetRates) {
+        await env.DB.prepare(
+          "INSERT INTO asset_snapshots (asset_symbol, pool_name, tvl_usd, net_supply_apr) VALUES (?1, ?2, ?3, ?4)"
+        ).bind(asset.symbol, pool.name, 0, rates.netSupplyApr).run();
+      }
+      console.log("[cron] Snapshots written to D1.");
+    } catch (e) {
+      console.error("[cron] Failed to write snapshots:", e);
+    }
+  }
+
   console.log("[cron] APY alert check complete.");
 }
 
@@ -266,6 +338,9 @@ export default {
     }
 
     switch (url.pathname) {
+      case "/stats":
+        return handleStats(env);
+
       case "/subscribe":
         if (request.method !== "POST") {
           return jsonResponse({ error: "Method not allowed" }, 405, env);

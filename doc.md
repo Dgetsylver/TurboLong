@@ -6,6 +6,9 @@ live mainnet fork via [`soroban-ledger-snapshot-source-tx`](https://github.com/s
 
 ## Strategy
 
+*Read our blog post on how this works: [Turbolong's loop vs Aave recursive supply](docs/blog/turbolongs-loop-vs-aave-recursive-supply.md)*
+
+
 ```
 Supply USDC as collateral
        ↓

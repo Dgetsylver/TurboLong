@@ -6,6 +6,42 @@
   <title>Turbolong — Leveraged DeFi on Stellar</title>
   <meta name="description" content="Turbolong lets you open leveraged DeFi positions on Stellar's Blend Protocol. Multi-protocol leverage, vault, and swap — all in one place." />
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://turbolong.xyz/" />
+  <meta property="og:title" content="Turbolong — Leveraged DeFi on Stellar" />
+  <meta property="og:description" content="Turbolong lets you open leveraged DeFi positions on Stellar's Blend Protocol. Multi-protocol leverage, vault, and swap — all in one place." />
+  <meta property="og:image" content="https://turbolong.xyz/scf-thumbnail.png" />
+  <meta property="og:site_name" content="Turbolong" />
+  <meta property="og:locale" content="en_US" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://turbolong.xyz/" />
+  <meta name="twitter:title" content="Turbolong — Leveraged DeFi on Stellar" />
+  <meta name="twitter:description" content="Turbolong lets you open leveraged DeFi positions on Stellar's Blend Protocol. Multi-protocol leverage, vault, and swap — all in one place." />
+  <meta name="twitter:image" content="https://turbolong.xyz/scf-thumbnail.png" />
+
+  <!-- Schema.org JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Turbolong",
+    "url": "https://turbolong.xyz/",
+    "description": "Turbolong lets you open leveraged DeFi positions on Stellar's Blend Protocol. Multi-protocol leverage, vault, and swap — all in one place.",
+    "applicationCategory": "FinanceApplication",
+    "operatingSystem": "All",
+    "image": "https://turbolong.xyz/scf-thumbnail.png",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -143,6 +179,9 @@
     <!-- Footer -->
     <footer class="footer">
       <div class="footer-links">
+        <a href="../docs/blog/turbolongs-loop-vs-aave-recursive-supply.md" target="_blank" rel="noopener">Blog: Leverage Loop</a>
+        <a href="../docs/privacy.md" target="_blank" rel="noopener">Privacy Policy</a>
+        <a href="https://stats.turbolong.xyz" target="_blank" rel="noopener">Protocol Stats</a>
         <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
         <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
         <a href="https://stellar.expert" target="_blank" rel="noopener">Stellar Expert</a>
@@ -152,7 +191,16 @@
     </footer>
 
   </div>
-  <!-- Cloudflare Web Analytics (free) — replace token after enabling in CF dashboard -->
-  <!-- <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "YOUR_CF_ANALYTICS_TOKEN"}'></script> -->
+  <!-- Privacy-preserving Analytics (Plausible) respecting Do Not Track -->
+  <script>
+    if (navigator.doNotTrack !== "1" && window.doNotTrack !== "1") {
+      var s = document.createElement('script');
+      s.defer = true;
+      s.setAttribute('data-domain', 'turbolong.com');
+      s.src = 'https://plausible.io/js/script.js';
+      document.head.appendChild(s);
+    }
+    window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) };
+  </script>
 </body>
 </html>
