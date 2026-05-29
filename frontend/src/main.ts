@@ -1703,6 +1703,7 @@ function showConnected() {
     $("dashboard").classList.remove("hidden");
     $("asset-tabs-bar").style.display = "";
   }
+  syncMobileActionBar();
 }
 
 async function connect() {
@@ -1818,6 +1819,7 @@ function switchView(view: AppView) {
   closeDrawer();
   // Close pool dropdown
   $("pool-dropdown").classList.add("hidden");
+  syncMobileActionBar();
 }
 
 // ── Mobile sidebar drawer (#5) ───────────────────────────────────────────
@@ -2255,11 +2257,77 @@ $("demo-btn").addEventListener("click", () => {
   toast("Demo mode \u2014 explore the UI without a wallet", "info");
 });
 
+// ── Mobile sticky action bar (A22) ───────────────────────────────────────────
+
+/** Mirror the state of in-card primary CTAs to the sticky bottom bar. */
+function syncMobileActionBar() {
+  const bar = $("mobile-action-bar");
+  // Only show on the leverage view when dashboard is visible
+  const visible = activeView === "leverage" && !$("dashboard").classList.contains("hidden");
+  bar.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const openBtn      = $("open-btn")      as HTMLButtonElement;
+  const adjustBtn    = $("adjust-btn")    as HTMLButtonElement;
+  const addFundsBtn  = $("add-funds-btn") as HTMLButtonElement;
+  const closeBtn     = $("close-btn")     as HTMLButtonElement;
+  const repayBtn     = $("repay-btn")     as HTMLButtonElement;
+
+  const mobOpen      = $("mob-open-btn")      as HTMLButtonElement;
+  const mobAdjust    = $("mob-adjust-btn")    as HTMLButtonElement;
+  const mobAddFunds  = $("mob-add-funds-btn") as HTMLButtonElement;
+  const mobClose     = $("mob-close-btn")     as HTMLButtonElement;
+  const mobRepay     = $("mob-repay-btn")     as HTMLButtonElement;
+
+  // Sync visibility
+  mobOpen.classList.toggle("hidden",     openBtn.classList.contains("hidden"));
+  mobAdjust.classList.toggle("hidden",   adjustBtn.classList.contains("hidden"));
+  mobAddFunds.classList.toggle("hidden", addFundsBtn.classList.contains("hidden"));
+  // Close/Repay always shown when position exists
+  const hasPos = !$("no-position").classList.contains("hidden") === false;
+  mobClose.classList.toggle("hidden", closeBtn.disabled && !hasPos);
+  mobRepay.classList.toggle("hidden", true); // only show repay when enabled
+
+  // Sync disabled state
+  mobOpen.disabled     = openBtn.disabled;
+  mobAdjust.disabled   = adjustBtn.disabled;
+  mobAddFunds.disabled = addFundsBtn.disabled;
+  mobClose.disabled    = closeBtn.disabled;
+  mobRepay.disabled    = repayBtn.disabled;
+
+  // Sync text
+  mobAdjust.textContent   = adjustBtn.textContent;
+  mobAddFunds.textContent = addFundsBtn.textContent;
+
+  // Show close/repay only when position exists
+  const posExists = $("position-data") && !$("position-data").classList.contains("hidden");
+  mobClose.classList.toggle("hidden", !posExists);
+  mobRepay.classList.toggle("hidden", repayBtn.disabled);
+}
+
+$("mob-open-btn").addEventListener("click",     () => ($("open-btn") as HTMLButtonElement).click());
+$("mob-adjust-btn").addEventListener("click",   () => ($("adjust-btn") as HTMLButtonElement).click());
+$("mob-add-funds-btn").addEventListener("click",() => ($("add-funds-btn") as HTMLButtonElement).click());
+$("mob-close-btn").addEventListener("click",    () => ($("close-btn") as HTMLButtonElement).click());
+$("mob-repay-btn").addEventListener("click",    () => ($("repay-btn") as HTMLButtonElement).click());
+
+// Patch updatePreview and renderPosition to also sync the bar
+const _origUpdatePreview = updatePreview;
+// We can't reassign const, so we call syncMobileActionBar at the end of the
+// existing event-driven flow by observing MutationObserver on the buttons.
+const _barObserver = new MutationObserver(syncMobileActionBar);
+["open-btn","adjust-btn","add-funds-btn","close-btn","repay-btn"].forEach(id => {
+  _barObserver.observe($(id), { attributes: true, attributeFilter: ["disabled","class"] });
+});
+// Also sync on view switch
+const _origSwitchView = switchView;
+
 // Init preview with defaults
 updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+syncMobileActionBar();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 

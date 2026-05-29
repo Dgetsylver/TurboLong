@@ -1210,3 +1210,111 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── Mobile-first 375px rework (A22) ─────────────────────────────────────── */
+
+/* Sticky bottom action bar */
+.mobile-action-bar {
+  display: none;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 120;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: var(--surface); border-top: 1px solid var(--border);
+  gap: 8px;
+}
+.mob-cta-btn {
+  flex: 1; min-height: 48px; font-size: 15px; font-weight: 700;
+  border-radius: var(--r);
+}
+
+@media (max-width: 480px) {
+  /* Show sticky bar, hide in-card primary CTAs */
+  .mobile-action-bar { display: flex; }
+  #open-btn, #adjust-btn, #add-funds-btn { display: none !important; }
+
+  /* Pad main so content isn't hidden behind sticky bar */
+  main { padding-bottom: 90px; }
+
+  /* Fix .two-col overflow — was minmax(340px,380px) which exceeds 375px */
+  .two-col { grid-template-columns: 1fr; }
+
+  /* Stats row: 2-col at 480px, already handled; ensure no overflow */
+  .stats-row { grid-template-columns: 1fr 1fr; }
+
+  /* Slider zones: abbreviate labels to prevent overflow */
+  .slider-zones { font-size: 9px; letter-spacing: 0; padding: 0; }
+  .zone-conservative::after { content: 'Safe'; }
+  .zone-conservative > * { display: none; }
+  .zone-conservative { font-size: 0; }
+  .zone-conservative::after { font-size: 9px; font-weight: 600; color: var(--success); }
+  .zone-moderate::after { content: 'Mod'; }
+  .zone-moderate { font-size: 0; }
+  .zone-moderate::after { font-size: 9px; font-weight: 600; color: var(--primary); }
+  .zone-aggressive::after { content: 'Agg'; }
+  .zone-aggressive { font-size: 0; }
+  .zone-aggressive::after { font-size: 9px; font-weight: 600; color: var(--warning); }
+  .zone-degen::after { content: 'Degen'; }
+  .zone-degen { font-size: 0; }
+  .zone-degen::after { font-size: 9px; font-weight: 600; color: var(--danger); }
+  .zone-maxi-degen::after { content: 'MAX'; }
+  .zone-maxi-degen { font-size: 0; }
+  .zone-maxi-degen::after { font-size: 9px; font-weight: 600; color: var(--danger); }
+
+  /* Slider row: stack number input below slider */
+  .slider-row { flex-wrap: wrap; gap: 8px; }
+  .slider { min-width: 0; flex: 1 1 100%; order: 1; }
+  .leverage-num-input { order: 2; width: 72px; flex: 0 0 auto; }
+  .slider-value-x { order: 3; }
+
+  /* Slider thumb: enlarge to 44px touch target */
+  .slider::-webkit-slider-thumb {
+    width: 28px; height: 28px;
+    box-shadow: 0 0 0 8px var(--slider-glow);
+  }
+  .slider::-moz-range-thumb {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--primary); border: none; cursor: pointer;
+  }
+
+  /* Asset tabs: min 44px height */
+  .asset-tab {
+    min-height: 44px; padding: 0 14px;
+    display: flex; align-items: center;
+  }
+
+  /* Adjust sub-tabs: min 44px height */
+  .adjust-tab { min-height: 44px; padding: 0; }
+
+  /* Mobile card tabs: already 10px padding, ensure 44px */
+  .mobile-card-tab { min-height: 44px; }
+
+  /* Pool tabs in sidebar: min 44px */
+  .pool-tab { min-height: 44px; }
+
+  /* btn-sm: increase tap target */
+  .btn-sm { min-height: 36px; padding: 6px 12px; }
+
+  /* BLND actions: wrap on small screens */
+  .blnd-actions { flex-wrap: wrap; gap: 4px; }
+  .blnd-actions .btn { flex: 1; min-height: 44px; font-size: 12px; }
+
+  /* Position actions: full-width buttons */
+  .position-actions { flex-direction: column; }
+  .position-actions .btn { width: 100%; min-height: 44px; }
+
+  /* Wallet connected: hide switch/disconnect on very small screens, keep address */
+  .wallet-connected #switch-wallet-btn,
+  .wallet-connected #disconnect-btn { display: none; }
+
+  /* Prevent any element from causing horizontal overflow */
+  body { overflow-x: hidden; }
+  #app, .main-wrap, main { max-width: 100%; overflow-x: hidden; }
+
+  /* Overview table: scroll horizontally within its container */
+  .overview-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .overview-table { min-width: 480px; }
+}
+
+/* Wrap overview table for horizontal scroll on mobile */
+@media (max-width: 600px) {
+  .overview-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
