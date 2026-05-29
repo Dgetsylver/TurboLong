@@ -229,7 +229,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         };
 
         // Swap BLND → underlying, then re-leverage
-        let (b_delta, d_delta) = blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
+        let (b_delta, d_delta, realized_underlying) = blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
 
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
@@ -240,6 +240,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
                 harvested_blnd,
                 keeper,
                 shares_to_underlying(SCALAR_12, &updated_reserves)?,
+            );
+
+            // Emit custom event for realized underlying
+            e.events().publish(
+                (Symbol::new(&e, "harvest_realized"), String::from_str(&e, STRATEGY_NAME)),
+                realized_underlying,
             );
         }
 
