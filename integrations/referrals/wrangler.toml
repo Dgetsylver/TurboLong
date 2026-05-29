@@ -1,0 +1,17 @@
+name = "turbolong-referrals"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "turbolong-referrals"
+database_id = "<run `npm run db:create` and paste the ID here>"
+
+[vars]
+FRONTEND_ORIGIN = "https://app.turbolong.com"
+HORIZON_URL = "https://horizon.stellar.org"
+# Pool contract IDs to watch for incoming deposit memos (comma-separated)
+POOL_IDS = "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI,CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD"

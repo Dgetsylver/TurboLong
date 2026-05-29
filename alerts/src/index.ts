@@ -11,7 +11,7 @@
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { sendVerificationEmail, sendApyAlert, sendHealthFactorAlert } from "./email.ts";
 
 interface Env {
   DB: D1Database;
@@ -78,7 +78,7 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: false, error: "Invalid JSON" }, 400, env);
   }
 
-  const { email, pool_id, asset_symbol, leverage_bracket } = body;
+  const { email, pool_id, asset_symbol, leverage_bracket, hf_threshold } = body;
 
   // Validate
   if (!email || !EMAIL_RE.test(email)) {
@@ -95,16 +95,21 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: false, error: "Invalid leverage bracket. Must be one of: " + LEVERAGE_BRACKETS.join(", ") }, 400, env);
   }
 
+  const hfThreshold = hf_threshold != null ? Number(hf_threshold) : null;
+  if (hfThreshold !== null && (isNaN(hfThreshold) || hfThreshold < 1.0)) {
+    return jsonResponse({ ok: false, error: "Health factor threshold must be at least 1.0" }, 400, env);
+  }
+
   const verifyToken = generateToken();
   const unsubToken  = generateToken();
 
   try {
     await env.DB.prepare(`
-      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, hf_threshold, verify_token, unsub_token, hf_breached)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, verified = 0
-    `).bind(email, pool_id, asset_symbol, lev, verifyToken, unsubToken).run();
+        SET hf_threshold = ?5, verify_token = ?6, unsub_token = ?7, verified = 0, hf_breached = 0
+    `).bind(email, pool_id, asset_symbol, lev, hfThreshold, verifyToken, unsubToken).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
     return jsonResponse({ ok: false, error: "Database error" }, 500, env);
@@ -203,48 +208,106 @@ async function handleCron(env: Env): Promise<void> {
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
 
-        if (netApy >= 0) continue; // APY is positive, no alert needed
+        const cFactor = rates.cFactor || 0.9;
+        const lFactor = rates.lFactor || 1.0;
+        const currentHf = bracket <= 1 ? Infinity : (cFactor * bracket) / ((bracket - 1) / lFactor);
 
-        console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
-
-        // Find verified subscribers who haven't been alerted in the last 24h
+        // Find verified subscribers
         const subs = await env.DB.prepare(`
-          SELECT id, email, unsub_token
+          SELECT id, email, unsub_token, hf_threshold, hf_breached, last_alerted_at
           FROM subscriptions
           WHERE pool_id = ?1
             AND asset_symbol = ?2
             AND leverage_bracket = ?3
             AND verified = 1
-            AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
         `).bind(pool.id, asset.symbol, bracket).all();
 
         if (!subs.results?.length) continue;
 
-        console.log(`[cron] Alerting ${subs.results.length} subscriber(s) for ${asset.symbol}@${bracket}x on ${pool.name}`);
-
         for (const sub of subs.results) {
-          const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
-          const result = await sendApyAlert(
-            { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
-            sub.email as string,
-            {
-              poolName: pool.name,
-              assetSymbol: asset.symbol,
-              leverage: bracket,
-              netApy,
-              supplyApr: rates.netSupplyApr,
-              borrowCost: rates.netBorrowCost,
-              unsubscribeUrl: unsubUrl,
-              appUrl: env.FRONTEND_ORIGIN,
-            },
-          );
+          const hfThreshold = sub.hf_threshold != null ? Number(sub.hf_threshold) : null;
+          const hfBreached = sub.hf_breached != null ? Number(sub.hf_breached) : 0;
+          const lastAlertedAt = sub.last_alerted_at as string | null;
 
-          if (result.ok) {
-            await env.DB.prepare(
-              "UPDATE subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
-            ).bind(sub.id).run();
+          const unsubUrl = `https://turbolong-alerts.workers.dev/unsubscribe?token=${sub.unsub_token}`;
+
+          if (hfThreshold !== null) {
+            // Health Factor Alert Logic
+            if (currentHf < hfThreshold) {
+              if (hfBreached === 0) {
+                console.log(`[cron] Health Factor breach: ${asset.symbol}@${bracket}x on ${pool.name} = ${currentHf.toFixed(3)} (threshold: ${hfThreshold})`);
+
+                const result = await sendHealthFactorAlert(
+                  { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+                  sub.email as string,
+                  {
+                    poolName: pool.name,
+                    assetSymbol: asset.symbol,
+                    leverage: bracket,
+                    currentHf,
+                    threshold: hfThreshold,
+                    unsubscribeUrl: unsubUrl,
+                    appUrl: env.FRONTEND_ORIGIN,
+                  }
+                );
+
+                if (result.ok) {
+                  await env.DB.prepare(`
+                    UPDATE subscriptions
+                    SET last_alerted_at = datetime('now'),
+                        hf_breached = 1
+                    WHERE id = ?1
+                  `).bind(sub.id).run();
+                } else {
+                  console.error(`[cron] Failed to send HF alert to ${sub.email}:`, result.error);
+                }
+              }
+            } else {
+              // currentHf >= hfThreshold -> Healed
+              if (hfBreached === 1) {
+                console.log(`[cron] Health Factor healed: ${asset.symbol}@${bracket}x on ${pool.name} = ${currentHf.toFixed(3)}`);
+                await env.DB.prepare(`
+                  UPDATE subscriptions
+                  SET hf_breached = 0
+                  WHERE id = ?1
+                `).bind(sub.id).run();
+              }
+            }
           } else {
-            console.error(`[cron] Failed to send alert to ${sub.email}:`, result.error);
+            // APY Alert Logic
+            if (netApy < 0) {
+              const isCoolDownOver = !lastAlertedAt ||
+                (new Date().getTime() - new Date(lastAlertedAt).getTime() > 24 * 60 * 60 * 1000);
+
+              if (isCoolDownOver) {
+                console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
+
+                const result = await sendApyAlert(
+                  { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+                  sub.email as string,
+                  {
+                    poolName: pool.name,
+                    assetSymbol: asset.symbol,
+                    leverage: bracket,
+                    netApy,
+                    supplyApr: rates.netSupplyApr,
+                    borrowCost: rates.netBorrowCost,
+                    unsubscribeUrl: unsubUrl,
+                    appUrl: env.FRONTEND_ORIGIN,
+                  }
+                );
+
+                if (result.ok) {
+                  await env.DB.prepare(`
+                    UPDATE subscriptions
+                    SET last_alerted_at = datetime('now')
+                    WHERE id = ?1
+                  `).bind(sub.id).run();
+                } else {
+                  console.error(`[cron] Failed to send APY alert to ${sub.email}:`, result.error);
+                }
+              }
+            }
           }
         }
       }
