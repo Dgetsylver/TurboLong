@@ -12,7 +12,13 @@ interface SendResult {
   error?: string;
 }
 
-async function sendEmail(env: Env, to: string, subject: string, html: string): Promise<SendResult> {
+async function sendEmail(
+  env: Env,
+  to: string,
+  subject: string,
+  html: string,
+  extraHeaders?: Record<string, string>,
+): Promise<SendResult> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -24,6 +30,7 @@ async function sendEmail(env: Env, to: string, subject: string, html: string): P
       to: [to],
       subject,
       html,
+      ...(extraHeaders ? { headers: extraHeaders } : {}),
     }),
   });
 
@@ -98,5 +105,9 @@ export async function sendApyAlert(
     to,
     `\u26A0 Negative APY: ${assetSymbol} at ${leverage}x on ${poolName}`,
     html,
+    {
+      "List-Unsubscribe": `<${unsubscribeUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
   );
 }
