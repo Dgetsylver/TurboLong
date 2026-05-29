@@ -11,3 +11,10 @@ src/.DS_Store
 frontend/node_modules/
 frontend/dist/
 frontend/package-lock.json
+
+alerts/node_modules/
+alerts/package-lock.json
+
+stats/node_modules/
+stats/dist/
+stats/package-lock.json
