@@ -302,9 +302,22 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 #[contractimpl]
 impl BlendLeverageStrategy {
     /// Rebalance: auto-deleverage if health factor is below min_hf.
-    /// Callable by anyone (permissionless — protects the vault).
-    pub fn rebalance(e: Env) -> Result<(), StrategyError> {
+    /// Callable only by the keeper. Rate limited to once every 5 minutes.
+    pub fn rebalance(e: Env, caller: Address) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
+
+        let keeper = storage::get_keeper(&e);
+        caller.require_auth();
+        if caller != keeper {
+            return Err(StrategyError::NotAuthorized);
+        }
+
+        // Rate limit: 300 seconds (5 minutes)
+        let last_rebalance = storage::get_last_rebalance(&e);
+        let now = e.ledger().timestamp();
+        if now < last_rebalance + 300 {
+            return Err(StrategyError::NotAuthorized);
+        }
 
         let config = storage::get_config(&e);
         let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
@@ -314,15 +327,15 @@ impl BlendLeverageStrategy {
             return Ok(()); // No debt, nothing to rebalance
         }
 
-        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
+        let before_hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
 
-        if hf >= config.min_hf {
+        if before_hf >= config.min_hf {
             return Ok(()); // HF is healthy
         }
 
         // Compute how many loops to unwind
         let unwind_count = compute_unwind_loops(
-            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, config.min_hf,
+            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, config.min_hf, config.target_loops,
         )?;
 
         if unwind_count == 0 {
@@ -331,10 +344,23 @@ impl BlendLeverageStrategy {
 
         // Execute deleverage
         let (b_removed, d_removed) =
-            blend_pool::submit_deleverage(&e, unwind_count, &config)?;
+            blend_pool::submit_deleverage(&e, unwind_count, &config, b_rate, d_rate)?;
 
         // Update reserves accounting
         reserves::deleverage(&e, b_removed, d_removed, &config)?;
+
+        let (new_b_tokens, new_d_tokens) = blend_pool::get_strategy_positions(&e, &config);
+        let after_hf = compute_health_factor(new_b_tokens, new_d_tokens, b_rate, d_rate, config.c_factor)?;
+
+        storage::set_last_rebalance(&e, now);
+
+        e.events().publish(
+            (
+                soroban_sdk::Symbol::new(&e, STRATEGY_NAME),
+                soroban_sdk::Symbol::new(&e, "rebalance"),
+            ),
+            (before_hf, after_hf, unwind_count),
+        );
 
         Ok(())
     }

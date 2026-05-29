@@ -128,7 +128,8 @@ async function switchNetwork(net: NetworkMode) {
   const btn = $("network-toggle");
   btn.textContent = net === "testnet" ? "Testnet" : "Mainnet";
   btn.classList.toggle("testnet-active", net === "testnet");
-  $("testnet-banner").classList.toggle("hidden", net !== "testnet");
+  bannerDismissed = false;
+  updateTestnetBanner();
   ($("fund-testnet-btn") as HTMLButtonElement).disabled = false;
   ($("fund-testnet-btn") as HTMLButtonElement).textContent = "Fund Wallet";
 
@@ -331,6 +332,18 @@ let demoMode = false;
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 
 const $ = (id: string) => document.getElementById(id)!;
+
+let bannerDismissed = false;
+function updateTestnetBanner() {
+  const isTestnet = getActiveNetwork() === "testnet";
+  const banner = $("testnet-banner");
+  if (isTestnet && !bannerDismissed) {
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
 const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
@@ -1763,6 +1776,8 @@ async function disconnect() {
 
 function switchView(view: AppView) {
   activeView = view;
+  bannerDismissed = false;
+  updateTestnetBanner();
   // Top nav active states
   const overviewBtn = $("proto-overview");
   const blendBtn = $("proto-blend");
@@ -2724,8 +2739,8 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     selectedAsset = assets[0];
     $("network-toggle").textContent = "Testnet";
     $("network-toggle").classList.add("testnet-active");
-    $("testnet-banner").classList.remove("hidden");
   }
+  updateTestnetBanner();
 
   const saved = localStorage.getItem("walletAddress");
   if (!saved) return;
@@ -2825,4 +2840,10 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     btn.disabled = false;
     btn.textContent = "Subscribe";
   }
+});
+
+// Testnet banner close button listener
+$("dismiss-testnet-banner-btn").addEventListener("click", () => {
+  bannerDismissed = true;
+  updateTestnetBanner();
 });
