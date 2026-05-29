@@ -8,6 +8,9 @@ export default defineConfig({
   },
   build: {
     target: "es2020",
+    rollupOptions: {
+      external: ["rxjs", "rxjs/operators"],
+    },
   },
   optimizeDeps: {
     esbuildOptions: {

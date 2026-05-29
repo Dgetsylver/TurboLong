@@ -667,17 +667,26 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 /* Testnet banner */
 .testnet-banner {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 6px 24px; background: rgba(255,181,71,.06); border-bottom: 1px solid rgba(255,181,71,.15);
-  font-size: 12px; color: var(--warning); font-weight: 600;
+  padding: 8px 24px; background: #FFB547; border-bottom: 1px solid rgba(0,0,0,0.1);
+  font-size: 13px; color: #0B0E14; font-weight: 700;
 }
-.testnet-banner-sep { opacity: .4; }
-.testnet-banner-hint { font-weight: 400; font-size: 11px; opacity: .8; }
+.testnet-banner-sep { opacity: .4; color: #0B0E14; }
+.testnet-banner-hint { font-weight: 500; font-size: 12px; opacity: 0.9; color: #0B0E14; }
 .testnet-fund-btn {
-  margin-left: auto; background: rgba(255,181,71,.12) !important;
-  color: var(--warning) !important; border: 1px solid rgba(255,181,71,.3) !important;
+  margin-left: auto; background: rgba(0, 0, 0, 0.08) !important;
+  color: #0B0E14 !important; border: 1px solid rgba(0, 0, 0, 0.15) !important;
 }
 .testnet-fund-btn:hover:not(:disabled) {
-  background: rgba(255,181,71,.2) !important; border-color: rgba(255,181,71,.5) !important;
+  background: rgba(0, 0, 0, 0.15) !important; border-color: rgba(0, 0, 0, 0.25) !important;
+}
+.testnet-banner-close {
+  background: transparent; border: none; font-size: 20px; cursor: pointer;
+  color: #0B0E14; margin-left: 12px; display: inline-flex; align-items: center;
+  justify-content: center; opacity: 0.6; transition: opacity 0.15s; padding: 0 4px;
+  line-height: 1;
+}
+.testnet-banner-close:hover {
+  opacity: 1;
 }
 
 /* Theme toggle — now in settings dropdown */
