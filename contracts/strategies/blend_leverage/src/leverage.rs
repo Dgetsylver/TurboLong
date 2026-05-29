@@ -256,37 +256,54 @@ pub fn compute_unwind_loops(
     d_rate: i128,
     c_factor: i128,
     min_hf: i128,
+    target_loops: u32,
 ) -> Result<u32, StrategyError> {
+    if d_tokens == 0 {
+        return Ok(0);
+    }
+
+    let hf_initial = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor)?;
+    if hf_initial >= min_hf {
+        return Ok(0);
+    }
+
+    let supply_value = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .unwrap_or(0);
+    let debt_value = d_tokens
+        .fixed_mul_floor(d_rate, SCALAR_12)
+        .unwrap_or(0);
+    let equity = supply_value.checked_sub(debt_value).unwrap_or(0);
+
+    if equity <= 0 {
+        return Ok(target_loops); // Highly underwater, unwind all
+    }
+
+    let count = loop_step_count(target_loops);
+    let mut borrows = [0i128; 21];
+    let mut balance = equity;
+    for i in 0..count as usize {
+        let is_final = i as u32 == target_loops.min(20);
+        let (_, borrow) = compute_step(balance, c_factor, is_final);
+        borrows[i] = borrow;
+        balance = borrow;
+    }
+
     let mut current_b = b_tokens;
     let mut current_d = d_tokens;
     let mut loops = 0u32;
 
-    loop {
-        let hf = compute_health_factor(current_b, current_d, b_rate, d_rate, c_factor)?;
-        if hf >= min_hf || current_d == 0 {
-            break;
-        }
-
-        // Unwind one loop: withdraw enough collateral to repay one "layer" of debt.
-        // The last borrow layer ≈ d_tokens × (c_factor/SCALAR_7)^n pattern.
-        // Simplified: repay an amount equal to current_d × (1 - c_factor/SCALAR_7)
-        // which is approximately the smallest borrow layer.
-        let repay_amount = current_d
-            .checked_mul(SCALAR_7 - c_factor)
-            .ok_or(StrategyError::ArithmeticError)?
-            / SCALAR_7;
+    for i in 0..count as usize {
+        let idx = count as usize - 1 - i;
+        let repay_amount = borrows[idx];
 
         if repay_amount == 0 {
-            break;
+            continue;
         }
 
-        // The d_tokens burned = repay_underlying / d_rate * SCALAR_12
         let d_tokens_burned = repay_amount
             .fixed_mul_floor(SCALAR_12, d_rate)
             .ok_or(StrategyError::ArithmeticError)?;
-
-        // The b_tokens withdrawn = withdraw_underlying / b_rate * SCALAR_12
-        // We withdraw same amount as we repay (netting)
         let b_tokens_withdrawn = repay_amount
             .fixed_mul_floor(SCALAR_12, b_rate)
             .ok_or(StrategyError::ArithmeticError)?;
@@ -295,8 +312,12 @@ pub fn compute_unwind_loops(
         current_b = current_b.checked_sub(b_tokens_withdrawn).unwrap_or(0);
         loops += 1;
 
-        if loops >= 5 {
-            // Safety limit on unwind iterations
+        if current_d == 0 {
+            break;
+        }
+
+        let hf = compute_health_factor(current_b, current_d, b_rate, d_rate, c_factor)?;
+        if hf >= min_hf {
             break;
         }
     }
