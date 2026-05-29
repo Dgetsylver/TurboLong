@@ -896,6 +896,102 @@ export async function buildApproveXdr(
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
 }
 
+// ── Dry-run preview ───────────────────────────────────────────────────────────
+
+export interface DryRunResult {
+  ok:    boolean;
+  fee:   number;   // stroops
+  error: string | null;
+}
+
+/** Build the requests vec for opening/adding to a leveraged position. */
+export function buildOpenRequestsVec(
+  asset: AssetInfo,
+  initialStroops: bigint,
+  leverage: number,
+): xdr.ScVal {
+  const cFactorBn = BigInt(Math.round(asset.cFactor * SCALAR_F));
+  return buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
+}
+
+/** Build the requests vec for closing a position (repay + withdraw). */
+export function buildCloseRequestsVec(pos: AssetPosition): xdr.ScVal {
+  const MAX_AMOUNT = 9_223_372_036_854_775_807n;
+  const items: xdr.ScVal[] = [];
+  if (pos.dTokens > 0n) items.push(buildRequest(pos.asset.id, MAX_AMOUNT, REPAY));
+  items.push(buildRequest(pos.asset.id, MAX_AMOUNT, WITHDRAW_COLLATERAL));
+  return buildRequestsVec(items);
+}
+
+/** Build the requests vec for decreasing leverage (withdraw + repay). */
+export function buildDecreaseRequestsVec(
+  asset: AssetInfo,
+  pos: AssetPosition,
+  targetLev: number,
+): xdr.ScVal {
+  const debtReduction = pos.debt - pos.equity * (targetLev - 1);
+  const stroops = BigInt(Math.round(Math.max(0, debtReduction) * 1e7));
+  return buildRequestsVec([
+    buildRequest(asset.id, stroops, WITHDRAW_COLLATERAL),
+    buildRequest(asset.id, stroops, REPAY),
+  ]);
+}
+
+/** Build the requests vec for increasing leverage (borrow + supply loop). */
+export function buildIncreaseRequestsVec(
+  asset: AssetInfo,
+  pos: AssetPosition,
+  targetLev: number,
+): xdr.ScVal {
+  const additionalBorrow = BigInt(Math.round((pos.equity * targetLev - pos.collateral) * 1e7));
+  const cFactorBn = BigInt(Math.round(asset.cFactor * SCALAR_F));
+  const items: xdr.ScVal[] = [];
+  let remaining = additionalBorrow;
+  let balance = 0n;
+  while (remaining > 0n) {
+    const canBorrow = balance > 0n ? balance * cFactorBn / SCALAR : remaining;
+    const borrow = canBorrow < remaining ? canBorrow : remaining;
+    if (borrow <= 0n) break;
+    items.push(buildRequest(asset.id, borrow, BORROW));
+    items.push(buildRequest(asset.id, borrow, SUPPLY_COLLATERAL));
+    remaining -= borrow;
+    balance = borrow;
+  }
+  return buildRequestsVec(items);
+}
+
+/**
+ * Simulate a pool submit_with_allowance call without assembling the final XDR.
+ * Used by the dry-run preview modal — no signature required.
+ */
+export async function dryRunSubmit(
+  pool: PoolDef,
+  userAddress: string,
+  requests: xdr.ScVal,
+): Promise<DryRunResult> {
+  const poolContract = new Contract(pool.id);
+  const addrScVal    = new Address(userAddress).toScVal();
+  const acc = new Account(NULL_ACCOUNT, "0"); // read-only — no getAccount() call
+  const tx  = new TransactionBuilder(acc, {
+    fee: (BigInt(BASE_FEE) * 10n).toString(),
+    networkPassphrase: _cfg.passphrase,
+  })
+    .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
+    .setTimeout(30).build();
+
+  try {
+    const sim = await server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationSuccess(sim)) {
+      const fee = Number((sim as any).minResourceFee ?? 0) + Number(BASE_FEE) * 10;
+      return { ok: true, fee, error: null };
+    }
+    const errSim = sim as SorobanRpc.Api.SimulateTransactionErrorResponse;
+    return { ok: false, fee: 0, error: errSim.error ?? "Simulation failed" };
+  } catch (e: any) {
+    return { ok: false, fee: 0, error: e?.message ?? "Simulation failed" };
+  }
+}
+
 export async function buildOpenPositionXdr(
   pool: PoolDef,
   userAddress: string,
@@ -1339,4 +1435,44 @@ export async function submitClassicXdr(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
   const result = await horizon.submitTransaction(tx);
   return (result as any).hash;
+}
+
+// ── EWMA from B3 snapshot series ─────────────────────────────────────────────
+
+const ALERTS_BASE = "https://turbolong-alerts.workers.dev";
+const EWMA_HALF_LIFE_DAYS = 7;
+
+export interface EwmaRates {
+  netSupplyApr: number;
+  netBorrowCost: number;
+}
+
+/**
+ * Fetch the last 30 days of rate snapshots and compute an exponentially-weighted
+ * moving average with a 7-day half-life.
+ *
+ * α per interval = 1 − exp(−ln2 / halfLifeIntervals)
+ * where halfLifeIntervals = halfLifeDays × 24 × 4  (15-min ticks)
+ */
+export async function fetchEwmaRates(poolId: string, assetSymbol: string): Promise<EwmaRates | null> {
+  try {
+    const url = `${ALERTS_BASE}/rates?pool=${encodeURIComponent(poolId)}&asset=${encodeURIComponent(assetSymbol)}&window=720`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const json = await res.json() as { ok: boolean; data: { ts: string; supply_rate: number; borrow_rate: number }[] };
+    if (!json.ok || !json.data.length) return null;
+
+    const halfLifeIntervals = EWMA_HALF_LIFE_DAYS * 24 * 4; // 15-min ticks
+    const alpha = 1 - Math.exp(-Math.LN2 / halfLifeIntervals);
+
+    let ewmaSupply = json.data[0].supply_rate;
+    let ewmaBorrow = json.data[0].borrow_rate;
+    for (let i = 1; i < json.data.length; i++) {
+      ewmaSupply = alpha * json.data[i].supply_rate + (1 - alpha) * ewmaSupply;
+      ewmaBorrow = alpha * json.data[i].borrow_rate + (1 - alpha) * ewmaBorrow;
+    }
+    return { netSupplyApr: ewmaSupply, netBorrowCost: ewmaBorrow };
+  } catch {
+    return null;
+  }
 }

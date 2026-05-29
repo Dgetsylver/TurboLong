@@ -42,7 +42,7 @@ function htmlResponse(html: string, status = 200): Response {
 function corsHeaders(env: Env): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
 }
@@ -66,6 +66,47 @@ function generateToken(): string {
 function workerUrl(request: Request): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
+}
+
+// ── Rate snapshots endpoint ───────────────────────────────────────────────────
+
+/**
+ * GET /rates
+ *
+ * Query params:
+ *   pool    — pool contract ID (required)
+ *   asset   — asset symbol, e.g. USDC (required)
+ *   window  — lookback in hours: 1 | 6 | 24 | 168 | 720 | 8760 (default 24)
+ *
+ * Returns an array of { ts, supply_rate, borrow_rate, util, blnd_eps }
+ * ordered oldest-first.
+ */
+const VALID_WINDOWS = new Set([1, 6, 24, 168, 720, 8760]);
+
+async function handleRates(request: Request, env: Env): Promise<Response> {
+  const url    = new URL(request.url);
+  const pool   = url.searchParams.get("pool");
+  const asset  = url.searchParams.get("asset");
+  const winRaw = Number(url.searchParams.get("window") ?? "24");
+
+  if (!pool || !KNOWN_POOL_IDS.has(pool)) {
+    return jsonResponse({ ok: false, error: "Missing or unknown pool" }, 400, env);
+  }
+  if (!asset || !KNOWN_SYMBOLS.has(asset)) {
+    return jsonResponse({ ok: false, error: "Missing or unknown asset" }, 400, env);
+  }
+  const window = VALID_WINDOWS.has(winRaw) ? winRaw : 24;
+
+  const rows = await env.DB.prepare(`
+    SELECT ts, supply_rate, borrow_rate, util, blnd_eps
+    FROM rate_snapshots
+    WHERE pool_id = ?1
+      AND asset_symbol = ?2
+      AND ts >= datetime('now', ?3)
+    ORDER BY ts ASC
+  `).bind(pool, asset, `-${window} hours`).all();
+
+  return jsonResponse({ ok: true, data: rows.results ?? [] }, 200, env);
 }
 
 // ── Route handlers ───────────────────────────────────────────────────────────
@@ -185,6 +226,11 @@ async function handleUnsubscribe(request: Request, env: Env): Promise<Response> 
 async function handleCron(env: Env): Promise<void> {
   console.log("[cron] APY alert check starting...");
 
+  // Prune snapshots older than 365 days
+  await env.DB.prepare(
+    "DELETE FROM rate_snapshots WHERE ts < datetime('now', '-365 days')"
+  ).run();
+
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
       let rates: ReserveRates | null = null;
@@ -199,6 +245,12 @@ async function handleCron(env: Env): Promise<void> {
         console.warn(`[cron] No rates returned for ${asset.symbol} on ${pool.name}`);
         continue;
       }
+
+      // Snapshot this tick
+      await env.DB.prepare(`
+        INSERT INTO rate_snapshots (pool_id, asset_symbol, supply_rate, borrow_rate, util, blnd_eps)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      `).bind(pool.id, asset.symbol, rates.netSupplyApr, rates.netBorrowCost, rates.util, rates.blndEps).run();
 
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
@@ -266,6 +318,12 @@ export default {
     }
 
     switch (url.pathname) {
+      case "/rates":
+        if (request.method !== "GET") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
+        return handleRates(request, env);
+
       case "/subscribe":
         if (request.method !== "POST") {
           return jsonResponse({ error: "Method not allowed" }, 405, env);

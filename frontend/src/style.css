@@ -978,6 +978,25 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   margin: 12px 0 0; line-height: 1.5;
 }
 
+/* ── Dry-run modal ───────────────────────────────────────────────────────── */
+
+.dryrun-table {
+  width: 100%; border-collapse: collapse; margin: 0 0 18px; font-size: 13px;
+}
+.dryrun-table td { padding: 7px 4px; border-bottom: 1px solid var(--border); }
+.dryrun-table td:first-child { color: var(--text-2); }
+.dryrun-table td:last-child { text-align: right; font-family: var(--mono); font-weight: 600; }
+.dryrun-error {
+  background: rgba(var(--danger-rgb, 220,53,69), .12);
+  border: 1px solid var(--danger); border-radius: var(--r-xs);
+  color: var(--danger); font-size: 12px; padding: 8px 10px; margin-bottom: 14px;
+  line-height: 1.5; word-break: break-word;
+}
+.dryrun-actions {
+  display: flex; gap: 10px; justify-content: flex-end;
+}
+.dryrun-actions .btn { min-width: 110px; }
+
 /* ── Misc ────────────────────────────────────────────────────────────────── */
 
 .hidden { display: none !important; }
