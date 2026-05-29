@@ -3,6 +3,7 @@
 mod blend_pool;
 mod constants;
 mod leverage;
+mod oracle;
 mod reserves;
 mod soroswap;
 mod storage;
@@ -19,7 +20,8 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Val, Vec,
+    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, TryIntoVal,
+    Val, Vec,
 };
 use storage::{extend_instance_ttl, Config};
 
@@ -49,6 +51,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [5] c_factor: i128         — collateral factor (1e7)
     ///   [6] target_loops: u32      — number of leverage loops
     ///   [7] min_hf: i128           — minimum health factor (1e7)
+    ///   [8] reflector: Address     — Reflector oracle (optional, omit to disable)
+    ///   [9] oracle_threshold: i128 — max divergence in bps (optional, default 200)
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -96,6 +100,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         check_positive_amount(reward_threshold).expect("reward_threshold must be positive");
 
+        let reflector: Option<Address> = init_args
+            .get(8)
+            .and_then(|v| v.try_into_val(&e).ok());
+        let oracle_threshold: i128 = init_args
+            .get(9)
+            .and_then(|v| v.try_into_val(&e).ok())
+            .unwrap_or(200); // default 2%
+
         let config = Config {
             asset: asset.clone(),
             pool,
@@ -107,6 +119,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             c_factor,
             target_loops,
             min_hf,
+            reflector,
+            oracle_threshold,
         };
 
         storage::set_config(&e, config);
@@ -132,6 +146,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
+        // Oracle sanity check: refuse if Blend and Reflector prices diverge
+        oracle::assert_price_aligned(&e, &config)?;
 
         // Safety: check pool utilization before depositing
         let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(&e, &config);
@@ -313,6 +330,9 @@ impl BlendLeverageStrategy {
         if d_tokens == 0 {
             return Ok(()); // No debt, nothing to rebalance
         }
+
+        // Oracle sanity check: refuse rebalance if prices diverge
+        oracle::assert_price_aligned(&e, &config)?;
 
         let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
 
