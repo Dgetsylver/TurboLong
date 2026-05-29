@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Turbolong Stats</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script type="module" crossorigin src="/assets/index-B6RL7g4d.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BY0XWHfx.css">
+</head>
+<body>
+  <div class="background-effects">
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+  </div>
+
+  <div class="app-container">
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <h1>Turbolong Stats</h1>
+      </div>
+      <div class="header-right">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span class="status-text">Live</span>
+        </div>
+        <div class="next-refresh" id="next-refresh">Refreshing in 15:00</div>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <div class="hero-metric glass-panel">
+        <h2 class="metric-title">Total Value Locked</h2>
+        <div class="metric-value giant-value" id="tvl-value">$---</div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card glass-panel">
+          <h3 class="metric-title">Active Users</h3>
+          <div class="metric-value" id="users-value">---</div>
+          <div class="metric-trend">From D1 Snapshot</div>
+        </div>
+
+        <div class="metric-card glass-panel">
+          <h3 class="metric-title">Avg. Leverage</h3>
+          <div class="metric-value" id="leverage-value">---x</div>
+          <div class="metric-trend">From D1 Snapshot</div>
+        </div>
+
+        <div class="metric-card glass-panel">
+          <h3 class="metric-title">24h Deposit Vol.</h3>
+          <div class="metric-value" id="volume-value">$---</div>
+          <div class="metric-trend">From D1 Snapshot</div>
+        </div>
+      </div>
+
+      <div class="bottom-section">
+        <div class="assets-panel glass-panel">
+          <h3 class="panel-title">Top Assets (On-Chain)</h3>
+          <div class="assets-list" id="top-assets-list">
+            <div class="loading-state">Loading on-chain data...</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <p>&copy; 2026 Turbolong. Data refreshed every 15 minutes.</p>
+    </footer>
+  </div>
+
+</body>
+</html>
