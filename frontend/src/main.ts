@@ -502,6 +502,82 @@ function removePnlEntry(assetId: string, poolId: string) {
   localStorage.removeItem(`pnl_${poolId}_${assetId}`);
 }
 
+// ── Rate history (B3) ────────────────────────────────────────────────────────
+
+const RATE_HISTORY_KEY = "blendlev_rate_history";
+const RATE_HISTORY_MAX = 200; // keep up to 200 snapshots per key
+
+interface RateSnapshot { ts: number; val: number; }
+
+function _rateKey(poolId: string, assetId: string, field: string) {
+  return `${RATE_HISTORY_KEY}:${poolId}:${assetId}:${field}`;
+}
+
+function recordRateSnapshot(poolId: string, assetId: string, field: string, val: number) {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  const snaps: RateSnapshot[] = raw ? JSON.parse(raw) : [];
+  const now = Date.now();
+  // Deduplicate: skip if last snapshot is < 5 min old
+  if (snaps.length > 0 && now - snaps[snaps.length - 1].ts < 5 * 60_000) {
+    snaps[snaps.length - 1] = { ts: now, val }; // update in place
+  } else {
+    snaps.push({ ts: now, val });
+    if (snaps.length > RATE_HISTORY_MAX) snaps.splice(0, snaps.length - RATE_HISTORY_MAX);
+  }
+  localStorage.setItem(key, JSON.stringify(snaps));
+}
+
+function getRateAtWindow(poolId: string, assetId: string, field: string, windowMs: number): number | null {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  const snaps: RateSnapshot[] = JSON.parse(raw);
+  const cutoff = Date.now() - windowMs;
+  // Find the oldest snapshot within the window (closest to windowMs ago)
+  const candidates = snaps.filter(s => s.ts <= cutoff);
+  if (candidates.length === 0) return null;
+  return candidates[candidates.length - 1].val;
+}
+
+/** Render a trend arrow element next to an APY value element. */
+function renderTrendArrow(
+  targetEl: HTMLElement,
+  current: number,
+  past24h: number | null,
+  past7d: number | null
+) {
+  // Remove any existing arrow
+  const existing = targetEl.parentElement?.querySelector(".rate-trend");
+  if (existing) existing.remove();
+
+  if (past24h === null && past7d === null) return;
+
+  const arrow = document.createElement("span");
+  arrow.className = "rate-trend";
+
+  const parts: string[] = [];
+  const tipParts: string[] = [];
+
+  for (const [label, past, ms] of [
+    ["24h", past24h, 24 * 3600_000],
+    ["7d",  past7d,  7 * 24 * 3600_000],
+  ] as [string, number | null, number][]) {
+    if (past === null) continue;
+    const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
+    const up = delta >= 0;
+    const sym = up ? "▲" : "▼";
+    const cls = up ? "rate-trend-up" : "rate-trend-down";
+    parts.push(`<span class="${cls}">${sym}${fmt(Math.abs(delta), 1)}%</span><span class="rate-trend-label">${label}</span>`);
+    tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
+  }
+
+  if (parts.length === 0) return;
+  arrow.innerHTML = parts.join(" ");
+  arrow.setAttribute("title", tipParts.join(" | "));
+  targetEl.insertAdjacentElement("afterend", arrow);
+}
+
 // ── Sign + submit ─────────────────────────────────────────────────────────────
 
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
@@ -749,6 +825,101 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   </svg>`;
 }
 
+// ── APY history chart (B4) ────────────────────────────────────────────────────
+
+let _histWin: "7d" | "30d" | "1y" = "30d";
+
+const HIST_WIN_MS: Record<string, number> = {
+  "7d":  7  * 24 * 3600_000,
+  "30d": 30 * 24 * 3600_000,
+  "1y":  365 * 24 * 3600_000,
+};
+
+function renderHistoryChart() {
+  const container = $("hist-chart");
+  const raw = localStorage.getItem(`blendlev_rate_history:${selectedPool.id}:${selectedAsset.id}:supply-net`);
+  const all: { ts: number; val: number }[] = raw ? JSON.parse(raw) : [];
+  const cutoff = Date.now() - HIST_WIN_MS[_histWin];
+  const snaps = all.filter(s => s.ts >= cutoff);
+
+  if (snaps.length < 2) {
+    container.innerHTML = `<div class="hist-chart-empty">Not enough history yet — check back after data accumulates.</div>`;
+    return;
+  }
+
+  const W = 400, H = 80, padL = 32, padR = 8, padT = 10, padB = 18;
+  const vals = snaps.map(s => s.val);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const rangeV = maxV - minV || 0.01;
+  const minTs = snaps[0].ts, maxTs = snaps[snaps.length - 1].ts;
+  const rangeTs = maxTs - minTs || 1;
+
+  const px = (ts: number) => padL + (ts - minTs) / rangeTs * (W - padL - padR);
+  const py = (v: number)  => padT + (1 - (v - minV) / rangeV) * (H - padT - padB);
+
+  const pts = snaps.map(s => `${px(s.ts).toFixed(1)},${py(s.val).toFixed(1)}`).join(" ");
+
+  // X-axis tick labels (3 ticks: start, mid, end)
+  const fmtDate = (ts: number) => {
+    const d = new Date(ts);
+    return _histWin === "1y"
+      ? d.toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+      : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+  const ticks = [minTs, (minTs + maxTs) / 2, maxTs];
+  const tickSvg = ticks.map(ts =>
+    `<text x="${px(ts).toFixed(1)}" y="${H - 2}" text-anchor="middle" class="hist-chart-label">${fmtDate(ts)}</text>`
+  ).join("");
+
+  // Y-axis labels
+  const yLabelSvg =
+    `<text x="${padL - 3}" y="${padT + 6}" text-anchor="end" class="hist-chart-label">${fmt(maxV, 1)}%</text>` +
+    `<text x="${padL - 3}" y="${H - padB + 4}" text-anchor="end" class="hist-chart-label">${fmt(minV, 1)}%</text>`;
+
+  // Invisible hit-area rects for tooltip
+  const segW = (W - padL - padR) / snaps.length;
+  const hitRects = snaps.map((s, i) => {
+    const cx = px(s.ts);
+    const cy = py(s.val);
+    const tip = `${fmtDate(s.ts)}: ${fmt(s.val, 2)}%`;
+    return `<rect x="${(cx - segW / 2).toFixed(1)}" y="${padT}" width="${segW.toFixed(1)}" height="${H - padT - padB}"
+      fill="transparent" class="hist-hit"
+      data-tip="${tip}" data-cx="${cx.toFixed(1)}" data-cy="${cy.toFixed(1)}"/>`;
+  }).join("");
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="hist-chart-svg" id="hist-chart-svg">
+      <polyline points="${pts}" class="hist-chart-line"/>
+      ${yLabelSvg}${tickSvg}${hitRects}
+      <circle id="hist-cursor" r="3.5" class="hist-cursor" style="display:none"/>
+      <text id="hist-tip-text" class="hist-tip-text" style="display:none"/>
+    </svg>`;
+
+  // Pointer tooltip
+  const svg = document.getElementById("hist-chart-svg")!;
+  svg.addEventListener("mouseleave", () => {
+    (document.getElementById("hist-cursor") as SVGCircleElement | null)?.setAttribute("style", "display:none");
+    (document.getElementById("hist-tip-text") as SVGTextElement | null)?.setAttribute("style", "display:none");
+  });
+  svg.querySelectorAll<SVGRectElement>(".hist-hit").forEach(rect => {
+    rect.addEventListener("mouseenter", () => {
+      const cx = rect.dataset.cx!, cy = rect.dataset.cy!, tip = rect.dataset.tip!;
+      const cursor = document.getElementById("hist-cursor") as SVGCircleElement | null;
+      const tipEl  = document.getElementById("hist-tip-text") as SVGTextElement | null;
+      if (!cursor || !tipEl) return;
+      cursor.setAttribute("cx", cx);
+      cursor.setAttribute("cy", cy);
+      cursor.setAttribute("style", "");
+      const tx = Math.min(Number(cx), W - padR - 60);
+      const ty = Number(cy) > padT + 20 ? Number(cy) - 8 : Number(cy) + 14;
+      tipEl.setAttribute("x", String(tx));
+      tipEl.setAttribute("y", String(ty));
+      tipEl.textContent = tip;
+      tipEl.setAttribute("style", "");
+    });
+  });
+}
+
 // ── Render reserve stats for selected asset ───────────────────────────────────
 
 function renderSelectedAsset() {
@@ -796,6 +967,32 @@ function renderSelectedAsset() {
     `Approximate APY: interest compounds but BLND emissions don't. Actual net APR: ${fmt(rs.netBorrowCost, 2)}%`);
 
   // Don't auto-collapse — user controls visibility via the toggle
+
+  // Rate-trend arrows (A10 / B3) ─────────────────────────────────────────────
+  const supplyNetVal  = aprToApy(rs.interestSupplyApr) + rs.blndSupplyApr;
+  const borrowNetVal  = aprToApy(rs.interestBorrowApr) - rs.blndBorrowApr;
+  const W24 = 24 * 3600_000;
+  const W7D = 7 * 24 * 3600_000;
+
+  // Record current values
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "supply-net", supplyNetVal);
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "borrow-net", borrowNetVal);
+
+  // Render arrows on net rows
+  renderTrendArrow(
+    $("supply-net-apr"),
+    supplyNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W7D),
+  );
+  renderTrendArrow(
+    $("borrow-net-cost"),
+    borrowNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
+  );
+
+  renderHistoryChart();
 
   updatePreview();
   renderPosition();
@@ -1210,6 +1407,15 @@ function updatePreview() {
   }
 
   if (rs) {
+    // Current pool APY (zero delta = pre-loop snapshot)
+    const cur = projectRates(rs, 0, 0);
+    const curNetApr = cur.netSupplyApr * lev - cur.netBorrowCost * (lev - 1);
+    const curNetApy = aprToApy(curNetApr);
+    const poolApyEl = $("prev-pool-apy");
+    poolApyEl.textContent = `${fmt(curNetApy, 2)}% APY on equity`;
+    poolApyEl.className   = `prev-net-apr ${curNetApy > 0 ? "apr-ok" : "apr-bad"}`;
+
+    // Projected APY after deposit (accounts for utilization shift)
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
@@ -1217,7 +1423,7 @@ function updatePreview() {
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Projected APY after your deposit — accounts for how your supply/borrow shifts pool utilization and rates. Current pool APY: ${fmt(curNetApy, 2)}%. Actual projected net APR: ${fmt(netApr, 2)}%`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -2090,6 +2296,16 @@ document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => 
 // Collapsible stats (#23)
 $("stats-toggle").addEventListener("click", () => {
   $("stats-collapsible").classList.toggle("collapsed");
+});
+
+// History chart window selector (B4)
+$("hist-win-btns").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".hist-win-btn");
+  if (!btn) return;
+  _histWin = btn.dataset.win as "7d" | "30d" | "1y";
+  $("hist-win-btns").querySelectorAll(".hist-win-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderHistoryChart();
 });
 
 // Vault deposit/withdraw tabs
