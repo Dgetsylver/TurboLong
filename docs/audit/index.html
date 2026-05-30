@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Turbolong Security Audit Summary</title>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; margin: 0; min-height: 100vh; background: #0b0e14; color: #e8ecf4; }
+    .page { max-width: 860px; margin: 0 auto; padding: 48px 24px; }
+    h1, h2, h3 { color: #ffffff; }
+    p, li { color: #c7d0e2; line-height: 1.75; }
+    a { color: #5eedb8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .section { margin-top: 32px; }
+    .note { background: #131924; border: 1px solid #1e2536; border-radius: 16px; padding: 20px; }
+    .small { color: #8892a8; font-size: 0.95rem; }
+    code { background: rgba(94, 237, 184, 0.15); padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <p class="small">Public security documentation</p>
+    <h1>Turbolong Audit Summary</h1>
+    <p>This page repurposes the Blend Protocol security research into a Turbolong-specific, user-facing summary. It reflects the current audit state as of commit <code>cebe5a58b273394552a00fa02f6388058db3b4fa</code>.</p>
+
+    <div class="section">
+      <h2>Key findings</h2>
+      <ul>
+        <li>Same-asset leverage loops on Blend can temporarily dilute utilization and bypass the configured <code>max_util</code> cap.</li>
+        <li>This attack path enables large withdrawals and forces borrow APRs into the steep penalty curve, which can quickly degrade borrower health factors.</li>
+        <li>On Stellar mainnet, the Etherfuse USDC reserve can reach >95% utilization, where the Blend rate model can spike borrow APRs above 500%.</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>What changed since the audit</h2>
+      <p>The current repository state includes the public vulnerability report and supporting tooling. As of the audited commit, the issue is documented and remains acknowledged in the report; mitigation work should be tracked separately from this public summary.</p>
+      <p>Outstanding issues acknowledged here include:</p>
+      <ul>
+        <li>Blend contract position and utilization checks remain subject to the same-asset loop risk.</li>
+        <li>Pool-level withdrawal checks still require stronger enforcement of <code>max_util</code> during withdraw operations.</li>
+        <li>Oracles and high-leverage asset config should be hardened to limit implicitly amplified rate and liquidation risk.</li>
+      </ul>
+    </div>
+
+    <div class="section note">
+      <h3>Report references</h3>
+      <p>The detailed technical report is available in the repository as <strong>BLEND-VULNERABILITY-REPORT.md</strong>. The audited commit is linked below:</p>
+      <p><a href="https://github.com/Dgetsylver/TurboLong/commit/cebe5a58b273394552a00fa02f6388058db3b4fa" target="_blank" rel="noopener noreferrer">https://github.com/Dgetsylver/TurboLong/commit/cebe5a58b273394552a00fa02f6388058db3b4fa</a></p>
+    </div>
+  </div>
+</body>
+</html>
