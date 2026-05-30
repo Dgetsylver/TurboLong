@@ -9,6 +9,7 @@ import {
   BASE_FEE,
   Contract,
   Horizon,
+  Memo,
   Networks,
   nativeToScVal,
   Operation,
@@ -869,6 +870,7 @@ export async function buildApproveXdr(
   userAddress: string,
   assetId: string,
   amountStroops: bigint,
+  referralCode?: string,
 ): Promise<string> {
   const token     = new Contract(assetId);
   const addrScVal = new Address(userAddress).toScVal();
@@ -877,18 +879,24 @@ export async function buildApproveXdr(
   const expiry    = ledger.sequence + 120;
 
   const acc = await server.getAccount(userAddress);
-  const tx  = new TransactionBuilder(acc, {
+  const txBuilder = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
-  })
-    .addOperation(token.call(
-      "approve",
-      addrScVal,
-      poolScVal,
-      i128ToScVal(amountStroops),
-      nativeToScVal(expiry, { type: "u32" }),
-    ))
-    .setTimeout(60).build();
+  });
+
+  txBuilder.addOperation(token.call(
+    "approve",
+    addrScVal,
+    poolScVal,
+    i128ToScVal(amountStroops),
+    nativeToScVal(expiry, { type: "u32" }),
+  ));
+
+  if (referralCode) {
+    txBuilder.addMemo(Memo.text(`ref:${referralCode}`));
+  }
+
+  const tx = txBuilder.setTimeout(60).build();
 
   const sim = await server.simulateTransaction(tx);
   if (!SorobanRpc.Api.isSimulationSuccess(sim))

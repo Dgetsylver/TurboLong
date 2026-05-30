@@ -49,6 +49,7 @@
         <div id="pool-dropdown" class="pool-dropdown hidden"></div>
         <button class="nav-btn" id="proto-vault">Vault</button>
         <button class="nav-btn" id="proto-swap">Swap</button>
+        <button class="nav-btn" id="proto-referral">Refer &amp; Earn</button>
       </div>
       <div class="top-nav-right" id="wallet-area">
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
@@ -107,6 +108,12 @@
             <button class="protocol-btn" id="mobile-proto-swap">
               <span class="protocol-icon">&#8644;</span>
               Swap
+            </button>
+          </div>
+          <div class="protocol-section">
+            <button class="protocol-btn" id="mobile-proto-referral">
+              <span class="protocol-icon">&#127873;</span>
+              Refer &amp; Earn
             </button>
           </div>
         </nav>
@@ -756,6 +763,113 @@
           </section>
         </div>
 
+        <!-- Referral view -->
+        <div id="referral-view" class="hidden">
+          <section class="card referral-card">
+            <div class="card-header">
+              <h2>Refer &amp; Earn</h2>
+              <span class="referral-badge">Stats</span>
+            </div>
+
+            <!-- Not connected state -->
+            <div id="referral-not-connected" class="empty-state">
+              <p>Connect your wallet to generate a referral code and start earning.</p>
+              <button class="btn btn-primary" onclick="document.getElementById('connect-btn').click()">Connect Wallet</button>
+            </div>
+
+            <!-- Connected state -->
+            <div id="referral-connected-section" class="hidden">
+              <div class="referral-code-banner">
+                <div class="ref-code-box">
+                  <span class="ref-label">YOUR REFERRAL CODE</span>
+                  <div class="ref-code-value-wrap">
+                    <span id="ref-code-display" class="mono">--</span>
+                    <button id="ref-copy-btn" class="btn btn-ghost btn-sm">Copy Code</button>
+                  </div>
+                </div>
+                <div class="ref-link-box">
+                  <span class="ref-label">YOUR REFERRAL LINK</span>
+                  <div class="ref-link-value-wrap">
+                    <input type="text" id="ref-link-input" class="input mono" readonly value="" />
+                    <button id="ref-copy-link-btn" class="btn btn-primary btn-sm">Copy Link</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Referral stats overview -->
+              <div class="overview-totals" style="margin-top: 24px;">
+                <div class="stat-card">
+                  <span class="stat-label">Total Referrals</span>
+                  <span class="stat-value mono" id="ref-stat-total">--</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Unique Depositors</span>
+                  <span class="stat-value mono" id="ref-stat-depositors">--</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Active Referrals</span>
+                  <span class="stat-value mono" id="ref-stat-active">--</span>
+                </div>
+              </div>
+
+              <!-- Breakdown and Recent Activity Grid -->
+              <div class="two-col" style="margin-top: 24px;">
+                <!-- Left column: Breakdown by Pool -->
+                <section class="card" style="padding: 16px; margin: 0;">
+                  <div class="card-header" style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                    <h3>Breakdown by Pool</h3>
+                  </div>
+                  <table class="overview-table" id="ref-breakdown-table">
+                    <thead>
+                      <tr>
+                        <th>Pool ID</th>
+                        <th style="text-align: right;">Total Memos</th>
+                        <th style="text-align: right;">Unique Depositors</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ref-breakdown-tbody">
+                      <tr>
+                        <td colspan="3" class="text-center" style="color: var(--text-muted); padding: 16px;">No referral data yet.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </section>
+
+                <!-- Right column: Recent Activity -->
+                <section class="card" style="padding: 16px; margin: 0;">
+                  <div class="card-header" style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                    <h3>Recent Referrals</h3>
+                  </div>
+                  <div id="ref-activity-list" class="tx-history-list" style="max-height: 250px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); text-align: center; padding: 16px;">No recent referral activity.</div>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div class="landing-steps" style="margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border);">
+              <h2 style="font-size: 20px; margin-bottom: 20px;">How the Referral System Works</h2>
+              <div class="landing-steps-grid">
+                <div class="landing-step">
+                  <div class="landing-step-num">1</div>
+                  <h3>Share Your Link</h3>
+                  <p>Copy your unique referral link or code and share it with other traders.</p>
+                </div>
+                <div class="landing-step">
+                  <div class="landing-step-num">2</div>
+                  <h3>Traders Deposit</h3>
+                  <p>When friends click your link and open a position, your code is stored as a text memo on the transaction.</p>
+                </div>
+                <div class="landing-step">
+                  <div class="landing-step-num">3</div>
+                  <h3>Track Performance</h3>
+                  <p>Our off-chain indexer scans the ledger every 15 minutes, updating your dashboard stats automatically.</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
         <!-- TX Stepper -->
         <div id="tx-stepper" class="tx-stepper hidden" role="status"></div>
 
@@ -763,8 +877,8 @@
         <div id="alert-modal-overlay" class="alert-modal-overlay hidden">
           <div class="alert-modal">
             <button id="alert-modal-close" class="alert-modal-close">&times;</button>
-            <h3>APY Alerts</h3>
-            <p class="alert-modal-desc">Get notified when your position's net APY turns negative.</p>
+            <h3>Position Alerts</h3>
+            <p class="alert-modal-desc">Get notified when your position's net APY turns negative or health factor drops below a threshold.</p>
             <div class="form-group">
               <label>Email</label>
               <input type="email" id="alert-email" class="input" placeholder="you@example.com" />
@@ -786,6 +900,10 @@
                 <option value="8">8x</option>
                 <option value="10">10x</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>Health Factor Threshold (Optional)</label>
+              <input type="number" id="alert-hf-threshold" class="input" placeholder="e.g. 1.05" step="0.01" min="1.0" />
             </div>
             <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe</button>
             <p class="alert-hint">We never store your wallet address.</p>
