@@ -101,6 +101,8 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  cFactor?: number;
+  lFactor?: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -217,6 +219,13 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const blndSupplyApr = totalSupplyUsd > 0 ? (supplyBlndYr * blndPrice / totalSupplyUsd) * 100 : 0;
     const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
 
+    const cFactor = reserveRaw.config?.c_factor != null
+      ? Number(BigInt(reserveRaw.config.c_factor)) / SCALAR
+      : 0.9;
+    const lFactor = reserveRaw.config?.l_factor != null
+      ? Number(BigInt(reserveRaw.config.l_factor)) / SCALAR
+      : 1.0;
+
     return {
       netSupplyApr:     interestSupplyApr + blndSupplyApr,
       netBorrowCost:    interestBorrowApr - blndBorrowApr,
@@ -224,6 +233,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      cFactor,
+      lFactor,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);

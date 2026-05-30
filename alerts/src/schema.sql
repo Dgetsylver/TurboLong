@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   pool_id TEXT NOT NULL,
   asset_symbol TEXT NOT NULL,
   leverage_bracket REAL NOT NULL,
+  hf_threshold REAL DEFAULT NULL,
+  hf_breached INTEGER DEFAULT 0,
   verified INTEGER DEFAULT 0,
   verify_token TEXT,
   unsub_token TEXT,

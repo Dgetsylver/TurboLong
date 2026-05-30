@@ -1210,3 +1210,81 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── Referral View ───────────────────────────────────────────────────────── */
+
+.referral-card {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.referral-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: var(--primary);
+  background: rgba(45,232,163,.1);
+  border-radius: 99px;
+  padding: 3px 10px;
+}
+
+.referral-code-banner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  background: var(--metric-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 20px;
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  .referral-code-banner {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ref-code-box, .ref-link-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ref-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-3);
+  letter-spacing: .5px;
+}
+
+.ref-code-value-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#ref-code-display {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--primary);
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 10px var(--primary-glow);
+}
+
+.ref-link-value-wrap {
+  display: flex;
+  gap: 8px;
+}
+
+.ref-link-value-wrap input {
+  flex: 1;
+  font-size: 12px;
+  padding: 8px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+}
+

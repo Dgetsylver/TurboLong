@@ -314,7 +314,7 @@ document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
 
-type AppView = "overview" | "leverage" | "swap" | "vault";
+type AppView = "overview" | "leverage" | "swap" | "vault" | "referral";
 let activeView: AppView = "leverage";
 
 // ── Expert mode ──────────────────────────────────────────────────────────────
@@ -1372,7 +1372,8 @@ async function openPosition() {
   setLoading($("open-btn") as HTMLButtonElement, true);
   showTxStepper(["Approve", "Submit"]);
   try {
-    const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
+    const pendingRef = sessionStorage.getItem("pending_ref") || undefined;
+    const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n, pendingRef);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
     await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
@@ -1575,7 +1576,8 @@ async function addFundsToPosition() {
   setLoading($("add-funds-btn") as HTMLButtonElement, true);
   showTxStepper(["Approve", "Submit"]);
   try {
-    const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, additionalStroops + 1n);
+    const pendingRef = sessionStorage.getItem("pending_ref") || undefined;
+    const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, additionalStroops + 1n, pendingRef);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, additionalStroops, leverage);
     await signAndSubmit(submitXdr, `Add ${fmt(additional, 2)} ${liveAsset.symbol} at ${leverage.toFixed(1)}\u00D7`, 1);
@@ -1615,7 +1617,8 @@ async function resupply() {
   setLoading($("resupply-btn") as HTMLButtonElement, true);
   showTxStepper(["Approve", "Resupply"]);
   try {
-    const approveXdr = await buildApproveXdr(selectedPool, userAddress, selectedAsset.id, amountStroops + 1n);
+    const pendingRef = sessionStorage.getItem("pending_ref") || undefined;
+    const approveXdr = await buildApproveXdr(selectedPool, userAddress, selectedAsset.id, amountStroops + 1n, pendingRef);
     await signAndSubmit(approveXdr, `Approve ${selectedAsset.symbol}`, 0);
 
     const supplyXdr = await buildResupplyXdr(selectedPool, userAddress, selectedAsset.id, amountStroops);
@@ -1699,6 +1702,10 @@ function showConnected() {
   $("connect-btn").classList.add("hidden");
   $("wallet-connected").classList.remove("hidden");
   $("connect-prompt").classList.add("hidden");
+  
+  // Register/get referral code in background on connect
+  getOrCreateReferralCode(userAddress!);
+
   if (activeView === "leverage") {
     $("dashboard").classList.remove("hidden");
     $("asset-tabs-bar").style.display = "";
@@ -1768,16 +1775,19 @@ function switchView(view: AppView) {
   const blendBtn = $("proto-blend");
   const swapBtn  = $("proto-swap");
   const vaultBtn = $("proto-vault");
+  const referralBtn = $("proto-referral");
   overviewBtn.classList.toggle("active", view === "overview");
   blendBtn.classList.toggle("active", view === "leverage");
   swapBtn.classList.toggle("active", view === "swap");
   vaultBtn.classList.toggle("active", view === "vault");
+  referralBtn.classList.toggle("active", view === "referral");
 
   // Mobile sidebar active states
   document.getElementById("mobile-proto-overview")?.classList.toggle("active", view === "overview");
   document.getElementById("mobile-proto-blend")?.classList.toggle("active", view === "leverage");
   document.getElementById("mobile-proto-swap")?.classList.toggle("active", view === "swap");
   document.getElementById("mobile-proto-vault")?.classList.toggle("active", view === "vault");
+  document.getElementById("mobile-proto-referral")?.classList.toggle("active", view === "referral");
 
   // Toggle pool tabs visibility (mobile sidebar)
   $("pool-tabs").style.display = view === "leverage" ? "" : "none";
@@ -1790,6 +1800,7 @@ function switchView(view: AppView) {
   $("overview-view").classList.add("hidden");
   $("swap-view").classList.add("hidden");
   $("vault-view").classList.add("hidden");
+  $("referral-view").classList.add("hidden");
   $("dashboard").classList.add("hidden");
   $("connect-prompt").classList.add("hidden");
 
@@ -1814,6 +1825,9 @@ function switchView(view: AppView) {
   } else if (view === "vault") {
     $("vault-view").classList.remove("hidden");
     refreshVaultView();
+  } else if (view === "referral") {
+    $("referral-view").classList.remove("hidden");
+    loadReferralView();
   }
   closeDrawer();
   // Close pool dropdown
@@ -2053,12 +2067,14 @@ $("proto-blend").addEventListener("click", (e) => {
 });
 $("proto-swap").addEventListener("click",  () => switchView("swap"));
 $("proto-vault").addEventListener("click", () => switchView("vault"));
+$("proto-referral").addEventListener("click", () => switchView("referral"));
 
 // Mobile sidebar nav
 document.getElementById("mobile-proto-overview")?.addEventListener("click", () => switchView("overview"));
 document.getElementById("mobile-proto-blend")?.addEventListener("click", () => switchView("leverage"));
 document.getElementById("mobile-proto-swap")?.addEventListener("click", () => switchView("swap"));
 document.getElementById("mobile-proto-vault")?.addEventListener("click", () => switchView("vault"));
+document.getElementById("mobile-proto-referral")?.addEventListener("click", () => switchView("referral"));
 
 // Close dropdowns on click outside
 document.addEventListener("click", () => {
@@ -2794,6 +2810,17 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+
+  const hfThresholdRaw = ($("alert-hf-threshold") as HTMLInputElement).value.trim();
+  let hfThreshold: number | null = null;
+  if (hfThresholdRaw !== "") {
+    hfThreshold = Number(hfThresholdRaw);
+    if (isNaN(hfThreshold) || hfThreshold < 1.0) {
+      toast("Health factor threshold must be ≥ 1.0 (e.g. 1.05).", "error");
+      return;
+    }
+  }
+
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Subscribing...";
@@ -2802,12 +2829,11 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     const res = await fetch(`${ALERTS_WORKER_URL}/subscribe`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email,
-        pool_id: selectedPool.id,
-        asset_symbol: selectedAsset.symbol,
-        leverage_bracket: leverageBracket,
-      }),
+      body: JSON.stringify(
+        hfThreshold !== null
+          ? { email, pool_id: selectedPool.id, asset_symbol: selectedAsset.symbol, leverage_bracket: leverageBracket, hf_threshold: hfThreshold }
+          : { email, pool_id: selectedPool.id, asset_symbol: selectedAsset.symbol, leverage_bracket: leverageBracket }
+      ),
     });
 
     const data = await res.json() as any;
@@ -2816,6 +2842,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
       toast("Check your email to verify your alert subscription.", "success");
       $("alert-modal-overlay").classList.add("hidden");
       ($("alert-email") as HTMLInputElement).value = "";
+      ($("alert-hf-threshold") as HTMLInputElement).value = "";
     } else {
       toast(data.error || "Subscription failed.", "error");
     }
@@ -2826,3 +2853,135 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     btn.textContent = "Subscribe";
   }
 });
+
+// ── Referral System Helper Functions ──────────────────────────────────────────
+
+const REFERRALS_WORKER_URL = "https://turbolong-referrals.workers.dev";
+
+// Auto-parse and save referral code from URL search parameters on load
+(function captureReferralCode() {
+  const params = new URLSearchParams(window.location.search);
+  const refCode = params.get("ref");
+  if (refCode && refCode.length >= 4 && refCode.length <= 15) {
+    sessionStorage.setItem("pending_ref", refCode);
+    console.log("[referrals] Stored pending referral code:", refCode);
+  }
+})();
+
+async function getOrCreateReferralCode(address: string): Promise<string> {
+  const localKey = `referral_code_${address}`;
+  let code = localStorage.getItem(localKey);
+  if (code) {
+    // Register or verify registration with backend idempotently
+    registerReferralCode(address, code);
+    return code;
+  }
+
+  // Generate: REF- + first 4 of address + 4 random hex chars
+  const first4 = address.slice(2, 6).toUpperCase();
+  const randHex = Math.random().toString(16).substring(2, 6).toUpperCase();
+  code = `REF-${first4}-${randHex}`;
+
+  localStorage.setItem(localKey, code);
+  registerReferralCode(address, code);
+  return code;
+}
+
+async function registerReferralCode(address: string, code: string) {
+  try {
+    await fetch(`${REFERRALS_WORKER_URL}/referrals/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, code })
+    });
+  } catch (e) {
+    console.error("[referrals] Failed to register code:", e);
+  }
+}
+
+async function loadReferralView() {
+  if (!userAddress) {
+    $("referral-not-connected").classList.remove("hidden");
+    $("referral-connected-section").classList.add("hidden");
+    return;
+  }
+
+  $("referral-not-connected").classList.add("hidden");
+  $("referral-connected-section").classList.remove("hidden");
+
+  // Show code & share link
+  const code = await getOrCreateReferralCode(userAddress);
+  $("ref-code-display").textContent = code;
+
+  const shareLink = `${window.location.origin}${window.location.pathname}?ref=${code}`;
+  ($("ref-link-input") as HTMLInputElement).value = shareLink;
+
+  // Configure copy buttons
+  $("ref-copy-btn").onclick = () => {
+    navigator.clipboard.writeText(code);
+    toast("Referral code copied!", "success");
+  };
+
+  $("ref-copy-link-btn").onclick = () => {
+    navigator.clipboard.writeText(shareLink);
+    toast("Referral link copied to clipboard!", "success");
+  };
+
+  // Fetch stats from referrals server
+  try {
+    const res = await fetch(`${REFERRALS_WORKER_URL}/referrals/stats?code=${code}`);
+    if (!res.ok) throw new Error("Fetch failed");
+    const data = await res.json() as any;
+
+    if (data.ok) {
+      const stats = data.stats;
+      $("ref-stat-total").textContent = String(stats.totalReferrals || 0);
+      $("ref-stat-depositors").textContent = String(stats.uniqueDepositors || 0);
+      $("ref-stat-active").textContent = String(stats.uniqueDepositors || 0);
+
+      // Render pool breakdown
+      const tbody = $("ref-breakdown-tbody");
+      tbody.innerHTML = "";
+      if (!stats.poolBreakdown || stats.poolBreakdown.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3" class="text-center" style="color: var(--text-muted); padding: 16px;">No referral data yet.</td></tr>`;
+      } else {
+        stats.poolBreakdown.forEach((row: any) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="text-label mono">${fmtAddr(row.pool_id)}</td>
+            <td style="text-align: right;">${row.count}</td>
+            <td style="text-align: right;">${row.unique_depositors}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      // Render recent activity
+      const activityList = $("ref-activity-list");
+      activityList.innerHTML = "";
+      if (!stats.recentEvents || stats.recentEvents.length === 0) {
+        activityList.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 16px;">No recent referral activity.</div>`;
+      } else {
+        stats.recentEvents.forEach((event: any) => {
+          const item = document.createElement("div");
+          item.className = "tx-history-item";
+          item.innerHTML = `
+            <div class="tx-history-label">
+              <span>Depositor: </span>
+              <span class="mono">${fmtAddr(event.depositor_address)}</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span class="tx-history-time">${new Date(event.indexed_at).toLocaleDateString()}</span>
+              <a href="https://stellar.expert/explorer/public/tx/${event.tx_hash}" target="_blank" class="tx-history-link">Explorer</a>
+            </div>
+          `;
+          activityList.appendChild(item);
+        });
+      }
+    }
+  } catch (e) {
+    console.error("[referrals] Failed to load referral stats:", e);
+    toast("Failed to load referral statistics", "error");
+  }
+}
+
