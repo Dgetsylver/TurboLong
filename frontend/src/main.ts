@@ -1334,6 +1334,7 @@ async function loadAll() {
     ($("claim-btn") as HTMLButtonElement).disabled = blnd <= 0;
 
     renderSelectedAsset();
+    updateHFBadge();
     startFreshnessTimer();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1752,6 +1753,7 @@ async function disconnect() {
   localStorage.removeItem("walletAddress");
   reserves    = [];
   positions   = { byAsset: new Map() };
+  document.getElementById("hf-header-badge")?.classList.add("hidden");
   $("connect-btn").classList.remove("hidden");
   $("wallet-connected").classList.add("hidden");
   $("connect-prompt").classList.remove("hidden");
@@ -2826,3 +2828,155 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     btn.textContent = "Subscribe";
   }
 });
+
+// ── HF Header Badge ───────────────────────────────────────────────────────────
+
+/**
+ * Update the persistent HF badge in the nav bar.
+ * Called after every loadAll() / renderPosition() cycle.
+ * Shows only when the user has at least one open position.
+ */
+function updateHFBadge() {
+  const badge = document.getElementById("hf-header-badge")!;
+
+  // Compute the worst (lowest) HF across all open positions
+  let worstHF = Infinity;
+  for (const pos of positions.byAsset.values()) {
+    if (isFinite(pos.hf) && pos.hf < worstHF) worstHF = pos.hf;
+  }
+
+  if (!isFinite(worstHF) || positions.byAsset.size === 0) {
+    badge.classList.add("hidden");
+    return;
+  }
+
+  badge.classList.remove("hidden");
+  badge.textContent = `HF ${fmt(worstHF, 3)}`;
+  badge.title = `Health Factor: ${fmt(worstHF, 3)}`;
+
+  // Color zones: green ≥ 2.0, yellow 1.5–2.0, orange 1.2–1.5, red < 1.2
+  badge.classList.remove("hf-badge-green", "hf-badge-yellow", "hf-badge-orange", "hf-badge-red");
+  if (worstHF >= 2.0)      badge.classList.add("hf-badge-green");
+  else if (worstHF >= 1.5) badge.classList.add("hf-badge-yellow");
+  else if (worstHF >= 1.2) badge.classList.add("hf-badge-orange");
+  else                     badge.classList.add("hf-badge-red");
+}
+
+// Patch loadAll to call updateHFBadge after data loads
+const _origLoadAll = loadAll;
+(window as any).__loadAll = _origLoadAll; // keep reference
+
+const TOUR_STEPS = [
+  {
+    title: "Connect your wallet",
+    body: "Click \"Connect Wallet\" in the top-right corner. Turbolong supports Freighter, xBull, Albedo, Lobstr, and Hana.",
+  },
+  {
+    title: "Pick a pool",
+    body: "Use the Trade menu to select a Blend pool (e.g. Etherfuse). Each pool has different assets and interest rates.",
+  },
+  {
+    title: "Understand Health Factor",
+    body: "Health Factor (HF) measures how safe your position is. HF ≥ 1.2 is safe (green). Below 1.0 means liquidation. Watch the HF badge in the header.",
+  },
+  {
+    title: "Open a minimum position",
+    body: "Enter a small deposit amount and set leverage to 2×. Click \"Open Position\" and sign the transactions in your wallet.",
+  },
+  {
+    title: "Monitor your HF",
+    body: "After opening, your HF appears in the header badge and on the dashboard. If it drops below 1.2, consider repaying debt or adding collateral.",
+  },
+  {
+    title: "Close your position",
+    body: "When you're ready to exit, click \"Close Position\". Your collateral minus debt is returned to your wallet. You can also partially adjust leverage.",
+  },
+];
+
+const TOUR_STORAGE_KEY = "tourStep";
+const TOUR_DONE_KEY    = "tourDone";
+
+let _tourActive = false;
+
+function tourCurrentStep(): number {
+  return parseInt(localStorage.getItem(TOUR_STORAGE_KEY) ?? "0", 10) || 0;
+}
+
+function startTour(fromStep = 0) {
+  _tourActive = true;
+  localStorage.setItem(TOUR_STORAGE_KEY, String(fromStep));
+  localStorage.removeItem(TOUR_DONE_KEY);
+  renderTourStep(fromStep);
+  $("tour-overlay").classList.remove("hidden");
+}
+
+function endTour(completed = false) {
+  _tourActive = false;
+  $("tour-overlay").classList.add("hidden");
+  if (completed) {
+    localStorage.setItem(TOUR_DONE_KEY, "1");
+    localStorage.removeItem(TOUR_STORAGE_KEY);
+  }
+}
+
+function renderTourStep(step: number) {
+  const s = TOUR_STEPS[step];
+  if (!s) { endTour(true); return; }
+
+  $("tour-title").textContent = s.title;
+  $("tour-body").textContent  = s.body;
+  $("tour-step-label").textContent = `Step ${step + 1} of ${TOUR_STEPS.length}`;
+
+  // Dots
+  const dotsEl = $("tour-dots");
+  dotsEl.innerHTML = "";
+  TOUR_STEPS.forEach((_, i) => {
+    const dot = document.createElement("span");
+    dot.className = `tour-dot${i === step ? " active" : ""}`;
+    dotsEl.appendChild(dot);
+  });
+
+  // Buttons
+  ($("tour-prev-btn") as HTMLButtonElement).disabled = step === 0;
+  ($("tour-next-btn") as HTMLButtonElement).textContent =
+    step === TOUR_STEPS.length - 1 ? "Finish" : "Next";
+
+  // Persist progress
+  localStorage.setItem(TOUR_STORAGE_KEY, String(step));
+}
+
+$("tour-next-btn").addEventListener("click", () => {
+  const next = tourCurrentStep() + 1;
+  if (next >= TOUR_STEPS.length) { endTour(true); return; }
+  renderTourStep(next);
+});
+
+$("tour-prev-btn").addEventListener("click", () => {
+  const prev = Math.max(0, tourCurrentStep() - 1);
+  renderTourStep(prev);
+});
+
+$("tour-skip-btn").addEventListener("click", () => endTour(true));
+
+// Replay tour from settings dropdown
+$("replay-tour-btn").addEventListener("click", () => {
+  $("settings-dropdown").classList.add("hidden");
+  startTour(0);
+});
+
+// Auto-start tour on first wallet connection (once per user)
+// We hook into the connect() flow by watching wallet-connected visibility
+const _connectObserver = new MutationObserver(() => {
+  const connected = !$("wallet-connected").classList.contains("hidden");
+  if (connected && !localStorage.getItem(TOUR_DONE_KEY) && !_tourActive) {
+    const savedStep = tourCurrentStep();
+    startTour(savedStep);
+  }
+});
+_connectObserver.observe($("wallet-connected"), { attributes: true, attributeFilter: ["class"] });
+
+// Resume mid-tour if page is refreshed while tour was in progress
+if (!localStorage.getItem(TOUR_DONE_KEY) && localStorage.getItem(TOUR_STORAGE_KEY) !== null) {
+  // Only resume if wallet is already connected (auto-reconnect will fire)
+  // The MutationObserver above handles this case.
+}
