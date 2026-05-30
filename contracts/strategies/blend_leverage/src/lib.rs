@@ -15,7 +15,7 @@ mod test_integration;
 use constants::SCALAR_12;
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
-    check_deposit_safety, compute_health_factor, compute_totals, compute_unwind_loops,
+    check_deposit_safety, compute_health_factor, compute_partial_unwind, compute_totals,
     shares_to_underlying,
 };
 use soroban_sdk::{
@@ -49,6 +49,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [5] c_factor: i128         — collateral factor (1e7)
     ///   [6] target_loops: u32      — number of leverage loops
     ///   [7] min_hf: i128           — minimum health factor (1e7)
+    ///   [8] orange_hf: i128        — orange-zone threshold; partial unwind triggered below this (1e7)
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -82,6 +83,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .get(7)
             .expect("Missing: min_hf")
             .into_val(&e);
+        let orange_hf: i128 = init_args
+            .get(8)
+            .expect("Missing: orange_hf")
+            .into_val(&e);
 
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
@@ -107,6 +112,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             c_factor,
             target_loops,
             min_hf,
+            orange_hf,
         };
 
         storage::set_config(&e, config);
@@ -301,7 +307,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
 #[contractimpl]
 impl BlendLeverageStrategy {
-    /// Rebalance: auto-deleverage if health factor is below min_hf.
+    /// Rebalance: partial-unwind if HF is in the orange zone (orange_hf > HF >= min_hf),
+    /// or full deleverage if HF < min_hf.
     /// Callable by anyone (permissionless — protects the vault).
     pub fn rebalance(e: Env) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
@@ -311,32 +318,76 @@ impl BlendLeverageStrategy {
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
 
         if d_tokens == 0 {
-            return Ok(()); // No debt, nothing to rebalance
+            return Ok(());
         }
 
         let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
 
-        if hf >= config.min_hf {
-            return Ok(()); // HF is healthy
+        if hf >= config.orange_hf {
+            return Ok(()); // HF is healthy, no action needed
         }
 
-        // Compute how many loops to unwind
-        let unwind_count = compute_unwind_loops(
-            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, config.min_hf,
+        // Use orange_hf as target so we restore to the safe zone, not just min_hf
+        let (_, unwind_loops) = compute_partial_unwind(
+            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, config.orange_hf,
         )?;
 
-        if unwind_count == 0 {
+        if unwind_loops == 0 {
             return Ok(());
         }
 
-        // Execute deleverage
         let (b_removed, d_removed) =
-            blend_pool::submit_deleverage(&e, unwind_count, &config)?;
+            blend_pool::submit_deleverage(&e, unwind_loops, &config)?;
 
-        // Update reserves accounting
         reserves::deleverage(&e, b_removed, d_removed, &config)?;
 
         Ok(())
+    }
+
+    /// Partial-unwind liquidation protection: unwind just enough loops to restore
+    /// HF to `target_hf`. Callable by the keeper or the strategy itself.
+    ///
+    /// `target_hf` must be >= config.orange_hf to prevent abuse.
+    pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<u32, StrategyError> {
+        extend_instance_ttl(&e);
+
+        // Keeper or permissionless if HF is already in orange zone
+        let config = storage::get_config(&e);
+        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
+
+        if d_tokens == 0 {
+            return Ok(0);
+        }
+
+        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
+
+        // Only the keeper can trigger above the orange zone; anyone can trigger inside it
+        if hf >= config.orange_hf {
+            let keeper = storage::get_keeper(&e);
+            if caller != keeper {
+                return Err(StrategyError::NotAuthorized);
+            }
+        }
+        caller.require_auth();
+
+        // target_hf must be at least orange_hf to avoid over-unwinding
+        let effective_target = target_hf.max(config.orange_hf);
+
+        let (_, loops) = compute_partial_unwind(
+            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, effective_target,
+        )?;
+
+        if loops == 0 {
+            return Ok(0);
+        }
+
+        let (b_removed, d_removed) =
+            blend_pool::submit_deleverage(&e, loops, &config)?;
+
+        reserves::deleverage(&e, b_removed, d_removed, &config)?;
+
+        Ok(loops)
     }
 
     /// Set a new keeper address. Only the current keeper can call this.
