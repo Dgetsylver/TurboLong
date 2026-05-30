@@ -2200,7 +2200,12 @@ async function refreshAddFundsBalance() {
   } catch { /* ignore */ }
 }
 
-($("leverage-slider") as HTMLInputElement).addEventListener("input",  updatePreview);
+let _leverageDebounce: ReturnType<typeof setTimeout> | null = null;
+function debouncedPreview() {
+  if (_leverageDebounce) clearTimeout(_leverageDebounce);
+  _leverageDebounce = setTimeout(updatePreview, 50);
+}
+($("leverage-slider") as HTMLInputElement).addEventListener("input", debouncedPreview);
 // Live preview while typing (no clamping so user can type multi-digit numbers like "10")
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;
