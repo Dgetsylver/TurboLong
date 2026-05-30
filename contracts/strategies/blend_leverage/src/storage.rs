@@ -10,6 +10,12 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - ONE_DAY_LEDGERS;
 const PERSISTENT_BUMP_AMOUNT: u32 = 120 * ONE_DAY_LEDGERS;
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - 20 * ONE_DAY_LEDGERS;
 
+// ── Strategy version ─────────────────────────────────────────────────────────
+
+/// Bump this constant when deploying a new strategy version.
+/// V1 = 1, V2 = 2, etc. Stored in instance storage on construction.
+pub const STRATEGY_VERSION: u32 = 1;
+
 // ── Data keys ────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -19,6 +25,7 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
+    Version,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -155,4 +162,17 @@ pub fn extend_instance_ttl(e: &Env) {
     e.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+// ── Strategy version ─────────────────────────────────────────────────────────
+
+pub fn set_version(e: &Env, version: u32) {
+    e.storage().instance().set(&DataKey::Version, &version);
+}
+
+pub fn get_version(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&DataKey::Version)
+        .unwrap_or(1u32) // default to 1 for contracts deployed before versioning
 }

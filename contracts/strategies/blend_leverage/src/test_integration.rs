@@ -18,9 +18,9 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, BytesN, Env, String, Vec,
+    vec, Address, BytesN, Env, IntoVal, String, Vec,
 };
 
 use crate::constants::{
@@ -32,6 +32,7 @@ use crate::leverage::{
 };
 use crate::storage::LeverageReserves;
 use crate::{blend_pool, reserves, storage};
+use crate::StrategyError;
 
 // ── Mock Oracle ──────────────────────────────────────────────────────────────
 
@@ -746,3 +747,303 @@ fn test_deleverage_step_by_step() {
         diff
     );
 }
+
+// ── Migration helpers ────────────────────────────────────────────────────────
+
+/// Register a BlendLeverageStrategy with constructor args.
+fn register_strategy(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+    config: &storage::Config,
+) -> Address {
+    let keeper = Address::generate(e);
+    let router = Address::generate(e);
+    let init_args: Vec<soroban_sdk::Val> = vec![
+        e,
+        pool_addr.into_val(e),
+        blnd.into_val(e),
+        router.into_val(e),
+        1_0000000_i128.into_val(e),
+        keeper.into_val(e),
+        config.c_factor.into_val(e),
+        config.target_loops.into_val(e),
+        config.min_hf.into_val(e),
+    ];
+    e.register(crate::BlendLeverageStrategy, (token.clone(), init_args))
+}
+
+#[test]
+fn test_migrate() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+
+    let v1 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+    let v2 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+
+    let user = Address::generate(&e);
+    let deposit_amount = 1_000_0000000_i128;
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &deposit_amount);
+
+    e.cost_estimate().budget().reset_unlimited();
+
+    let v1_balance_before: i128 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "deposit"),
+        vec![&e, deposit_amount.into_val(&e), user.into_val(&e)],
+    );
+    assert!(v1_balance_before > 0, "V1 balance should be > 0 after deposit");
+
+    // Snapshot V1 HF before migration
+    let v1_hf_before: i128 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "health_factor"),
+        vec![&e],
+    );
+    assert!(v1_hf_before > config.min_hf, "V1 HF should be healthy before migration");
+
+    // Migrate V1 → V2 (single transaction, user signs once)
+    e.invoke_contract::<()>(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "migrate"),
+        vec![&e, user.into_val(&e), v2.into_val(&e)],
+    );
+
+    // V1 position is fully burned
+    let v1_balance_after: i128 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "balance"),
+        vec![&e, user.into_val(&e)],
+    );
+    assert_eq!(v1_balance_after, 0, "V1 balance should be 0 after migration");
+
+    // V2 has the user's position
+    let v2_balance: i128 = e.invoke_contract(
+        &v2,
+        &soroban_sdk::Symbol::new(&e, "balance"),
+        vec![&e, user.into_val(&e)],
+    );
+    assert!(v2_balance > 0, "V2 balance should be > 0 after migration");
+
+    // Balance is preserved within 2% (unwind + re-leverage rounding)
+    let diff = (v1_balance_before - v2_balance).abs();
+    assert!(
+        diff < deposit_amount / 50,
+        "Balance preserved: v1={}, v2={}, diff={}",
+        v1_balance_before,
+        v2_balance,
+        diff
+    );
+
+    // V2 HF should be healthy (same c_factor and target_loops)
+    let v2_hf: i128 = e.invoke_contract(
+        &v2,
+        &soroban_sdk::Symbol::new(&e, "health_factor"),
+        vec![&e],
+    );
+    assert!(
+        v2_hf > config.min_hf,
+        "V2 HF {} should be > min_hf {}",
+        v2_hf,
+        config.min_hf
+    );
+}
+
+#[test]
+fn test_migrate_with_pool_rate_change() {
+    // Verifies that after pool rates change (interest accrual + new borrowers),
+    // migration still zeroes out V1 and produces a healthy V2 position.
+    //
+    // NOTE: This test uses moderate utilization (~33%). High utilization (>75%)
+    // causes submit_with_allowance to fail with #1205 because the Blend pool
+    // enforces HF after each individual request in the unwind sequence, and the
+    // strategy has no pre-funded tokens for the repay step. That is a known
+    // limitation shared with the existing closePosition flow (which falls back
+    // to a two-step repay+withdraw in the frontend). Migration under extreme
+    // utilization requires the same two-step fallback.
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 200_000_0000000);
+
+    let v1 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+    let v2 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+    let user = Address::generate(&e);
+
+    let deposit_amount = 1_000_0000000_i128;
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &deposit_amount);
+
+    e.cost_estimate().budget().reset_unlimited();
+
+    e.invoke_contract::<i128>(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "deposit"),
+        vec![&e, deposit_amount.into_val(&e), user.into_val(&e)],
+    );
+
+    // Simulate time passing: advance ledger so interest accrues
+    e.ledger().with_mut(|li| {
+        li.sequence_number += 10_000;
+        li.timestamp += 86_400; // 1 day
+    });
+
+    // A second user borrows to drive up utilization (changes rates without blocking unwind)
+    let borrower = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&borrower, &20_000_0000000);
+    pool::Client::new(&e, &pool_addr).mock_all_auths().submit(
+        &borrower,
+        &borrower,
+        &borrower,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 20_000_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+            pool::Request {
+                address: token.clone(),
+                amount: 10_000_0000000, // ~33% utilization — rates change but unwind stays safe
+                request_type: REQUEST_TYPE_BORROW,
+            },
+        ],
+    );
+
+    // Migrate under changed pool conditions
+    e.invoke_contract::<()>(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "migrate"),
+        vec![&e, user.into_val(&e), v2.into_val(&e)],
+    );
+
+    let v1_balance_after: i128 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "balance"),
+        vec![&e, user.into_val(&e)],
+    );
+    assert_eq!(v1_balance_after, 0);
+
+    let v2_balance: i128 = e.invoke_contract(
+        &v2,
+        &soroban_sdk::Symbol::new(&e, "balance"),
+        vec![&e, user.into_val(&e)],
+    );
+    assert!(v2_balance > 0, "V2 should have position after migration under rate change");
+
+    let v2_hf: i128 = e.invoke_contract(
+        &v2,
+        &soroban_sdk::Symbol::new(&e, "health_factor"),
+        vec![&e],
+    );
+    assert!(
+        v2_hf > config.min_hf,
+        "V2 HF {} should be > min_hf {} after migration with rate change",
+        v2_hf,
+        config.min_hf
+    );
+}
+
+#[test]
+fn test_get_version_returns_one() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    let v1 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+
+    let version: u32 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "get_version"),
+        vec![&e],
+    );
+    assert_eq!(version, 1, "Freshly deployed strategy should report version 1");
+}
+
+#[test]
+fn test_migrate_requires_user_auth() {
+    // migrate() must require the depositor's signature; a different caller
+    // must not be able to migrate someone else's position.
+    let e = Env::default();
+    // Do NOT mock_all_auths — auth is enforced.
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+
+    let v1 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+    let v2 = register_strategy(&e, &pool_addr, &token, &blnd, &config);
+
+    let user = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let deposit_amount = 1_000_0000000_i128;
+
+    // Deposit as user (mock only user's auth for deposit)
+    e.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &user,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &v1,
+            fn_name: "deposit",
+            args: soroban_sdk::vec![&e, deposit_amount.into_val(&e), user.into_val(&e)],
+            sub_invokes: &[soroban_sdk::testutils::MockAuthInvoke {
+                contract: &token,
+                fn_name: "transfer",
+                args: soroban_sdk::vec![
+                    &e,
+                    user.into_val(&e),
+                    v1.into_val(&e),
+                    deposit_amount.into_val(&e)
+                ],
+                sub_invokes: &[],
+            }],
+        },
+    }]);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &deposit_amount);
+    e.cost_estimate().budget().reset_unlimited();
+    let _: i128 = e.invoke_contract(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "deposit"),
+        vec![&e, deposit_amount.into_val(&e), user.into_val(&e)],
+    );
+
+    // Attacker tries to migrate user's position — must panic (auth failure)
+    let result = e.try_invoke_contract::<(), StrategyError>(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "migrate"),
+        vec![&e, user.into_val(&e), v2.into_val(&e)],
+    );
+    assert!(result.is_err(), "migrate() without user auth must fail");
+
+    // Attacker provides their own auth (for attacker address, not user) — still fails
+    e.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &v1,
+            fn_name: "migrate",
+            args: soroban_sdk::vec![&e, user.into_val(&e), v2.into_val(&e)],
+            sub_invokes: &[],
+        },
+    }]);
+    let result2 = e.try_invoke_contract::<(), StrategyError>(
+        &v1,
+        &soroban_sdk::Symbol::new(&e, "migrate"),
+        vec![&e, user.into_val(&e), v2.into_val(&e)],
+    );
+    assert!(result2.is_err(), "migrate() with wrong signer must fail");
+}
+

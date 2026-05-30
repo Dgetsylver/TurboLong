@@ -21,7 +21,7 @@ use leverage::{
 use soroban_sdk::{
     contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Val, Vec,
 };
-use storage::{extend_instance_ttl, Config};
+use storage::{extend_instance_ttl, Config, STRATEGY_VERSION};
 
 fn check_positive_amount(amount: i128) -> Result<(), StrategyError> {
     if amount <= 0 {
@@ -111,6 +111,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_version(&e, STRATEGY_VERSION);
     }
 
     fn asset(e: Env) -> Result<Address, StrategyError> {
@@ -348,10 +349,16 @@ impl BlendLeverageStrategy {
         Ok(())
     }
 
-    /// Get the current keeper address.
+    /// Get current keeper address.
     pub fn get_keeper(e: Env) -> Result<Address, StrategyError> {
         extend_instance_ttl(&e);
         Ok(storage::get_keeper(&e))
+    }
+
+    /// Get the strategy version number (1 = V1, 2 = V2, …).
+    pub fn get_version(e: Env) -> Result<u32, StrategyError> {
+        extend_instance_ttl(&e);
+        Ok(storage::get_version(&e))
     }
 
     /// Get current health factor (1e7 scaled).
@@ -379,4 +386,123 @@ impl BlendLeverageStrategy {
             reserves.d_rate,
         ))
     }
+
+    /// Migrate user's position from this strategy (V1) to a new strategy (V2) atomically.
+    ///
+    /// Flow (single transaction):
+    /// 1. Require user's signature.
+    /// 2. Burn user's V1 shares; compute their proportional b/d tokens.
+    /// 3. Unwind that position on Blend pool → equity (underlying) lands in V1.
+    /// 4. Transfer equity to V2.
+    /// 5. Call V2.receive_migration(from, equity) — V2 re-leverages and mints V2 shares.
+    ///
+    /// HF is preserved because the unwind and re-leverage are symmetric:
+    /// the same equity is re-deployed at the same c_factor/target_loops.
+    pub fn migrate(e: Env, from: Address, to_strategy: Address) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        from.require_auth();
+
+        let config = storage::get_config(&e);
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
+        // Burn V1 shares and get proportional b/d tokens.
+        // Treat as a full close when the user owns all non-lockup shares: the
+        // FIRST_DEPOSIT_LOCKUP shares are permanently locked in total_shares but
+        // never credited to any user, so user_shares == total_shares - LOCKUP for
+        // a sole depositor. A full-close uses a single atomic repay+withdraw sweep
+        // (i64::MAX sentinel) which avoids per-step HF failures after interest accrual.
+        let user_shares = storage::get_vault_shares(&e, &from);
+        let is_full_close = reserves.total_shares
+            .checked_sub(user_shares)
+            .unwrap_or(0)
+            <= crate::constants::FIRST_DEPOSIT_LOCKUP;
+
+        let (b_tokens_to_remove, d_tokens_to_remove, _) =
+            reserves::migrate_withdraw(&e, &from, &reserves)?;
+
+        // For a full close, use pool-actual positions to handle interest accrual
+        // since the last accounting update (d_rate may have grown).
+        // Pass i64::MAX as d_tokens_to_remove so submit_unwind takes the full-close
+        // path regardless of any rate accrual between the two get_positions calls.
+        let (unwind_b, unwind_d) = if is_full_close {
+            let (pool_b, _) = blend_pool::get_strategy_positions(&e, &config);
+            (pool_b, i64::MAX as i128)
+        } else {
+            (b_tokens_to_remove, d_tokens_to_remove)
+        };
+
+        // Unwind position on Blend pool; equity is transferred to V2
+        let equity = blend_pool::unwind_to(
+            &e,
+            unwind_b,
+            unwind_d,
+            &to_strategy,
+            &config,
+        )?;
+
+        if equity <= 0 {
+            return Err(StrategyError::UnderlyingAmountBelowMin);
+        }
+
+        // V2 re-leverages the pre-funded tokens and mints shares for `from`
+        e.invoke_contract::<i128>(
+            &to_strategy,
+            &soroban_sdk::Symbol::new(&e, "receive_migration"),
+            soroban_sdk::vec![&e, from.into_val(&e), equity.into_val(&e)],
+        );
+
+        Ok(())
+    }
+
+    /// Accept pre-funded underlying tokens from a V1 migration and re-leverage them.
+    ///
+    /// Called by V1's `migrate()` after it has already transferred `amount` underlying
+    /// tokens to this contract. Re-leverages and mints shares for `to`.
+    /// No `transfer_from` is performed — tokens are already in this contract.
+    pub fn receive_migration(e: Env, to: Address, amount: i128) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        check_positive_amount(amount)?;
+
+        let config = storage::get_config(&e);
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
+        // Re-leverage the tokens already held by this contract
+        let (b_delta, d_delta) = blend_pool::submit_leverage_loop(&e, amount, &config)?;
+
+        let (vault_shares, updated_reserves) =
+            reserves::deposit(&e, &to, b_delta, d_delta, &reserves)?;
+
+        let underlying_balance = shares_to_underlying(vault_shares, &updated_reserves)?;
+
+        event::emit_deposit(
+            &e,
+            String::from_str(&e, STRATEGY_NAME),
+            amount,
+            to,
+        );
+
+        Ok(underlying_balance)
+    }
+
+    /// Absorbs unassigned b_tokens and d_tokens that were transferred to this strategy.
+    /// Kept for emergency recovery.
+    pub fn absorb(e: Env, to: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+
+        let config = storage::get_config(&e);
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
+        let (pool_b, pool_d) = blend_pool::get_strategy_positions(&e, &config);
+
+        let b_diff = pool_b.checked_sub(reserves.total_b_tokens).unwrap_or(0);
+        let d_diff = pool_d.checked_sub(reserves.total_d_tokens).unwrap_or(0);
+
+        if b_diff <= 0 && d_diff <= 0 {
+            return Ok(0);
+        }
+
+        let (vault_shares, _) = reserves::deposit(&e, &to, b_diff, d_diff, &reserves)?;
+        Ok(vault_shares)
+    }
 }
+
