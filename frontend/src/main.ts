@@ -324,6 +324,21 @@ const MIN_HF_NORMAL = 1.01;
 const MIN_HF_EXPERT = 1.00001;
 function minHF() { return expertMode ? MIN_HF_EXPERT : MIN_HF_NORMAL; }
 
+// ── Safe Max HF floor ────────────────────────────────────────────────────────
+
+const HF_FLOOR_KEY = "safeMaxHfFloor";
+const HF_FLOOR_DEFAULT = 1.2;
+
+function getHfFloor(): number {
+  const raw = localStorage.getItem(HF_FLOOR_KEY);
+  const v = raw ? parseFloat(raw) : HF_FLOOR_DEFAULT;
+  return isFinite(v) && v >= 1.01 ? v : HF_FLOOR_DEFAULT;
+}
+
+function setHfFloor(v: number) {
+  localStorage.setItem(HF_FLOOR_KEY, String(v));
+}
+
 // ── Demo mode ────────────────────────────────────────────────────────────────
 
 let demoMode = false;
@@ -2707,6 +2722,39 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     ($("vault-rebalance-btn") as HTMLButtonElement).disabled = false;
     ($("vault-rebalance-btn") as HTMLButtonElement).textContent = "Rebalance";
   }
+});
+
+// ── Safe Max button ───────────────────────────────────────────────────────────
+
+function applySafeMax() {
+  const slider = $("leverage-slider") as HTMLInputElement;
+  const numIn  = $("leverage-input")  as HTMLInputElement;
+  const rs     = reserves.find(r => r.asset.id === selectedAsset.id);
+  const c      = rs ? rs.cFactor : selectedAsset.cFactor;
+  const l      = rs?.lFactor ?? 1;
+  const floor  = getHfFloor();
+  const maxSlider = parseFloat(slider.max);
+
+  // Walk down from slider max in 0.1 steps to find highest leverage with HF >= floor
+  let best = 1.0;
+  for (let lev = maxSlider; lev >= 1.0; lev = Math.round((lev - 0.1) * 10) / 10) {
+    if (hfForLeverage(lev, c, l) >= floor) { best = lev; break; }
+  }
+
+  slider.value = String(best);
+  numIn.value  = best.toFixed(1);
+  updatePreview();
+}
+
+$("safe-max-btn").addEventListener("click", applySafeMax);
+
+// HF floor input (settings dropdown)
+const hfFloorInput = $("hf-floor-input") as HTMLInputElement;
+hfFloorInput.value = String(getHfFloor());
+hfFloorInput.addEventListener("change", () => {
+  const v = parseFloat(hfFloorInput.value);
+  if (isFinite(v) && v >= 1.01) setHfFloor(v);
+  else hfFloorInput.value = String(getHfFloor()); // revert invalid
 });
 
 // ── Auto-reconnect saved wallet ──────────────────────────────────────────────
