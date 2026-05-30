@@ -844,33 +844,110 @@ function computePoolHF(): number {
   return totalDebt > 0 ? weightedCollateral / totalDebt : Infinity;
 }
 
-// ── Portfolio summary (#8) ───────────────────────────────────────────────────
+// ── Portfolio summary (#8) — sortable + compact/expanded (#16) ───────────────
+
+type SortCol = "asset" | "leverage" | "hf" | "pnl";
+type SortDir = "asc" | "desc";
+
+const POS_SORT_KEY  = "posSortCol";
+const POS_DIR_KEY   = "posSortDir";
+const POS_VIEW_KEY  = "posViewCompact";
+
+let posSortCol:     SortCol = (localStorage.getItem(POS_SORT_KEY)  as SortCol) || "asset";
+let posSortDir:     SortDir = (localStorage.getItem(POS_DIR_KEY)   as SortDir) || "asc";
+let posViewCompact: boolean = localStorage.getItem(POS_VIEW_KEY) === "1";
+
+function savePosPrefs() {
+  localStorage.setItem(POS_SORT_KEY, posSortCol);
+  localStorage.setItem(POS_DIR_KEY,  posSortDir);
+  localStorage.setItem(POS_VIEW_KEY, posViewCompact ? "1" : "0");
+}
 
 function renderPortfolioSummary() {
+  const wrap      = $("portfolio-summary-wrap");
   const container = $("portfolio-summary");
-  if (positions.byAsset.size === 0) { container.classList.add("hidden"); return; }
-  container.classList.remove("hidden");
-  container.innerHTML = "";
-  for (const [assetId, pos] of positions.byAsset) {
-    const rs = reserves.find(r => r.asset.id === assetId);
+  if (positions.byAsset.size === 0) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+
+  // Build sortable rows
+  const rows = Array.from(positions.byAsset.entries()).map(([assetId, pos]) => {
+    const rs         = reserves.find(r => r.asset.id === assetId);
     const cardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
-    const netApy = aprToApy(cardNetApr);
-    const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
-    const card = document.createElement("div");
-    card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
-    card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
-    card.innerHTML = `
-      <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
-      <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
-      <span class="portfolio-card-details">
-        <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
-      </span>`;
-    card.addEventListener("click", () => {
-      const asset = assets.find(a => a.id === assetId);
-      if (asset) selectAsset(asset);
+    const netApy     = aprToApy(cardNetApr);
+    const pnlEntry   = getPnlEntry(assetId, selectedPool.id);
+    const pnl        = pnlEntry ? pos.equity - pnlEntry.deposit : 0;
+    return { assetId, pos, rs, netApy, pnl, cardNetApr };
+  });
+
+  rows.sort((a, b) => {
+    let diff = 0;
+    if (posSortCol === "asset")    diff = a.pos.asset.symbol.localeCompare(b.pos.asset.symbol);
+    else if (posSortCol === "leverage") diff = a.pos.leverage - b.pos.leverage;
+    else if (posSortCol === "hf")  diff = (isFinite(a.pos.hf) ? a.pos.hf : 999) - (isFinite(b.pos.hf) ? b.pos.hf : 999);
+    else if (posSortCol === "pnl") diff = a.pnl - b.pnl;
+    return posSortDir === "asc" ? diff : -diff;
+  });
+
+  // Update sort button indicators
+  document.querySelectorAll<HTMLButtonElement>(".pos-sort-btn").forEach(btn => {
+    const col = btn.dataset.col as SortCol;
+    const arrow = btn.querySelector(".sort-arrow")!;
+    btn.classList.toggle("active", col === posSortCol);
+    arrow.textContent = col !== posSortCol ? "↕" : posSortDir === "asc" ? "↑" : "↓";
+  });
+
+  // Update view toggle icon
+  ($("pos-view-toggle") as HTMLButtonElement).innerHTML = posViewCompact ? "&#9783;" : "&#9783;";
+  $("portfolio-summary").classList.toggle("portfolio-summary-compact", posViewCompact);
+
+  if (posViewCompact) {
+    // Compact: one-row table
+    container.innerHTML = `<table class="pos-table">
+      <thead><tr>
+        <th>Asset</th><th>Equity</th><th>Lev</th><th>HF</th><th>APY</th><th>P&L</th>
+      </tr></thead>
+      <tbody>${rows.map(({ assetId, pos, netApy, pnl }) => {
+        const hfCls = pos.hf > 1.1 ? "hf-ok" : pos.hf > 1.03 ? "hf-warn" : "hf-bad";
+        const pnlCls = pnl >= 0 ? "hf-ok" : "hf-bad";
+        const pnlStr = pnl !== 0 ? `${pnl >= 0 ? "+" : ""}${fmt(pnl, 4)}` : "—";
+        return `<tr class="pos-table-row ${assetId === selectedAsset.id ? "active" : ""}" data-asset="${assetId}">
+          <td class="mono fw600">${pos.asset.symbol}</td>
+          <td class="mono">${fmt(pos.equity, 2)}</td>
+          <td class="mono">${fmt(pos.leverage, 1)}×</td>
+          <td class="mono ${hfCls}">${isFinite(pos.hf) ? fmt(pos.hf, 3) : "∞"}</td>
+          <td class="mono ${netApy > 0 ? "hf-ok" : "hf-bad"}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</td>
+          <td class="mono ${pnlCls}">${pnlStr}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+    container.querySelectorAll<HTMLElement>(".pos-table-row").forEach(row => {
+      row.addEventListener("click", () => {
+        const asset = assets.find(a => a.id === row.dataset.asset);
+        if (asset) selectAsset(asset);
+      });
     });
-    container.appendChild(card);
+  } else {
+    // Expanded: cards
+    container.innerHTML = "";
+    rows.forEach(({ assetId, pos, netApy, pnl, cardNetApr }) => {
+      const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
+      const pnlStr  = pnl !== 0 ? ` · P&L ${pnl >= 0 ? "+" : ""}${fmt(pnl, 4)}` : "";
+      const card = document.createElement("div");
+      card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
+      card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
+      card.innerHTML = `
+        <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
+        <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
+        <span class="portfolio-card-details">
+          <span>${fmt(pos.equity, 2)} equity · ${fmt(pos.leverage, 1)}×</span>
+          <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% · HF ${fmt(pos.hf, 2)}${pnlStr}</span>
+        </span>`;
+      card.addEventListener("click", () => {
+        const asset = assets.find(a => a.id === assetId);
+        if (asset) selectAsset(asset);
+      });
+      container.appendChild(card);
+    });
   }
 }
 
@@ -2007,6 +2084,24 @@ function initTooltips() {
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
+
+// Sort buttons
+document.querySelectorAll<HTMLButtonElement>(".pos-sort-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const col = btn.dataset.col as SortCol;
+    if (posSortCol === col) posSortDir = posSortDir === "asc" ? "desc" : "asc";
+    else { posSortCol = col; posSortDir = "asc"; }
+    savePosPrefs();
+    renderPortfolioSummary();
+  });
+});
+
+// Compact / expanded toggle
+$("pos-view-toggle").addEventListener("click", () => {
+  posViewCompact = !posViewCompact;
+  savePosPrefs();
+  renderPortfolioSummary();
+});
 
 // Expert toggle (settings dropdown)
 function toggleExpert() {

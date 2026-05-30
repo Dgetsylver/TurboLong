@@ -276,7 +276,18 @@
           </div>
 
           <!-- Portfolio summary -->
-          <div id="portfolio-summary" class="portfolio-summary hidden"></div>
+          <div id="portfolio-summary-wrap" class="hidden">
+            <div class="portfolio-summary-header">
+              <div class="portfolio-sort-btns">
+                <button class="pos-sort-btn active" data-col="asset">Asset <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="leverage">Lev <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="hf">HF <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="pnl">P&amp;L <span class="sort-arrow">↕</span></button>
+              </div>
+              <button id="pos-view-toggle" class="btn btn-ghost btn-sm" data-tip="Toggle compact / expanded view">&#9783;</button>
+            </div>
+            <div id="portfolio-summary" class="portfolio-summary"></div>
+          </div>
 
           <!-- Pool stats (visible by default) -->
           <div id="stats-collapsible" class="stats-collapsible">
