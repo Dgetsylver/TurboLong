@@ -1210,3 +1210,104 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── HF Header Badge ─────────────────────────────────────────────────────── */
+
+.hf-header-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--mono);
+  cursor: default;
+  transition: background 0.3s, color 0.3s;
+  white-space: nowrap;
+  user-select: none;
+}
+.hf-header-badge.hf-badge-green  { background: rgba(45,232,163,.18); color: #2DE8A3; border: 1px solid rgba(45,232,163,.3); }
+.hf-header-badge.hf-badge-yellow { background: rgba(255,181,71,.18);  color: #FFB547; border: 1px solid rgba(255,181,71,.3); }
+.hf-header-badge.hf-badge-orange { background: rgba(255,120,50,.18);  color: #FF7832; border: 1px solid rgba(255,120,50,.3); }
+.hf-header-badge.hf-badge-red    { background: rgba(255,77,106,.18);  color: #FF4D6A; border: 1px solid rgba(255,77,106,.3); }
+
+/* ── Guided Tour ─────────────────────────────────────────────────────────── */
+
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tour-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.55);
+  backdrop-filter: blur(2px);
+}
+.tour-card {
+  position: relative;
+  z-index: 1;
+  background: var(--surface);
+  border: 1px solid var(--border-h);
+  border-radius: var(--r);
+  padding: 24px;
+  width: min(420px, calc(100vw - 32px));
+  box-shadow: var(--shadow);
+}
+.tour-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.tour-step-label {
+  font-size: 11px;
+  color: var(--text-2);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.tour-skip-btn {
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  transition: color .15s;
+}
+.tour-skip-btn:hover { color: var(--text); }
+.tour-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.tour-body {
+  font-size: 14px;
+  color: var(--text-2);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+.tour-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tour-dots {
+  display: flex;
+  gap: 6px;
+}
+.tour-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-h);
+  transition: background .2s;
+}
+.tour-dot.active { background: var(--primary); }
+.tour-actions { display: flex; gap: 8px; }

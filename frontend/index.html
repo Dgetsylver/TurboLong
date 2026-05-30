@@ -51,10 +51,14 @@
         <button class="nav-btn" id="proto-swap">Swap</button>
       </div>
       <div class="top-nav-right" id="wallet-area">
+        <!-- HF header badge — visible when user has an open position -->
+        <span id="hf-header-badge" class="hf-header-badge hidden" title="Health Factor" aria-label="Health Factor"></span>
+
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="replay-tour-btn" class="settings-dropdown-item">Replay Tour</button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -801,6 +805,26 @@
 
   <!-- Tooltip popover -->
   <div id="tooltip-popover" class="tooltip-popover" role="tooltip"></div>
+
+  <!-- Guided tour overlay -->
+  <div id="tour-overlay" class="tour-overlay hidden" role="dialog" aria-modal="true" aria-label="Guided tour">
+    <div id="tour-backdrop" class="tour-backdrop"></div>
+    <div id="tour-card" class="tour-card">
+      <div class="tour-header">
+        <span id="tour-step-label" class="tour-step-label"></span>
+        <button id="tour-skip-btn" class="tour-skip-btn" aria-label="Skip tour">Skip tour</button>
+      </div>
+      <h3 id="tour-title" class="tour-title"></h3>
+      <p id="tour-body" class="tour-body"></p>
+      <div class="tour-footer">
+        <div class="tour-dots" id="tour-dots"></div>
+        <div class="tour-actions">
+          <button id="tour-prev-btn" class="btn btn-ghost btn-sm">Back</button>
+          <button id="tour-next-btn" class="btn btn-primary btn-sm">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="/src/main.ts"></script>
 </body>
