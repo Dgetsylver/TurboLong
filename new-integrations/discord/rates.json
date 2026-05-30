@@ -1,0 +1,23 @@
+[
+  {
+    "pool": "Etherfuse",
+    "asset": "USDC",
+    "netApy": "8.6%",
+    "utilization": "93%",
+    "risk": "High"
+  },
+  {
+    "pool": "Fixed",
+    "asset": "USDC",
+    "netApy": "7.1%",
+    "utilization": "78%",
+    "risk": "Medium"
+  },
+  {
+    "pool": "YieldBlox",
+    "asset": "USDC",
+    "netApy": "6.5%",
+    "utilization": "81%",
+    "risk": "Medium"
+  }
+]
