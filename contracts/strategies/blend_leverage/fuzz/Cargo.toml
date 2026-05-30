@@ -1,0 +1,27 @@
+[package]
+name = "blend_leverage_fuzz"
+version = "0.0.1"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.blend_leverage_strategy]
+path = ".."
+features = []
+
+# Disable default features to avoid soroban-sdk's wasm target requirement
+[profile.release]
+opt-level = 3
+debug = false
+overflow-checks = true
+
+[[bin]]
+name = "fuzz_leverage"
+path = "fuzz_targets/fuzz_leverage.rs"
+test = false
+doc = false

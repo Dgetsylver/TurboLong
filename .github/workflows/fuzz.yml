@@ -1,0 +1,47 @@
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "contracts/strategies/blend_leverage/src/leverage.rs"
+      - "contracts/strategies/blend_leverage/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Nightly at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Fuzz duration in seconds"
+        default: "300"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Short fuzz (PR / manual)
+        if: github.event_name != 'schedule'
+        run: |
+          SECS="${{ github.event.inputs.duration || '30' }}"
+          cargo fuzz run fuzz_leverage -- -max_total_time="$SECS" -max_len=25
+        working-directory: contracts/strategies/blend_leverage
+
+      - name: Nightly fuzz (longer)
+        if: github.event_name == 'schedule'
+        run: cargo fuzz run fuzz_leverage -- -max_total_time=600 -max_len=25
+        working-directory: contracts/strategies/blend_leverage
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: contracts/strategies/blend_leverage/fuzz/artifacts/fuzz_leverage/
+          if-no-files-found: ignore

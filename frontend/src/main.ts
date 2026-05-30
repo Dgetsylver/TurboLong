@@ -300,8 +300,48 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()
 
 // ── Disclaimer ───────────────────────────────────────────────────────────
 
+/** Trap focus inside `container` while it is visible. Returns a cleanup fn. */
+function trapFocus(container: HTMLElement): () => void {
+  const focusable = 'a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])';
+  function getFocusable() { return Array.from(container.querySelectorAll<HTMLElement>(focusable)); }
+  function onKeyDown(e: KeyboardEvent) {
+    if (e.key !== "Tab") return;
+    const els = getFocusable();
+    if (!els.length) return;
+    const first = els[0], last = els[els.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  }
+  container.addEventListener("keydown", onKeyDown);
+  // Move focus into the modal
+  const firstFocusable = getFocusable()[0];
+  firstFocusable?.focus();
+  return () => container.removeEventListener("keydown", onKeyDown);
+}
+
+const disclaimerOverlay = document.getElementById("disclaimer-overlay")!;
+let _disclaimerCleanup: (() => void) | null = null;
+
+function openDisclaimer() {
+  disclaimerOverlay.classList.remove("hidden");
+  disclaimerOverlay.removeAttribute("aria-hidden");
+  _disclaimerCleanup = trapFocus(disclaimerOverlay.querySelector(".disclaimer-modal") as HTMLElement);
+}
+
+function closeDisclaimer() {
+  disclaimerOverlay.classList.add("hidden");
+  disclaimerOverlay.setAttribute("aria-hidden", "true");
+  _disclaimerCleanup?.();
+  _disclaimerCleanup = null;
+}
+
 if (!localStorage.getItem("disclaimerAccepted")) {
-  document.getElementById("disclaimer-overlay")!.classList.remove("hidden");
+  openDisclaimer();
+} else {
+  disclaimerOverlay.setAttribute("aria-hidden", "true");
 }
 document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) => {
   (document.getElementById("disclaimer-accept") as HTMLButtonElement).disabled =
@@ -309,7 +349,7 @@ document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) =
 });
 document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
   localStorage.setItem("disclaimerAccepted", "1");
-  document.getElementById("disclaimer-overlay")!.classList.add("hidden");
+  closeDisclaimer();
 });
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
@@ -1822,9 +1862,17 @@ function switchView(view: AppView) {
 
 // ── Mobile sidebar drawer (#5) ───────────────────────────────────────────
 
+let _sidebarCleanup: (() => void) | null = null;
+
 function closeDrawer() {
-  document.querySelector(".sidebar")!.classList.remove("open");
+  const sidebar = document.querySelector(".sidebar") as HTMLElement;
+  sidebar.classList.remove("open");
+  sidebar.setAttribute("aria-hidden", "true");
   $("sidebar-backdrop").classList.add("hidden");
+  $("hamburger-btn").setAttribute("aria-expanded", "false");
+  _sidebarCleanup?.();
+  _sidebarCleanup = null;
+  ($("hamburger-btn") as HTMLElement).focus();
 }
 
 // ── Swap assets ──────────────────────────────────────────────────────────
@@ -2068,10 +2116,20 @@ document.addEventListener("click", () => {
 
 // Mobile hamburger (#5)
 $("hamburger-btn").addEventListener("click", () => {
-  document.querySelector(".sidebar")!.classList.add("open");
+  const sidebar = document.querySelector(".sidebar") as HTMLElement;
+  sidebar.classList.add("open");
+  sidebar.removeAttribute("aria-hidden");
   $("sidebar-backdrop").classList.remove("hidden");
+  $("hamburger-btn").setAttribute("aria-expanded", "true");
+  _sidebarCleanup = trapFocus(sidebar);
 });
 $("sidebar-backdrop").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const sidebar = document.querySelector(".sidebar") as HTMLElement;
+    if (sidebar.classList.contains("open")) closeDrawer();
+  }
+});
 
 // Mobile card tabs (#12) — note: order is swapped in new layout (action=left=0, position=right=1)
 document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => {

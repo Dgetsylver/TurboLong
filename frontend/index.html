@@ -11,6 +11,8 @@
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
+  <a href="#main-content" class="skip-to-content">Skip to main content</a>
+
   <!-- Disclaimer modal -->
   <div id="disclaimer-overlay" class="disclaimer-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
     <div class="disclaimer-modal">
@@ -70,7 +72,7 @@
     </nav>
 
     <!-- Legacy sidebar for mobile drawer -->
-    <aside class="sidebar">
+    <aside class="sidebar" role="dialog" aria-modal="true" aria-label="Navigation menu" aria-hidden="true">
       <div class="sidebar-top">
         <div class="logo">
           <img src="logo.svg" alt="Turbolong" class="logo-icon-img" />
@@ -138,7 +140,7 @@
         </div>
       </div>
 
-      <main>
+      <main id="main-content">
 
         <!-- Landing page (connect prompt) -->
         <div id="connect-prompt" class="connect-prompt">
@@ -391,7 +393,7 @@
               </div>
 
               <div class="form-group">
-                <label id="leverage-label">Leverage <span class="tooltip" data-tip="Multiplier on your deposit. Higher leverage amplifies both yield and liquidation risk.">?</span></label>
+                <label id="leverage-label" for="leverage-slider">Leverage <span class="tooltip" data-tip="Multiplier on your deposit. Higher leverage amplifies both yield and liquidation risk.">?</span></label>
                 <div class="slider-row">
                   <input type="range" id="leverage-slider" min="1.1" max="12.9" step="0.1" value="2.0" class="slider" />
                   <input type="number" id="leverage-input" class="input mono leverage-num-input" min="1.1" max="12.9" step="0.1" value="2.0" />

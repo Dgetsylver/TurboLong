@@ -1,0 +1,177 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`projectRates snapshots > CETES util=60% 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 8.4,
+  "interestSupplyApr": 4.032,
+  "netBorrowCost": 8.4,
+  "netSupplyApr": 4.032,
+}
+`;
+
+exports[`projectRates snapshots > CETES util=74.9% (just below kink1) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 9.989339999999999,
+  "interestSupplyApr": 5.98561,
+  "netBorrowCost": 9.989339999999999,
+  "netSupplyApr": 5.98561,
+}
+`;
+
+exports[`projectRates snapshots > CETES util=75.1% (just above kink1) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 10.25,
+  "interestSupplyApr": 6.1582,
+  "netBorrowCost": 10.25,
+  "netSupplyApr": 6.1582,
+}
+`;
+
+exports[`projectRates snapshots > deposit crosses kink1 (75%→82%) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 4.6591000000000005,
+  "interestSupplyApr": 2.77851,
+  "netBorrowCost": 4.6591000000000005,
+  "netSupplyApr": 2.77851,
+}
+`;
+
+exports[`projectRates snapshots > deposit crosses kink2 (93%→97%) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 38.01587,
+  "interestSupplyApr": 28.095530000000004,
+  "netBorrowCost": 38.01587,
+  "netSupplyApr": 28.095530000000004,
+}
+`;
+
+exports[`projectRates snapshots > util=0% no position 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 0,
+  "interestSupplyApr": 0,
+  "netBorrowCost": 0,
+  "netSupplyApr": 0,
+}
+`;
+
+exports[`projectRates snapshots > util=50% with BLND emissions 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 3.125,
+  "interestSupplyApr": 1.25,
+  "netBorrowCost": 3.125,
+  "netSupplyApr": 1.25,
+}
+`;
+
+exports[`projectRates snapshots > util=79.9% (just below kink1) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 4.99375,
+  "interestSupplyApr": 3.1919999999999997,
+  "netBorrowCost": 4.99375,
+  "netSupplyApr": 3.1919999999999997,
+}
+`;
+
+exports[`projectRates snapshots > util=80% (at kink1) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 5,
+  "interestSupplyApr": 3.2,
+  "netBorrowCost": 5,
+  "netSupplyApr": 3.2,
+}
+`;
+
+exports[`projectRates snapshots > util=80% irMod=1.2 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 6,
+  "interestSupplyApr": 3.84,
+  "netBorrowCost": 6,
+  "netSupplyApr": 3.84,
+}
+`;
+
+exports[`projectRates snapshots > util=80.1% (just above kink1) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 5.2666699999999995,
+  "interestSupplyApr": 3.37488,
+  "netBorrowCost": 5.2666699999999995,
+  "netSupplyApr": 3.37488,
+}
+`;
+
+exports[`projectRates snapshots > util=87.5% (mid kink1-kink2) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 25,
+  "interestSupplyApr": 17.5,
+  "netBorrowCost": 25,
+  "netSupplyApr": 17.5,
+}
+`;
+
+exports[`projectRates snapshots > util=94.9% (just below kink2) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 44.73334,
+  "interestSupplyApr": 33.96155,
+  "netBorrowCost": 44.73334,
+  "netSupplyApr": 33.96155,
+}
+`;
+
+exports[`projectRates snapshots > util=95% (at kink2) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 45,
+  "interestSupplyApr": 34.2,
+  "netBorrowCost": 45,
+  "netSupplyApr": 34.2,
+}
+`;
+
+exports[`projectRates snapshots > util=95.1% (just above kink2) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 48,
+  "interestSupplyApr": 36.5184,
+  "netBorrowCost": 48,
+  "netSupplyApr": 36.5184,
+}
+`;
+
+exports[`projectRates snapshots > util=99% (near full) 1`] = `
+{
+  "blndBorrowApr": 0,
+  "blndSupplyApr": 0,
+  "interestBorrowApr": 165,
+  "interestSupplyApr": 130.68,
+  "netBorrowCost": 165,
+  "netSupplyApr": 130.68,
+}
+`;

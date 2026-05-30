@@ -23,6 +23,6 @@ jobs:
       - name: Build rate_calc Rust binary
         run: cargo build --bin rate_calc
 
-      - name: Run Parity Tests
+      - name: Run Parity + Snapshot Tests
         working-directory: ./frontend
         run: npm run test
