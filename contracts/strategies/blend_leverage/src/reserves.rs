@@ -173,6 +173,47 @@ pub fn withdraw(
     Ok((remaining, b_tokens_to_remove, d_tokens_to_remove, reserves))
 }
 
+/// Account for a full withdrawal due to strategy migration.
+/// Burns all user shares and returns their proportional b/d tokens.
+pub fn migrate_withdraw(
+    e: &Env,
+    from: &Address,
+    reserves: &LeverageReserves,
+) -> Result<(i128, i128, LeverageReserves), StrategyError> {
+    let mut reserves = reserves.clone();
+
+    let vault_shares = storage::get_vault_shares(e, from);
+    if vault_shares <= 0 {
+        return Err(StrategyError::InsufficientBalance);
+    }
+
+    let b_tokens_to_remove = vault_shares
+        .fixed_mul_floor(reserves.total_b_tokens, reserves.total_shares)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let d_tokens_to_remove = vault_shares
+        .fixed_mul_floor(reserves.total_d_tokens, reserves.total_shares)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    reserves.total_shares = reserves
+        .total_shares
+        .checked_sub(vault_shares)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    reserves.total_b_tokens = reserves
+        .total_b_tokens
+        .checked_sub(b_tokens_to_remove)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    reserves.total_d_tokens = reserves
+        .total_d_tokens
+        .checked_sub(d_tokens_to_remove)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    storage::set_vault_shares(e, from, 0);
+    storage::set_strategy_reserves(e, reserves.clone());
+
+    Ok((b_tokens_to_remove, d_tokens_to_remove, reserves))
+}
+
+
 // ── Harvest accounting ───────────────────────────────────────────────────────
 
 /// Account for harvested rewards that have been re-leveraged.

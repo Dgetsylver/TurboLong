@@ -55,6 +55,10 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <div class="settings-dropdown-item settings-hf-floor">
+            <label for="hf-floor-input">Safe Max HF floor</label>
+            <input type="number" id="hf-floor-input" class="input mono" min="1.01" max="3" step="0.01" value="1.2" style="width:5rem" />
+          </div>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -272,7 +276,18 @@
           </div>
 
           <!-- Portfolio summary -->
-          <div id="portfolio-summary" class="portfolio-summary hidden"></div>
+          <div id="portfolio-summary-wrap" class="hidden">
+            <div class="portfolio-summary-header">
+              <div class="portfolio-sort-btns">
+                <button class="pos-sort-btn active" data-col="asset">Asset <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="leverage">Lev <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="hf">HF <span class="sort-arrow">↕</span></button>
+                <button class="pos-sort-btn" data-col="pnl">P&amp;L <span class="sort-arrow">↕</span></button>
+              </div>
+              <button id="pos-view-toggle" class="btn btn-ghost btn-sm" data-tip="Toggle compact / expanded view">&#9783;</button>
+            </div>
+            <div id="portfolio-summary" class="portfolio-summary"></div>
+          </div>
 
           <!-- Pool stats (visible by default) -->
           <div id="stats-collapsible" class="stats-collapsible">
@@ -396,6 +411,7 @@
                   <input type="range" id="leverage-slider" min="1.1" max="12.9" step="0.1" value="2.0" class="slider" />
                   <input type="number" id="leverage-input" class="input mono leverage-num-input" min="1.1" max="12.9" step="0.1" value="2.0" />
                   <span class="slider-value-x mono">&times;</span>
+                  <button id="safe-max-btn" class="btn btn-ghost btn-sm" data-tip="Set leverage to the highest value where projected HF ≥ your configured floor">Safe Max</button>
                 </div>
                 <div class="slider-zones" id="slider-zones">
                   <span class="slider-zone zone-conservative" data-zone="conservative">Conservative</span>

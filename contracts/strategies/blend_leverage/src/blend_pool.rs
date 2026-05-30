@@ -157,73 +157,73 @@ pub fn submit_unwind(
 
     let pre_balance = token_client.balance(&strategy);
 
-    // Build atomic unwind: [withdraw, repay] × N steps + [withdraw equity].
+    // Build atomic unwind: [repay, withdraw] × N steps + [withdraw equity].
+    // Repay first so HF improves before the collateral withdrawal is checked.
     // Split d_tokens_to_remove evenly across target_loops steps.
-    // Each step withdraws and repays the same amount, maintaining HF.
     // The final withdraw extracts the equity (b - d difference).
     let mut requests: Vec<Request> = Vec::new(e);
     let mut total_repay = 0i128;
 
     let n_steps = config.target_loops.max(1);
-    let repay_per_step = d_tokens_to_remove / n_steps as i128;
 
-    // Check if this is a full close (removing all debt)
-    let pool_client_inner = BlendPoolClient::new(e, &config.pool);
-    let cur_positions = pool_client_inner.get_positions(&strategy);
-    let total_d = cur_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
-    let is_full_close = d_tokens_to_remove >= total_d;
+    // i64::MAX is the full-close sentinel: sweep all debt and collateral in one step.
+    // This avoids per-step HF failures caused by interest accrual between accounting
+    // snapshots and the actual pool state at unwind time.
+    let is_full_close = d_tokens_to_remove >= i64::MAX as i128;
 
-    for i in 0..n_steps {
-        let is_last = i == n_steps - 1;
-
-        // For repay: only use i64::MAX on full close's last step (cleans dust).
-        // For partial unwinds, use exact amounts so the pool doesn't repay all debt.
-        let repay_amount = if is_last && is_full_close {
-            i64::MAX as i128
-        } else if is_last {
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
-        } else {
-            repay_per_step
-        };
-
-        // Withdraw same amount as repay in each pair — this frees collateral to cover repayment.
-        // The equity portion (b_tokens - d_tokens) is withdrawn separately at the end.
-        let withdraw_amount = if is_last && is_full_close {
-            // For full close, withdraw same as the repay dust-cleaning amount
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
-        } else if is_last {
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
-        } else {
-            repay_per_step
-        };
-
+    // For a full close, use a single repay+withdraw sweep to avoid per-step HF
+    // failures caused by interest accrual since the last accounting update.
+    if is_full_close {
         requests.push_back(Request {
             address: config.asset.clone(),
-            amount: withdraw_amount,
-            request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-        });
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount: repay_amount,
+            amount: i64::MAX as i128,
             request_type: REQUEST_TYPE_REPAY,
         });
-        total_repay += repay_amount;
-    }
-
-    // Final: withdraw equity portion (collateral minus debt that was removed)
-    let equity_withdraw = b_tokens_to_remove
-        .checked_sub(d_tokens_to_remove)
-        .unwrap_or(0);
-
-    if equity_withdraw > 0 {
         requests.push_back(Request {
             address: config.asset.clone(),
-            amount: equity_withdraw,
+            amount: i64::MAX as i128,
             request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
         });
+        total_repay = i64::MAX as i128;
+    } else {
+        let repay_per_step = d_tokens_to_remove / n_steps as i128;
+
+        for i in 0..n_steps {
+            let is_last = i == n_steps - 1;
+
+            let repay_amount = if is_last {
+                d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
+            } else {
+                repay_per_step
+            };
+
+            let withdraw_amount = repay_amount;
+
+            // Repay first (improves HF), then withdraw collateral.
+            requests.push_back(Request {
+                address: config.asset.clone(),
+                amount: repay_amount,
+                request_type: REQUEST_TYPE_REPAY,
+            });
+            requests.push_back(Request {
+                address: config.asset.clone(),
+                amount: withdraw_amount,
+                request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+            });
+            total_repay += repay_amount;
+        }
+
+        // Final: withdraw equity portion (collateral minus debt removed).
+        let equity_withdraw = b_tokens_to_remove
+            .checked_sub(d_tokens_to_remove)
+            .unwrap_or(0);
+        if equity_withdraw > 0 {
+            requests.push_back(Request {
+                address: config.asset.clone(),
+                amount: equity_withdraw,
+                request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+            });
+        }
     }
 
     // Approve pool to spend total repay amount via allowance
@@ -401,6 +401,49 @@ pub fn submit_deleverage(
         pre_d.checked_sub(new_d).unwrap_or(0),
     ))
 }
+
+// ── Unwind to address (Migration) ────────────────────────────────────────────
+
+/// Unwind a proportional position and transfer the resulting equity to `to`.
+/// Used by migrate(): V1 unwinds the user's share → equity goes to V2 → V2 re-leverages.
+/// Returns the equity amount transferred.
+pub fn unwind_to(
+    e: &Env,
+    b_tokens_to_remove: i128,
+    d_tokens_to_remove: i128,
+    to: &Address,
+    config: &Config,
+) -> Result<i128, StrategyError> {
+    let token_client = TokenClient::new(e, &config.asset);
+    let strategy = e.current_contract_address();
+    let pre_balance = token_client.balance(&strategy);
+
+    // Unwind to self first so we can measure the exact equity received
+    submit_unwind(e, b_tokens_to_remove, d_tokens_to_remove, &strategy, config)?;
+
+    let post_balance = token_client.balance(&strategy);
+    let equity = post_balance
+        .checked_sub(pre_balance)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    if equity > 0 && to != &strategy {
+        e.authorize_as_current_contract(vec![
+            e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: config.asset.clone(),
+                    fn_name: Symbol::new(e, "transfer"),
+                    args: (strategy.clone(), to.clone(), equity).into_val(e),
+                },
+                sub_invocations: vec![e],
+            }),
+        ]);
+        token_client.transfer(&strategy, to, &equity);
+    }
+
+    Ok(equity)
+}
+
 
 // ── Claim BLND emissions ─────────────────────────────────────────────────────
 

@@ -352,10 +352,39 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 /* ── Portfolio summary ───────────────────────────────────────────────────── */
 
+.portfolio-summary-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.portfolio-sort-btns { display: flex; gap: 4px; }
+.pos-sort-btn {
+  padding: 2px 8px; font-size: 11px; font-weight: 600; border-radius: var(--r);
+  background: transparent; border: 1px solid var(--border); color: var(--text-2);
+  cursor: pointer; font-family: var(--sans); transition: all .15s;
+}
+.pos-sort-btn:hover { border-color: var(--border-h); color: var(--text); }
+.pos-sort-btn.active { border-color: var(--primary); color: var(--primary); }
+.sort-arrow { font-size: 10px; }
+
 .portfolio-summary {
   display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 14px;
   scrollbar-width: thin;
 }
+.portfolio-summary.portfolio-summary-compact { display: block; }
+
+/* Compact table */
+.pos-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px; }
+.pos-table th {
+  text-align: left; padding: 4px 8px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .4px; color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+}
+.pos-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.pos-table-row { cursor: pointer; transition: background .12s; }
+.pos-table-row:hover { background: var(--surface); }
+.pos-table-row.active { background: var(--tab-active-bg); }
+.fw600 { font-weight: 700; }
+
 .portfolio-card {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-radius: var(--r);
