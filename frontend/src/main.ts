@@ -2548,12 +2548,22 @@ async function refreshVaultView() {
     // Net APY (stats.netApy is actually APR — convert for display)
     const apyEl = $("vault-apy");
     if (stats.netApy !== null) {
-      const vaultApy = aprToApy(stats.netApy);
-      apyEl.textContent = (vaultApy >= 0 ? "+" : "") + vaultApy.toFixed(2) + "%";
-      apyEl.className = "stat-value mono " + (vaultApy > 0 ? "hf-ok" : "hf-bad");
+      const baseApy = aprToApy(stats.netApy);
+      const harvestApy = stats.harvestApy ? stats.harvestApy * 100 : 0;
+      const totalApy = baseApy + harvestApy;
+
+      apyEl.textContent = (totalApy >= 0 ? "+" : "") + totalApy.toFixed(2) + "%";
+      apyEl.className = "stat-value mono " + (totalApy > 0 ? "hf-ok" : "hf-bad");
+
       const vaultTip = $("vault-apy-tip");
-      if (vaultTip) vaultTip.setAttribute("data-tip",
-        `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(stats.netApy, 2)}%`);
+      if (vaultTip) {
+        let tip = `Base APY: ${baseApy.toFixed(2)}% (from interest/emissions)`;
+        if (harvestApy > 0) {
+          tip += `\nHarvest APY: +${harvestApy.toFixed(2)}% (30-day realized BLND swaps)`;
+        }
+        tip += `\nTotal: ${totalApy.toFixed(2)}%`;
+        vaultTip.setAttribute("data-tip", tip);
+      }
     } else {
       apyEl.textContent = "--";
       apyEl.className = "stat-value mono";
