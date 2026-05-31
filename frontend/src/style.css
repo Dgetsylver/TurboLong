@@ -1210,3 +1210,128 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   .skeleton { animation: none; background: var(--metric-bg); }
 }
+
+/* ── Bulk Actions & Checkboxes ───────────────────────────────────────────── */
+
+.position-select-cell {
+  width: 40px;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.overview-table th.position-select-cell {
+  cursor: default;
+}
+
+.position-select-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.bulk-actions-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 240;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 24px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  animation: slide-up .25s ease;
+  color: var(--text);
+  backdrop-filter: blur(8px);
+}
+
+.bulk-actions-info {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+#bulk-selected-count {
+  color: var(--primary);
+  font-family: var(--mono);
+}
+
+.bulk-actions-buttons {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.bulk-adjust-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.bulk-confirm-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 8px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bulk-confirm-item:last-child {
+  border-bottom: none;
+}
+
+.bulk-confirm-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.bulk-confirm-asset {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.bulk-confirm-pool {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.bulk-confirm-action {
+  font-family: var(--mono);
+  font-weight: 600;
+  text-align: right;
+}
+
+@media (max-width: 600px) {
+  .bulk-actions-bar {
+    width: calc(100% - 24px);
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    bottom: 12px;
+  }
+  .bulk-actions-buttons {
+    width: 100%;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bulk-actions-buttons button {
+    width: 100%;
+  }
+  .bulk-adjust-group {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
