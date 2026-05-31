@@ -55,6 +55,7 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="shortcuts-help-btn" class="settings-dropdown-item">Keyboard Shortcuts <span class="settings-badge">?</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -306,6 +307,16 @@
                 </div>
               </div>
 
+              <div class="blnd-price-assumption">
+                <label for="blnd-price-input">BLND price assumption</label>
+                <div class="blnd-price-control">
+                  <span class="blnd-price-prefix">$</span>
+                  <input type="number" id="blnd-price-input" class="input mono" min="0" step="0.0001" placeholder="Market" />
+                  <button id="blnd-price-reset" class="btn btn-ghost btn-sm" type="button">Reset</button>
+                </div>
+                <span class="blnd-price-status" id="blnd-price-status">Using market price</span>
+              </div>
+
               <!-- APR breakdown -->
               <div class="apr-grid">
                 <div class="apr-card">
@@ -338,6 +349,18 @@
                     <span class="apr-val" id="borrow-net-cost">—</span>
                   </div>
                 </div>
+              </div>
+              <!-- APY history chart (B4) -->
+              <div class="hist-chart-wrap">
+                <div class="hist-chart-header">
+                  <span class="hist-chart-title">Net Supply APY history</span>
+                  <div class="hist-win-btns" id="hist-win-btns">
+                    <button class="hist-win-btn" data-win="7d">7d</button>
+                    <button class="hist-win-btn active" data-win="30d">30d</button>
+                    <button class="hist-win-btn" data-win="1y">1y</button>
+                  </div>
+                </div>
+                <div id="hist-chart" class="hist-chart"></div>
               </div>
             </div><!-- stats-body -->
           </div><!-- stats-collapsible -->
@@ -423,11 +446,31 @@
                     <span>Borrow headroom</span><strong id="prev-headroom" class="mono">—</strong>
                   </div>
                   <div class="preview-row preview-net-apr">
-                    <span>Est. net APY <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
+                    <span>Current pool APY</span><strong id="prev-pool-apy" class="prev-net-apr">—</strong>
+                  </div>
+                  <div class="preview-row preview-net-apr">
+                    <span>Projected APY after deposit <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
                   <div class="preview-row">
                     <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
                   </div>
+                </div>
+                <!-- Return calculator (#36) -->
+                <div class="return-calc">
+                  <div class="form-group" style="margin-bottom:6px">
+                    <label>Return calculator <span class="tooltip" data-tip="Enter a USD deposit amount to see estimated returns at the current leverage and net APY. No wallet needed.">?</span></label>
+                    <div style="position:relative">
+                      <span class="input-suffix" style="right:auto;left:12px">$</span>
+                      <input type="number" id="calc-deposit-usd" class="input mono" placeholder="1000" min="0" step="any" style="padding-left:26px" />
+                    </div>
+                  </div>
+                  <div class="preview-row">
+                    <span>Weekly return</span><strong id="calc-weekly">—</strong>
+                  </div>
+                  <div class="preview-row">
+                    <span>Monthly return</span><strong id="calc-monthly">—</strong>
+                  </div>
+                  <p class="disclaimer">Simple APY &divide; 52 per week, &divide; 12 per month &mdash; not compounded.</p>
                 </div>
                 <p class="hf-warning hidden" id="hf-warning">&#9888; HF too low — liquidation risk. Reduce leverage.</p>
                 <p class="hf-warning hidden" id="liquidity-warning"></p>
@@ -435,6 +478,7 @@
               <button id="open-btn" class="btn btn-primary btn-lg">Open Position</button>
               <button id="adjust-btn" class="btn btn-primary btn-lg hidden">Adjust Leverage</button>
               <button id="add-funds-btn" class="btn btn-primary btn-lg hidden">Add Funds</button>
+              <p class="fee-hint mono" id="open-fee-estimate" aria-live="polite">Est. network fee: --</p>
               <p class="disclaimer" id="open-disclaimer">Two transactions: (1) token approve, (2) <code>submit_with_allowance</code>.</p>
               <p class="disclaimer hidden" id="adjust-disclaimer">Adjusts leverage by borrowing more (increase) or withdrawing &amp; repaying (decrease).</p>
               <p class="disclaimer hidden" id="add-funds-disclaimer">Deposits additional funds into your existing position at the selected leverage.</p>
@@ -530,10 +574,16 @@
                   <button id="repay-btn" class="btn btn-secondary" disabled>Repay Debt</button>
                   <button id="close-btn" class="btn btn-danger" disabled>Close Position</button>
                 </div>
+                <p class="fee-hint mono hidden" id="close-fee-estimate" aria-live="polite">Est. network fee: --</p>
 
                 <details class="tx-history" id="tx-history" style="display:none">
                   <summary class="tx-history-toggle">Recent Transactions</summary>
                   <div id="tx-history-list" class="tx-history-list"></div>
+                </details>
+
+                <details class="pos-timeline" id="position-timeline" style="display:none">
+                  <summary class="tx-history-toggle">Position History</summary>
+                  <div id="position-timeline-list" class="pos-timeline-list"></div>
                 </details>
               </div>
             </section>
@@ -682,6 +732,7 @@
               <div class="vault-rebalance-row">
                 <button id="vault-rebalance-btn" class="btn btn-ghost" disabled>Rebalance</button>
                 <span class="vault-rebalance-hint" id="vault-rebalance-hint">HF is healthy</span>
+                <span class="fee-hint mono" id="vault-rebalance-fee-estimate" aria-live="polite">Max network fee: --</span>
               </div>
             </div>
 
@@ -787,8 +838,27 @@
                 <option value="10">10x</option>
               </select>
             </div>
-            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe</button>
-            <p class="alert-hint">We never store your wallet address.</p>
+            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe with email</button>
+            <p class="alert-or">or</p>
+            <button id="alert-push-btn" class="btn btn-secondary btn-lg">Enable push notifications</button>
+            <p class="alert-hint">We never store your wallet address. Push works on mobile without an app.</p>
+          </div>
+        </div>
+
+        <!-- Keyboard Shortcuts modal (A12) -->
+        <div id="shortcut-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+          <div class="alert-modal">
+            <button id="shortcut-modal-close" class="alert-modal-close">&times;</button>
+            <h3>Keyboard Shortcuts</h3>
+            <table class="shortcut-table">
+              <tbody>
+                <tr><td><kbd>L</kbd></td><td>Focus leverage slider</td></tr>
+                <tr><td><kbd>C</kbd></td><td>Close selected position</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Dismiss modals &amp; dropdowns</td></tr>
+                <tr><td><kbd>?</kbd></td><td>Show this help</td></tr>
+              </tbody>
+            </table>
+            <p class="alert-hint">Shortcuts are disabled when a text field is focused.</p>
           </div>
         </div>
 

@@ -404,6 +404,23 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 /* ── APR grid ────────────────────────────────────────────────────────────── */
 
+.blnd-price-assumption {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 6px 12px;
+  margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface);
+}
+.blnd-price-assumption label {
+  font-size: 11px; color: var(--text-3); text-transform: uppercase;
+  letter-spacing: .5px; font-weight: 600;
+}
+.blnd-price-control { display: flex; align-items: center; gap: 6px; }
+.blnd-price-prefix { color: var(--text-3); font-family: var(--mono); font-size: 13px; }
+.blnd-price-control .input { width: 110px; height: 32px; padding: 0 8px; }
+.blnd-price-status {
+  grid-column: 1 / -1; font-size: 12px; color: var(--text-3);
+}
+
 .apr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .apr-card {
   background: var(--surface); border: 1px solid var(--border);
@@ -426,6 +443,29 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .apr-dim    { color: var(--text-2); }
 .apr-warn   { color: var(--warning); }
 .apr-bad    { color: var(--danger); }
+
+/* ── Rate-trend arrows (A10) ─────────────────────────────────────────────── */
+.rate-trend { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; font-family: var(--mono); margin-left: 5px; opacity: .85; }
+.rate-trend-label { color: var(--text-3); font-family: var(--sans); font-size: 10px; margin-right: 3px; }
+.rate-trend-up   { color: var(--success); }
+.rate-trend-down { color: var(--danger); }
+
+/* ── APY history chart (B4) ──────────────────────────────────────────────── */
+.hist-chart-wrap { margin-top: 10px; }
+.hist-chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.hist-chart-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--text-3); }
+.hist-win-btns { display: flex; gap: 3px; }
+.hist-win-btn { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-2); font-size: 11px; padding: 2px 7px; cursor: pointer; transition: background .15s, color .15s; }
+.hist-win-btn:hover { border-color: var(--primary); color: var(--primary); }
+.hist-win-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.hist-chart { min-height: 80px; }
+.hist-chart-svg { width: 100%; height: 80px; display: block; overflow: visible; }
+.hist-chart-line { fill: none; stroke: var(--primary); stroke-width: 1.5; stroke-linejoin: round; }
+.hist-chart-label { font-size: 9px; fill: var(--text-3); font-family: var(--mono); }
+.hist-cursor { fill: var(--primary); }
+.hist-tip-text { font-size: 10px; fill: var(--text); font-family: var(--mono); font-weight: 600; }
+.hist-hit { cursor: crosshair; }
+.hist-chart-empty { font-size: 12px; color: var(--text-3); padding: 16px 0; text-align: center; }
 
 /* ── Frozen banner ───────────────────────────────────────────────────────── */
 
@@ -554,6 +594,27 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .tx-history-status-ok { color: var(--success); }
 .tx-history-status-err { color: var(--danger); }
 
+/* ── Position event timeline (A25) ──────────────────────────────────────── */
+
+.pos-timeline { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.pos-timeline-list { max-height: 240px; overflow-y: auto; margin-top: 8px; }
+.pos-event-item {
+  display: grid;
+  grid-template-columns: 18px 70px 1fr auto auto;
+  align-items: center; gap: 6px;
+  padding: 6px 0; font-size: 12px; border-bottom: 1px solid var(--border);
+}
+.pos-event-item:last-child { border-bottom: none; }
+.pos-event-icon { font-size: 13px; text-align: center; }
+.pos-event-open    .pos-event-icon { color: var(--success); }
+.pos-event-close   .pos-event-icon { color: var(--danger); }
+.pos-event-rebalance .pos-event-icon { color: var(--primary); }
+.pos-event-harvest .pos-event-icon { color: var(--warning); }
+.pos-event-label { font-weight: 600; color: var(--text-2); }
+.pos-event-time { color: var(--text-3); font-family: var(--mono); font-size: 11px; cursor: help; }
+.pos-event-hf { color: var(--text-3); font-size: 11px; font-family: var(--mono); }
+.pos-event-link { color: var(--primary); font-size: 11px; font-family: var(--mono); white-space: nowrap; }
+
 /* ── Open form ───────────────────────────────────────────────────────────── */
 
 .form-group { margin-bottom: 16px; }
@@ -639,6 +700,9 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .preview-row strong { font-family: var(--mono); color: var(--text); font-weight: 600; }
 .preview-net-apr { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
 .prev-net-apr { font-size: 16px !important; font-weight: 700 !important; }
+
+.return-calc { margin-top: 12px; padding: 10px 14px; background: var(--metric-bg); border: 1px solid var(--border); border-radius: var(--r); }
+.return-calc .form-group { margin-bottom: 6px; }
 
 .hf-ok   { color: var(--success) !important; }
 .hf-warn { color: var(--warning) !important; }
@@ -973,6 +1037,12 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   border-radius: var(--r-xs); color: var(--text); font-family: var(--mono);
   cursor: pointer;
 }
+.alert-or {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 12px 0;
+}
 .alert-hint {
   font-size: 12px; color: var(--text-3); text-align: center;
   margin: 12px 0 0; line-height: 1.5;
@@ -1101,10 +1171,18 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .vault-tab.active { background: var(--tab-active-bg); color: var(--primary); border-color: var(--tab-active-border); }
 
 .vault-rebalance-row {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
   margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border);
 }
 .vault-rebalance-hint { font-size: 12px; }
+.fee-hint {
+  display: block;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.position-actions + .fee-hint { margin-top: 8px; }
+.vault-rebalance-row .fee-hint { margin-top: 0; }
 
 .vault-hf-bar-wrap { margin: 12px 0 20px; }
 .hf-bar {
@@ -1184,6 +1262,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 @media (max-width: 480px) {
   .stats-row { grid-template-columns: 1fr; }
+  .blnd-price-assumption { grid-template-columns: 1fr; }
+  .blnd-price-control .input { width: 100%; }
   .position-grid { grid-template-columns: 1fr; }
   .vault-pos-grid { grid-template-columns: 1fr; }
   .card { padding: 14px; }
@@ -1335,3 +1415,17 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   }
 }
 
+
+/* ── Keyboard shortcut table (A12) ─────────────────────────────────────────── */
+.shortcut-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+.shortcut-table td { padding: 0.4rem 0.6rem; }
+.shortcut-table td:first-child { width: 5rem; }
+kbd {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+}

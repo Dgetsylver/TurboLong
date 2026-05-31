@@ -12,6 +12,7 @@ import { Networks }          from "@creit-tech/stellar-wallets-kit/types";
 import { estimateSwap }      from "@stellar-broker/client";
 import {
   Asset,
+  BASE_FEE,
   Horizon,
   Operation,
   TransactionBuilder,
@@ -46,6 +47,10 @@ import {
   buildBulkAdjustXdr,
   hfForLeverage,
   maxLeverageFor,
+  getBlndPriceAssumption,
+  getDefaultBlndPrice,
+  setBlndPriceAssumption,
+  withBlndPriceAssumption,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -53,6 +58,9 @@ import {
   type AssetPosition,
   type UserPositions,
   projectRates,
+  fetchPositionEvents,
+  type PositionEvent,
+  type PositionEventKind,
 } from "./blend.ts";
 
 import {
@@ -342,6 +350,29 @@ const $ = (id: string) => document.getElementById(id)!;
 const fmt  = (n: number, d = 2) =>
   n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+const STROOPS_PER_XLM = 10_000_000n;
+const BLEND_SUBMIT_FEE_STROOPS = BigInt(BASE_FEE) * 10n;
+const VAULT_REBALANCE_FEE_STROOPS = 10_000_000n;
+
+function formatFeeXlm(stroops: bigint): string {
+  const whole = stroops / STROOPS_PER_XLM;
+  const fraction = (stroops % STROOPS_PER_XLM).toString().padStart(7, "0");
+  return `${whole}.${fraction} XLM`;
+}
+
+function setActionFeeEstimate(id: string, feePerTx: bigint, txCount: number, label = "Est. network fee") {
+  const el = $(id);
+  const total = feePerTx * BigInt(txCount);
+  el.textContent = `${label}: ${formatFeeXlm(total)} (${txCount} ${txCount === 1 ? "tx" : "txs"})`;
+}
+
+function refreshFeeEstimates() {
+  setActionFeeEstimate("open-fee-estimate", BLEND_SUBMIT_FEE_STROOPS, 2);
+  setActionFeeEstimate("close-fee-estimate", BLEND_SUBMIT_FEE_STROOPS, 1);
+  setActionFeeEstimate("vault-rebalance-fee-estimate", VAULT_REBALANCE_FEE_STROOPS, 1, "Max network fee");
+  $("open-fee-estimate").classList.toggle("hidden", actionMode !== "open");
+  $("close-fee-estimate").classList.toggle("hidden", !positions.byAsset.has(selectedAsset.id));
+}
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
@@ -455,6 +486,94 @@ function renderTxHistory() {
   }).join("");
 }
 
+// ── Position event timeline (A25) ─────────────────────────────────────────────
+
+const POS_EVENTS_MAX = 50;
+
+function posEventsKey(assetId: string, poolId: string) {
+  return `pos_events_${poolId}_${assetId}`;
+}
+
+function getPositionEvents(assetId: string, poolId: string): PositionEvent[] {
+  const raw = localStorage.getItem(posEventsKey(assetId, poolId));
+  return raw ? JSON.parse(raw) : [];
+}
+
+function savePositionEvents(assetId: string, poolId: string, events: PositionEvent[]) {
+  localStorage.setItem(posEventsKey(assetId, poolId), JSON.stringify(events.slice(0, POS_EVENTS_MAX)));
+}
+
+function recordPositionEvent(kind: PositionEventKind, hash: string, hf: number | null) {
+  const events = getPositionEvents(selectedAsset.id, selectedPool.id);
+  // Deduplicate by hash
+  if (events.some(e => e.hash === hash)) return;
+  events.unshift({ kind, hash, timestamp: Date.now(), hf });
+  savePositionEvents(selectedAsset.id, selectedPool.id, events);
+}
+
+function explorerTxUrl(hash: string): string {
+  const net = getActiveNetwork() === "testnet" ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${net}/tx/${hash}`;
+}
+
+const EVENT_LABELS: Record<PositionEventKind, string> = {
+  open:      "Open",
+  rebalance: "Rebalance",
+  harvest:   "Harvest",
+  close:     "Close",
+};
+const EVENT_ICONS: Record<PositionEventKind, string> = {
+  open:      "⊕",
+  rebalance: "⇄",
+  harvest:   "✦",
+  close:     "⊗",
+};
+
+function renderPositionTimeline() {
+  const wrap = document.getElementById("position-timeline");
+  if (!wrap) return;
+  const events = getPositionEvents(selectedAsset.id, selectedPool.id);
+  if (events.length === 0) {
+    wrap.style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
+  const list = document.getElementById("position-timeline-list")!;
+  list.innerHTML = events.map(ev => {
+    const d = new Date(ev.timestamp);
+    const localStr = d.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+    const utcStr   = d.toUTCString();
+    const hfStr    = ev.hf !== null ? ` · HF ${fmt(ev.hf, 3)}` : "";
+    const shortHash = ev.hash.slice(0, 8) + "…" + ev.hash.slice(-4);
+    return `<div class="pos-event-item pos-event-${ev.kind}">
+      <span class="pos-event-icon" aria-hidden="true">${EVENT_ICONS[ev.kind]}</span>
+      <span class="pos-event-label">${EVENT_LABELS[ev.kind]}</span>
+      <time class="pos-event-time" title="${utcStr}" datetime="${d.toISOString()}">${localStr}</time>
+      <span class="pos-event-hf">${hfStr}</span>
+      <a class="pos-event-link" href="${explorerTxUrl(ev.hash)}" target="_blank" rel="noopener">${shortHash}</a>
+    </div>`;
+  }).join("");
+}
+
+async function refreshTimelineFromChain() {
+  const events = await fetchPositionEvents(selectedPool, userAddress!, selectedAsset.id);
+  if (events.length === 0) return;
+  const stored = getPositionEvents(selectedAsset.id, selectedPool.id);
+  const storedHashes = new Set(stored.map(e => e.hash));
+  let changed = false;
+  for (const ev of events) {
+    if (!storedHashes.has(ev.hash)) {
+      stored.push(ev);
+      changed = true;
+    }
+  }
+  if (changed) {
+    stored.sort((a, b) => b.timestamp - a.timestamp);
+    savePositionEvents(selectedAsset.id, selectedPool.id, stored);
+    renderPositionTimeline();
+  }
+}
+
 // ── TX Stepper (#10) ─────────────────────────────────────────────────────────
 
 let _stepperTimer: ReturnType<typeof setTimeout> | null = null;
@@ -508,6 +627,82 @@ function getPnlEntry(assetId: string, poolId: string): { deposit: number; timest
 }
 function removePnlEntry(assetId: string, poolId: string) {
   localStorage.removeItem(`pnl_${poolId}_${assetId}`);
+}
+
+// ── Rate history (B3) ────────────────────────────────────────────────────────
+
+const RATE_HISTORY_KEY = "blendlev_rate_history";
+const RATE_HISTORY_MAX = 200; // keep up to 200 snapshots per key
+
+interface RateSnapshot { ts: number; val: number; }
+
+function _rateKey(poolId: string, assetId: string, field: string) {
+  return `${RATE_HISTORY_KEY}:${poolId}:${assetId}:${field}`;
+}
+
+function recordRateSnapshot(poolId: string, assetId: string, field: string, val: number) {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  const snaps: RateSnapshot[] = raw ? JSON.parse(raw) : [];
+  const now = Date.now();
+  // Deduplicate: skip if last snapshot is < 5 min old
+  if (snaps.length > 0 && now - snaps[snaps.length - 1].ts < 5 * 60_000) {
+    snaps[snaps.length - 1] = { ts: now, val }; // update in place
+  } else {
+    snaps.push({ ts: now, val });
+    if (snaps.length > RATE_HISTORY_MAX) snaps.splice(0, snaps.length - RATE_HISTORY_MAX);
+  }
+  localStorage.setItem(key, JSON.stringify(snaps));
+}
+
+function getRateAtWindow(poolId: string, assetId: string, field: string, windowMs: number): number | null {
+  const key = _rateKey(poolId, assetId, field);
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  const snaps: RateSnapshot[] = JSON.parse(raw);
+  const cutoff = Date.now() - windowMs;
+  // Find the oldest snapshot within the window (closest to windowMs ago)
+  const candidates = snaps.filter(s => s.ts <= cutoff);
+  if (candidates.length === 0) return null;
+  return candidates[candidates.length - 1].val;
+}
+
+/** Render a trend arrow element next to an APY value element. */
+function renderTrendArrow(
+  targetEl: HTMLElement,
+  current: number,
+  past24h: number | null,
+  past7d: number | null
+) {
+  // Remove any existing arrow
+  const existing = targetEl.parentElement?.querySelector(".rate-trend");
+  if (existing) existing.remove();
+
+  if (past24h === null && past7d === null) return;
+
+  const arrow = document.createElement("span");
+  arrow.className = "rate-trend";
+
+  const parts: string[] = [];
+  const tipParts: string[] = [];
+
+  for (const [label, past, ms] of [
+    ["24h", past24h, 24 * 3600_000],
+    ["7d",  past7d,  7 * 24 * 3600_000],
+  ] as [string, number | null, number][]) {
+    if (past === null) continue;
+    const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
+    const up = delta >= 0;
+    const sym = up ? "▲" : "▼";
+    const cls = up ? "rate-trend-up" : "rate-trend-down";
+    parts.push(`<span class="${cls}">${sym}${fmt(Math.abs(delta), 1)}%</span><span class="rate-trend-label">${label}</span>`);
+    tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
+  }
+
+  if (parts.length === 0) return;
+  arrow.innerHTML = parts.join(" ");
+  arrow.setAttribute("title", tipParts.join(" | "));
+  targetEl.insertAdjacentElement("afterend", arrow);
 }
 
 // ── Sign + submit ─────────────────────────────────────────────────────────────
@@ -667,6 +862,32 @@ function selectAsset(asset: AssetInfo) {
   if (userAddress) refreshTabData();
 }
 
+function refreshBlndPriceControl() {
+  const input = $("blnd-price-input") as HTMLInputElement;
+  const status = $("blnd-price-status");
+  const override = getBlndPriceAssumption();
+  const fallback = getDefaultBlndPrice();
+  const active = override ?? fallback ?? 0;
+
+  if (document.activeElement !== input) {
+    input.value = active > 0 ? active.toFixed(4) : "";
+  }
+
+  if (override !== null) {
+    status.textContent = `Using custom BLND price: $${fmt(override, 4)}`;
+  } else if (fallback !== null && fallback > 0) {
+    status.textContent = `Using market BLND price: $${fmt(fallback, 4)}`;
+  } else {
+    status.textContent = "Market BLND price unavailable";
+  }
+}
+
+function applyBlndPriceAssumption(price: number | null) {
+  const active = setBlndPriceAssumption(price) ?? getDefaultBlndPrice() ?? 0;
+  reserves = reserves.map(rs => withBlndPriceAssumption(rs, active));
+  renderSelectedAsset();
+}
+
 /** Fetch only balance for the current asset (BLND is pool-wide, fetched in loadAll). */
 async function refreshTabData() {
   if (!userAddress) return;
@@ -757,6 +978,101 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
   </svg>`;
 }
 
+// ── APY history chart (B4) ────────────────────────────────────────────────────
+
+let _histWin: "7d" | "30d" | "1y" = "30d";
+
+const HIST_WIN_MS: Record<string, number> = {
+  "7d":  7  * 24 * 3600_000,
+  "30d": 30 * 24 * 3600_000,
+  "1y":  365 * 24 * 3600_000,
+};
+
+function renderHistoryChart() {
+  const container = $("hist-chart");
+  const raw = localStorage.getItem(`blendlev_rate_history:${selectedPool.id}:${selectedAsset.id}:supply-net`);
+  const all: { ts: number; val: number }[] = raw ? JSON.parse(raw) : [];
+  const cutoff = Date.now() - HIST_WIN_MS[_histWin];
+  const snaps = all.filter(s => s.ts >= cutoff);
+
+  if (snaps.length < 2) {
+    container.innerHTML = `<div class="hist-chart-empty">Not enough history yet — check back after data accumulates.</div>`;
+    return;
+  }
+
+  const W = 400, H = 80, padL = 32, padR = 8, padT = 10, padB = 18;
+  const vals = snaps.map(s => s.val);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const rangeV = maxV - minV || 0.01;
+  const minTs = snaps[0].ts, maxTs = snaps[snaps.length - 1].ts;
+  const rangeTs = maxTs - minTs || 1;
+
+  const px = (ts: number) => padL + (ts - minTs) / rangeTs * (W - padL - padR);
+  const py = (v: number)  => padT + (1 - (v - minV) / rangeV) * (H - padT - padB);
+
+  const pts = snaps.map(s => `${px(s.ts).toFixed(1)},${py(s.val).toFixed(1)}`).join(" ");
+
+  // X-axis tick labels (3 ticks: start, mid, end)
+  const fmtDate = (ts: number) => {
+    const d = new Date(ts);
+    return _histWin === "1y"
+      ? d.toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+      : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+  const ticks = [minTs, (minTs + maxTs) / 2, maxTs];
+  const tickSvg = ticks.map(ts =>
+    `<text x="${px(ts).toFixed(1)}" y="${H - 2}" text-anchor="middle" class="hist-chart-label">${fmtDate(ts)}</text>`
+  ).join("");
+
+  // Y-axis labels
+  const yLabelSvg =
+    `<text x="${padL - 3}" y="${padT + 6}" text-anchor="end" class="hist-chart-label">${fmt(maxV, 1)}%</text>` +
+    `<text x="${padL - 3}" y="${H - padB + 4}" text-anchor="end" class="hist-chart-label">${fmt(minV, 1)}%</text>`;
+
+  // Invisible hit-area rects for tooltip
+  const segW = (W - padL - padR) / snaps.length;
+  const hitRects = snaps.map((s, i) => {
+    const cx = px(s.ts);
+    const cy = py(s.val);
+    const tip = `${fmtDate(s.ts)}: ${fmt(s.val, 2)}%`;
+    return `<rect x="${(cx - segW / 2).toFixed(1)}" y="${padT}" width="${segW.toFixed(1)}" height="${H - padT - padB}"
+      fill="transparent" class="hist-hit"
+      data-tip="${tip}" data-cx="${cx.toFixed(1)}" data-cy="${cy.toFixed(1)}"/>`;
+  }).join("");
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="hist-chart-svg" id="hist-chart-svg">
+      <polyline points="${pts}" class="hist-chart-line"/>
+      ${yLabelSvg}${tickSvg}${hitRects}
+      <circle id="hist-cursor" r="3.5" class="hist-cursor" style="display:none"/>
+      <text id="hist-tip-text" class="hist-tip-text" style="display:none"/>
+    </svg>`;
+
+  // Pointer tooltip
+  const svg = document.getElementById("hist-chart-svg")!;
+  svg.addEventListener("mouseleave", () => {
+    (document.getElementById("hist-cursor") as SVGCircleElement | null)?.setAttribute("style", "display:none");
+    (document.getElementById("hist-tip-text") as SVGTextElement | null)?.setAttribute("style", "display:none");
+  });
+  svg.querySelectorAll<SVGRectElement>(".hist-hit").forEach(rect => {
+    rect.addEventListener("mouseenter", () => {
+      const cx = rect.dataset.cx!, cy = rect.dataset.cy!, tip = rect.dataset.tip!;
+      const cursor = document.getElementById("hist-cursor") as SVGCircleElement | null;
+      const tipEl  = document.getElementById("hist-tip-text") as SVGTextElement | null;
+      if (!cursor || !tipEl) return;
+      cursor.setAttribute("cx", cx);
+      cursor.setAttribute("cy", cy);
+      cursor.setAttribute("style", "");
+      const tx = Math.min(Number(cx), W - padR - 60);
+      const ty = Number(cy) > padT + 20 ? Number(cy) - 8 : Number(cy) + 14;
+      tipEl.setAttribute("x", String(tx));
+      tipEl.setAttribute("y", String(ty));
+      tipEl.textContent = tip;
+      tipEl.setAttribute("style", "");
+    });
+  });
+}
+
 // ── Render reserve stats for selected asset ───────────────────────────────────
 
 function renderSelectedAsset() {
@@ -787,6 +1103,7 @@ function renderSelectedAsset() {
   utilBar.style.background = util > 0.90 ? "var(--danger)" : util > 0.75 ? "var(--warning)" : "var(--success)";
 
   $("stat-price").textContent      = rs.priceUsd > 0 ? `$${fmt(rs.priceUsd, 4)}` : "\u2014";
+  refreshBlndPriceControl();
 
   renderAprLine("supply-interest-apr", rs.interestSupplyApr, false);
   renderAprLine("supply-blnd-apr",     rs.blndSupplyApr,     false, true);
@@ -804,6 +1121,32 @@ function renderSelectedAsset() {
     `Approximate APY: interest compounds but BLND emissions don't. Actual net APR: ${fmt(rs.netBorrowCost, 2)}%`);
 
   // Don't auto-collapse — user controls visibility via the toggle
+
+  // Rate-trend arrows (A10 / B3) ─────────────────────────────────────────────
+  const supplyNetVal  = aprToApy(rs.interestSupplyApr) + rs.blndSupplyApr;
+  const borrowNetVal  = aprToApy(rs.interestBorrowApr) - rs.blndBorrowApr;
+  const W24 = 24 * 3600_000;
+  const W7D = 7 * 24 * 3600_000;
+
+  // Record current values
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "supply-net", supplyNetVal);
+  recordRateSnapshot(selectedPool.id, selectedAsset.id, "borrow-net", borrowNetVal);
+
+  // Render arrows on net rows
+  renderTrendArrow(
+    $("supply-net-apr"),
+    supplyNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W7D),
+  );
+  renderTrendArrow(
+    $("borrow-net-cost"),
+    borrowNetVal,
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
+    getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
+  );
+
+  renderHistoryChart();
 
   updatePreview();
   renderPosition();
@@ -1048,6 +1391,8 @@ function renderPosition() {
 
   // Compound row: show swap estimate if there's pending BLND
   updateCompoundEstimate();
+  // Position event timeline (A25)
+  renderPositionTimeline();
 }
 
 async function updateCompoundEstimate() {
@@ -1218,6 +1563,15 @@ function updatePreview() {
   }
 
   if (rs) {
+    // Current pool APY (zero delta = pre-loop snapshot)
+    const cur = projectRates(rs, 0, 0);
+    const curNetApr = cur.netSupplyApr * lev - cur.netBorrowCost * (lev - 1);
+    const curNetApy = aprToApy(curNetApr);
+    const poolApyEl = $("prev-pool-apy");
+    poolApyEl.textContent = `${fmt(curNetApy, 2)}% APY on equity`;
+    poolApyEl.className   = `prev-net-apr ${curNetApy > 0 ? "apr-ok" : "apr-bad"}`;
+
+    // Projected APY after deposit (accounts for utilization shift)
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
@@ -1225,7 +1579,7 @@ function updatePreview() {
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
     if (prevTip) prevTip.setAttribute("data-tip",
-      `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(netApr, 2)}%`);
+      `Projected APY after your deposit — accounts for how your supply/borrow shifts pool utilization and rates. Current pool APY: ${fmt(curNetApy, 2)}%. Actual projected net APR: ${fmt(netApr, 2)}%`);
 
     // Days until liquidation at this leverage (interest-only, no BLND)
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
@@ -1244,6 +1598,25 @@ function updatePreview() {
 
     // APY chart (#14)
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
+
+    // Return calculator (#36)
+    const depositUsd = parseFloat(($("calc-deposit-usd") as HTMLInputElement).value);
+    const weeklyEl  = $("calc-weekly");
+    const monthlyEl = $("calc-monthly");
+    if (!isNaN(depositUsd) && depositUsd > 0) {
+      const weekly  = depositUsd * netApy / 100 / 52;
+      const monthly = depositUsd * netApy / 100 / 12;
+      const cls = netApy > 0 ? "apr-great" : netApy < 0 ? "apr-bad" : "";
+      weeklyEl.textContent  = `$${fmt(weekly, 2)}`;
+      monthlyEl.textContent = `$${fmt(monthly, 2)}`;
+      weeklyEl.className  = cls;
+      monthlyEl.className = cls;
+    } else {
+      weeklyEl.textContent  = "\u2014";
+      monthlyEl.textContent = "\u2014";
+      weeklyEl.className  = "";
+      monthlyEl.className = "";
+    }
   }
 
   // Risk zone labels (#9)
@@ -1312,6 +1685,8 @@ function updatePreview() {
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
       : "Add Funds";
   }
+
+  refreshFeeEstimates();
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
@@ -1343,6 +1718,10 @@ async function loadAll() {
 
     renderSelectedAsset();
     startFreshnessTimer();
+    // Refresh timeline from chain in background (A25)
+    if (positions.byAsset.has(selectedAsset.id)) {
+      refreshTimelineFromChain().catch(() => {});
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Failed to load pool data:", e);
@@ -1383,9 +1762,10 @@ async function openPosition() {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
     const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
+    const openHash = await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
+    recordPositionEvent("open", openHash, hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1));
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
@@ -1411,8 +1791,9 @@ async function closePosition() {
   showTxStepper(["Close Position"]);
   try {
     const submitXdr = await buildCloseSubmitXdr(selectedPool, userAddress, pos);
-    await signAndSubmit(submitXdr, `Close ${selectedAsset.symbol} position`, 0);
+    const closeHash = await signAndSubmit(submitXdr, `Close ${selectedAsset.symbol} position`, 0);
     hideTxStepper();
+    recordPositionEvent("close", closeHash, null);
     removePnlEntry(selectedAsset.id, selectedPool.id);
     await loadAll();
   } catch (e: any) {
@@ -1502,8 +1883,9 @@ async function claimBlnd() {
   showTxStepper(["Claim BLND"]);
   try {
     const claimXdr = await buildClaimXdr(selectedPool, userAddress, tokenIds);
-    await signAndSubmit(claimXdr, "Claim BLND", 0);
+    const claimHash = await signAndSubmit(claimXdr, "Claim BLND", 0);
     hideTxStepper();
+    recordPositionEvent("harvest", claimHash, null);
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
@@ -1538,10 +1920,12 @@ async function adjustLeverage() {
   try {
     if (targetLev > curLev) {
       const xdr = await buildIncreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
-      await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      const h = await signAndSubmit(xdr, `Increase leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      recordPositionEvent("rebalance", h, hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1));
     } else {
       const xdr = await buildDecreaseLeverageXdr(selectedPool, userAddress, liveAsset, pos, targetLev);
-      await signAndSubmit(xdr, `Decrease leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      const h = await signAndSubmit(xdr, `Decrease leverage to ${targetLev.toFixed(1)}\u00D7`, 0);
+      recordPositionEvent("rebalance", h, hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1));
     }
     hideTxStepper();
     await loadAll();
@@ -1658,7 +2042,8 @@ async function claimAndConvert() {
   try {
     // Claim
     const claimXdr = await buildClaimXdr(selectedPool, userAddress, tokenIds);
-    await signAndSubmit(claimXdr, "Claim BLND", 0);
+    const claimHash = await signAndSubmit(claimXdr, "Claim BLND", 0);
+    recordPositionEvent("harvest", claimHash, null);
 
     // Check actual BLND balance after claim
     const blndBalance = await fetchAssetBalance(userAddress, getBlndId());
@@ -2033,6 +2418,26 @@ function toggleTheme() {
 $("theme-toggle").addEventListener("click", toggleTheme);
 document.getElementById("mobile-theme-toggle")?.addEventListener("click", toggleTheme);
 
+$("blnd-price-input").addEventListener("input", () => {
+  const input = $("blnd-price-input") as HTMLInputElement;
+  const raw = input.value.trim();
+  if (raw === "") {
+    applyBlndPriceAssumption(null);
+    return;
+  }
+  const price = Number(raw);
+  if (Number.isFinite(price) && price > 0) {
+    applyBlndPriceAssumption(price);
+  } else {
+    $("blnd-price-status").textContent = "Enter a positive USD price";
+  }
+});
+
+$("blnd-price-reset").addEventListener("click", () => {
+  applyBlndPriceAssumption(null);
+  refreshBlndPriceControl();
+});
+
 // Settings dropdown toggle
 $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
@@ -2100,6 +2505,16 @@ document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => 
 // Collapsible stats (#23)
 $("stats-toggle").addEventListener("click", () => {
   $("stats-collapsible").classList.toggle("collapsed");
+});
+
+// History chart window selector (B4)
+$("hist-win-btns").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".hist-win-btn");
+  if (!btn) return;
+  _histWin = btn.dataset.win as "7d" | "30d" | "1y";
+  $("hist-win-btns").querySelectorAll(".hist-win-btn").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  renderHistoryChart();
 });
 
 // Vault deposit/withdraw tabs
@@ -2210,7 +2625,12 @@ async function refreshAddFundsBalance() {
   } catch { /* ignore */ }
 }
 
-($("leverage-slider") as HTMLInputElement).addEventListener("input",  updatePreview);
+let _leverageDebounce: ReturnType<typeof setTimeout> | null = null;
+function debouncedPreview() {
+  if (_leverageDebounce) clearTimeout(_leverageDebounce);
+  _leverageDebounce = setTimeout(updatePreview, 50);
+}
+($("leverage-slider") as HTMLInputElement).addEventListener("input", debouncedPreview);
 // Live preview while typing (no clamping so user can type multi-digit numbers like "10")
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -2234,6 +2654,7 @@ async function refreshAddFundsBalance() {
 });
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
+($("calc-deposit-usd") as HTMLInputElement).addEventListener("input", updatePreview);
 
 // ── Demo mode (#17) ──────────────────────────────────────────────────────────
 
@@ -3097,31 +3518,72 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
   await loadAll();
 })();
 
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// ── Keyboard shortcuts (A12) ──────────────────────────────────────────────────
+
+function isInTextField(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement;
+  return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable;
+}
 
 document.addEventListener("keydown", (e) => {
-  // Ignore shortcuts when typing in inputs
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (isInTextField(e)) return;
 
-  // R = refresh
-  if (e.key === "r" || e.key === "R") {
-    if (activeView === "leverage" && userAddress) loadAll();
-    else if (activeView === "overview" && userAddress) loadOverview();
-    else if (activeView === "vault") refreshVaultView();
-  }
-  // Escape = close modals/dropdowns
-  if (e.key === "Escape") {
-    $("pool-dropdown").classList.add("hidden");
-    $("settings-dropdown").classList.add("hidden");
-    $("alert-modal-overlay").classList.add("hidden");
-    closeDrawer();
+  switch (e.key) {
+    case "r":
+    case "R":
+      if (activeView === "leverage" && userAddress) loadAll();
+      else if (activeView === "overview" && userAddress) loadOverview();
+      else if (activeView === "vault") refreshVaultView();
+      break;
+    case "l":
+    case "L":
+      if (activeView === "leverage") {
+        ($("leverage-slider") as HTMLInputElement).focus();
+      }
+      break;
+    case "c":
+    case "C": {
+      const closeBtn = $("close-btn") as HTMLButtonElement;
+      if (!closeBtn.disabled) closeBtn.click();
+      break;
+    }
+    case "Escape":
+      $("pool-dropdown").classList.add("hidden");
+      $("settings-dropdown").classList.add("hidden");
+      $("alert-modal-overlay").classList.add("hidden");
+      document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      closeDrawer();
+      break;
+    case "?":
+      document.getElementById("shortcut-modal-overlay")?.classList.toggle("hidden");
+      break;
   }
 });
 
 // ── APY Alert subscription ──────────────────────────────────────────────────
 
-const ALERTS_WORKER_URL = "https://turbolong-alerts.workers.dev";
+const ALERTS_WORKER_URL =
+  import.meta.env.VITE_ALERTS_WORKER_URL ?? "https://turbolong-alerts.workers.dev";
+
+function urlBase64ToUint8Array(base64: string): Uint8Array {
+  const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function registerAlertServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    return await navigator.serviceWorker.register("/sw.js");
+  } catch (e) {
+    console.warn("Service worker registration failed:", e);
+    return null;
+  }
+}
+
+registerAlertServiceWorker();
 
 $("alert-bell-btn").addEventListener("click", () => {
   $("alert-pool-name").textContent = selectedPool.name;
@@ -3183,6 +3645,85 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     toast(`Subscription failed: ${e.message?.slice(0, 100)}`, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Subscribe";
+    btn.textContent = "Subscribe with email";
   }
+});
+
+$("alert-push-btn").addEventListener("click", async () => {
+  if (!userAddress || demoMode) {
+    toast("Connect your wallet to enable push alerts.", "info");
+    return;
+  }
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    toast("Push notifications are not supported in this browser.", "error");
+    return;
+  }
+
+  const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const btn = $("alert-push-btn") as HTMLButtonElement;
+  btn.disabled = true;
+  btn.textContent = "Enabling...";
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Notification permission denied.", "error");
+      return;
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    const keyRes = await fetch(`${ALERTS_WORKER_URL}/vapid-public-key`);
+    const keyData = await keyRes.json() as { ok?: boolean; publicKey?: string; error?: string };
+    if (!keyData.ok || !keyData.publicKey) {
+      toast(keyData.error || "Push is not configured on the server.", "error");
+      return;
+    }
+
+    let subscription = await reg.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
+      });
+    }
+
+    const subJson = subscription.toJSON();
+    const res = await fetch(`${ALERTS_WORKER_URL}/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscription: subJson,
+        pool_id: selectedPool.id,
+        asset_symbol: selectedAsset.symbol,
+        leverage_bracket: leverageBracket,
+      }),
+    });
+
+    const data = await res.json() as { ok?: boolean; error?: string };
+    if (data.ok) {
+      toast("Push alerts enabled for this position.", "success");
+      $("alert-modal-overlay").classList.add("hidden");
+    } else {
+      toast(data.error || "Push subscription failed.", "error");
+    }
+  } catch (e: any) {
+    toast(`Push subscription failed: ${e.message?.slice(0, 100)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Enable push notifications";
+  }
+});
+
+// ── Shortcut help modal (A12) ─────────────────────────────────────────────────
+
+document.getElementById("shortcut-modal-close")?.addEventListener("click", () => {
+  document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcut-modal-overlay")?.addEventListener("click", (e) => {
+  if (e.target === document.getElementById("shortcut-modal-overlay"))
+    document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
+  document.getElementById("settings-dropdown")?.classList.add("hidden");
+  document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
 });

@@ -21,7 +21,17 @@ import * as crypto from "crypto";
 
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const PASSPHRASE = Networks.TESTNET;
-const SECRET = "SCX6RZDDWLKWLSUEKDROH3PCXDPAVVJ355YA4FEHQB3MJMA6K762E527";
+
+const SECRET = process.env.DEPLOY_SECRET_KEY;
+if (!SECRET) {
+  console.error(
+    "Error: DEPLOY_SECRET_KEY is not set.\n" +
+    "Create a .env.local file with:\n" +
+    "  DEPLOY_SECRET_KEY=S...\n" +
+    "Then run: DEPLOY_SECRET_KEY=$(grep DEPLOY_SECRET_KEY .env.local | cut -d= -f2) npx tsx scripts/deploy_strategy.ts"
+  );
+  process.exit(1);
+}
 
 const keypair = Keypair.fromSecret(SECRET);
 const account = keypair.publicKey();

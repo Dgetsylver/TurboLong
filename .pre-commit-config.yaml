@@ -1,0 +1,38 @@
+# .pre-commit-config.yaml — TurboLong pre-commit hooks
+#
+# Install once per machine:
+#   pip install pre-commit
+#   pre-commit install          # installs the git hook
+#   pre-commit install --hook-type pre-push  # optional: also run on push
+#
+# Run manually against all files:
+#   pre-commit run --all-files
+#
+# Run only gitleaks:
+#   pre-commit run gitleaks --all-files
+#
+# Skip for a single commit (EMERGENCY ONLY — must be followed by allowlist fix):
+#   SKIP=gitleaks git commit -m "..."
+
+repos:
+  # ── Secret scanning ──────────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2      # pin to a specific release; renovate/dependabot will bump
+    hooks:
+      - id: gitleaks
+        name: "🔑 gitleaks — detect hardcoded secrets"
+        # Use our project config so custom rules and allowlists apply locally too
+        args: ["--config", ".gitleaks.toml"]
+
+  # ── General hygiene ─────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--unsafe"]   # allow YAML with custom tags (e.g. GitHub Actions)
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key   # belt-and-suspenders alongside gitleaks
