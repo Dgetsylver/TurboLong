@@ -14,7 +14,6 @@
 <body>
   <div class="landing">
 
-    <!-- Nav -->
     <nav class="nav">
       <div class="nav-brand">
         <svg class="nav-logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -36,7 +35,6 @@
       <a href="https://app.turbolong.com" class="btn btn-primary">Launch App</a>
     </nav>
 
-    <!-- Hero -->
     <section class="hero">
       <div class="hero-glow"></div>
       <h1>Leverage trading on Stellar. Simplified.</h1>
@@ -47,7 +45,6 @@
       </div>
     </section>
 
-    <!-- Stats -->
     <section class="stats-strip">
       <div class="stat">
         <span class="stat-value">3</span>
@@ -67,7 +64,6 @@
       </div>
     </section>
 
-    <!-- How It Works -->
     <section class="how-section" id="how">
       <h2>How It Works</h2>
       <div class="how-steps">
@@ -89,7 +85,6 @@
       </div>
     </section>
 
-    <!-- Features -->
     <section class="features-section" id="features">
       <h2>Features</h2>
       <div class="features">
@@ -126,21 +121,35 @@
       </div>
     </section>
 
-    <!-- Risk Disclosure -->
     <section class="risk-section">
       <div class="risk-banner">
         <strong>Risk Disclosure:</strong> Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software &mdash; use at your own risk.
       </div>
     </section>
 
-    <!-- CTA -->
     <section class="cta-section">
       <h2>Start leveraging on Stellar</h2>
       <p>Connect your Stellar wallet and open your first position in minutes.</p>
       <a href="https://app.turbolong.com" class="btn btn-primary btn-lg">Launch App</a>
     </section>
 
-    <!-- Footer -->
+    <section class="widget-section" style="padding: 40px 20px; max-width: 1200px; margin: 0 auto;">
+      <h2 style="text-align: center; margin-bottom: 24px;">Stellar Network Activity</h2>
+      <div class="stellar-widget-container" style="min-height: 350px; width: 100%; background: rgba(11, 14, 20, 0.5); border-radius: 12px; border: 1px solid rgba(45, 232, 163, 0.2);" id="stellarWidgetSection">
+        <div id="widgetPlaceholder" style="padding: 100px 20px; text-align: center; color: #666;">
+          <p>Loading Stellar Expert Recent Activity...</p>
+        </div>
+
+        <iframe 
+          id="stellarIframe"
+          src="https://stellar.expert/widget/public/network-activity" 
+          style="width: 100%; height: 350px; border: none; display: none; border-radius: 12px;"
+          onload="handleWidgetLoad()"
+          onerror="handleWidgetError()">
+        </iframe>
+      </div>
+    </section>
+
     <footer class="footer">
       <div class="footer-links">
         <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
@@ -152,7 +161,24 @@
     </footer>
 
   </div>
-  <!-- Cloudflare Web Analytics (free) — replace token after enabling in CF dashboard -->
-  <!-- <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "YOUR_CF_ANALYTICS_TOKEN"}'></script> -->
+
+  <script>
+    function handleWidgetLoad() {
+      document.getElementById('widgetPlaceholder').style.display = 'none';
+      document.getElementById('stellarIframe').style.display = 'block';
+    }
+
+    function handleWidgetError() {
+      console.warn("Stellar Expert widget service is currently unavailable.");
+      document.getElementById('stellarWidgetSection').style.display = 'none';
+    }
+
+    setTimeout(() => {
+      const iframe = document.getElementById('stellarIframe');
+      if (iframe && iframe.style.display === 'none') {
+        handleWidgetError();
+      }
+    }, 6000);
+  </script>
 </body>
 </html>
