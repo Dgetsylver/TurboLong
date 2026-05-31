@@ -93,6 +93,7 @@ export interface VaultStats {
   debtValue: number;       // d_tokens * d_rate in underlying
   leverage: number;        // collateralValue / equity
   netApy: number | null;   // Estimated leveraged APY (null if unavailable)
+  harvestApy: number | null; // Realized harvest APY from BLND swaps
   supplyApr: number | null;
   borrowApr: number | null;
 }
@@ -180,6 +181,9 @@ export async function fetchVaultStats(
       }
     }
 
+    // Fetch realized harvest APY (30-day lookback)
+    const harvestApy = await fetchHarvestApy(vault, totalEquity);
+
     return {
       totalEquity,
       totalShares,
@@ -193,10 +197,62 @@ export async function fetchVaultStats(
       debtValue,
       leverage,
       netApy,
+      harvestApy,
       supplyApr,
       borrowApr,
     };
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch and annualize realized harvest revenue from on-chain logs.
+ * Looks back 30 days.
+ */
+async function fetchHarvestApy(
+  vault: VaultConfig,
+  currentEquity: number
+): Promise<number | null> {
+  if (!vault.vaultId || currentEquity <= 0) return 0;
+
+  try {
+    // 1. Get current ledger to compute start point
+    const latest = await blendServer.getLatestLedger();
+    const curSeq = latest.sequence;
+
+    // 2. Compute start ledger (~5s per ledger, 30 days = 518,400 ledgers)
+    const LOOKBACK_LEDGERS = 518400;
+    const startLedger = Math.max(1, curSeq - LOOKBACK_LEDGERS);
+
+    // 3. Fetch events with topic "harvest_realized"
+    const topicRealized = xdr.ScVal.scvSymbol("harvest_realized").toXDR("base64");
+
+    const result = await blendServer.getEvents({
+      startLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [vault.vaultId],
+          topics: [[topicRealized]],
+        },
+      ],
+    });
+
+    let totalRealized = 0;
+    for (const event of result.events) {
+      const val = scValToNative(event.value);
+      totalRealized += Number(val);
+    }
+
+    // 4. Annualize: (total_30d / current_equity) * (365 / 30)
+    const scalar = 10 ** vault.decimals;
+    const realizedUnderlying = totalRealized / scalar;
+    const apy = (realizedUnderlying / currentEquity) * (365 / 30);
+
+    return apy;
+  } catch (e) {
+    console.warn(`fetchHarvestApy: failed for ${vault.name}:`, e);
     return null;
   }
 }

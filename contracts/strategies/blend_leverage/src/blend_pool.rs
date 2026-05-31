@@ -417,17 +417,17 @@ pub fn claim(e: &Env, config: &Config) -> i128 {
 // ── Harvest: claim + swap + re-leverage ──────────────────────────────────────
 
 /// Claim BLND, swap to underlying via Soroswap, and re-leverage the proceeds.
-/// Returns the additional (b_tokens, d_tokens) from re-leveraging.
+/// Returns (b_tokens_delta, d_tokens_delta, realized_underlying).
 pub fn perform_reinvest(
     e: &Env,
     config: &Config,
     amount_out_min: i128,
-) -> Result<(i128, i128), StrategyError> {
+) -> Result<(i128, i128, i128), StrategyError> {
     let blnd_balance =
         TokenClient::new(e, &config.blend_token).balance(&e.current_contract_address());
 
     if blnd_balance < config.reward_threshold {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     let swap_path = vec![e, config.blend_token.clone(), config.asset.clone()];
@@ -454,13 +454,13 @@ pub fn perform_reinvest(
         .ok_or(StrategyError::InternalSwapError)?;
 
     if amount_out <= 0 {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     // Re-leverage the swapped proceeds
     let (b_delta, d_delta) = submit_leverage_loop(e, amount_out, config)?;
 
-    Ok((b_delta, d_delta))
+    Ok((b_delta, d_delta, amount_out))
 }
 
 // ── Pool state queries ───────────────────────────────────────────────────────
