@@ -43,6 +43,8 @@ import {
   estimateBlndSwap,
   submitSignedXdr,
   submitClassicXdr,
+  buildBulkCloseXdr,
+  buildBulkAdjustXdr,
   hfForLeverage,
   maxLeverageFor,
   getBlndPriceAssumption,
@@ -98,6 +100,10 @@ let selectedPool: PoolDef        = getKnownPools()[0]; // default: Etherfuse
 let assets: AssetInfo[]          = getPoolAssets(selectedPool);
 let selectedAsset: AssetInfo     = assets[2]; // default: CETES (index 2 in Etherfuse)
 
+let selectedPositions = new Set<string>(); // elements are poolId:assetId
+let _lastOverviewBlendPos: OverviewBlendPosition[] = [];
+
+
 // ── Network switching ────────────────────────────────────────────────────────
 
 async function switchNetwork(net: NetworkMode) {
@@ -127,6 +133,8 @@ async function switchNetwork(net: NetworkMode) {
   // Reset state
   reserves = [];
   positions = { byAsset: new Map() };
+  selectedPositions.clear();
+  updateBulkMenuBar();
   demoMode = false;
   selectedPool = getKnownPools()[0];
   assets = getPoolAssets(selectedPool);
@@ -2147,6 +2155,8 @@ async function disconnect() {
 // ── View switching (Leverage / Swap) ─────────────────────────────────────
 
 function switchView(view: AppView) {
+  selectedPositions.clear();
+  updateBulkMenuBar();
   activeView = view;
   // Top nav active states
   const overviewBtn = $("proto-overview");
@@ -2681,6 +2691,7 @@ updatePreview();
 renderTxHistory();
 renderPoolFooter();
 initTooltips();
+initBulkActionListeners();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
 
@@ -2705,6 +2716,55 @@ async function loadOverview() {
 
   const blendPositions: OverviewBlendPosition[] = [];
   const vaultPositions: OverviewVaultPosition[] = [];
+
+  if (demoMode) {
+    const pool = getKnownPools()[0]; // Etherfuse
+    const poolAssets = getPoolAssets(pool);
+    const mockReserves = poolAssets.map(a => ({
+      asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
+      blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
+      totalSupply: 1000000, totalBorrow: 650000, available: 350000, priceUsd: 1.0,
+    }));
+    
+    // Add 3 mock positions for multi-select and shift-click testing
+    blendPositions.push({
+      pool,
+      asset: poolAssets[0], // XLM
+      pos: {
+        asset: poolAssets[0], collateral: 5000, debt: 3000, equity: 2000,
+        leverage: 2.5, hf: 1.15, bTokens: 50000000000n, dTokens: 30000000000n,
+      } as any,
+      reserves: mockReserves as any
+    });
+    blendPositions.push({
+      pool,
+      asset: poolAssets[1], // USDC
+      pos: {
+        asset: poolAssets[1], collateral: 10000, debt: 4000, equity: 6000,
+        leverage: 1.66, hf: 1.8, bTokens: 100000000000n, dTokens: 40000000000n,
+      } as any,
+      reserves: mockReserves as any
+    });
+    blendPositions.push({
+      pool,
+      asset: poolAssets[2], // CETES
+      pos: {
+        asset: poolAssets[2], collateral: 8000, debt: 6000, equity: 2000,
+        leverage: 4.0, hf: 1.05, bTokens: 80000000000n, dTokens: 60000000000n,
+      } as any,
+      reserves: mockReserves as any
+    });
+
+    vaultPositions.push({
+      vault: getVaults()[0],
+      userPos: { balanceShares: 5000n, underlyingValue: 5000 },
+      stats: { totalAssets: 1000000, totalSupply: 1000000, healthFactor: 1.25, strategyAddress: "", underlyingSymbol: "USDC" } as any
+    });
+
+    renderOverview(blendPositions, vaultPositions);
+    _overviewLoading = false;
+    return;
+  }
 
   // Fetch all Blend pool positions in parallel
   const poolFetches = getKnownPools().map(async (pool) => {
@@ -2745,6 +2805,7 @@ async function loadOverview() {
 }
 
 function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVaultPosition[]) {
+  _lastOverviewBlendPos = blendPos;
   const container = $("ov-protocols");
   const emptyEl = $("ov-empty");
   const totalPositions = blendPos.length + vaultPos.length;
@@ -2770,6 +2831,8 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
   if (totalPositions === 0) {
     emptyEl.classList.remove("hidden");
     container.innerHTML = "";
+    selectedPositions.clear();
+    updateBulkMenuBar();
     return;
   }
   emptyEl.classList.add("hidden");
@@ -2785,6 +2848,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
       </div>
       <table class="overview-table">
         <thead><tr>
+          <th class="position-select-cell"><input type="checkbox" id="select-all-positions"></th>
           <th>Asset</th><th>Pool</th><th class="text-right">Equity</th>
           <th class="text-right">Leverage</th><th class="text-right">HF</th>
           <th class="text-right">Net APY</th><th class="text-right">Debt</th>
@@ -2798,8 +2862,11 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
       const hfColor = bp.pos.hf > 1.1 ? "hf-ok" : bp.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
       const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
       const batchTip = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(batchNetApr, 2)}%`;
+      const posKey = `${bp.pool.id}:${bp.asset.id}`;
+      const isChecked = selectedPositions.has(posKey) ? "checked" : "";
 
       html += `<tr data-nav-pool="${bp.pool.id}" data-nav-asset="${bp.asset.id}">
+        <td class="position-select-cell"><input type="checkbox" class="position-select" data-pool="${bp.pool.id}" data-asset="${bp.asset.id}" ${isChecked}></td>
         <td class="text-label">${bp.asset.symbol}</td>
         <td style="color:var(--text-2);font-family:var(--sans)">${pool.name}</td>
         <td class="text-right">${fmt(bp.pos.equity, 2)} ${bp.asset.symbol}</td>
@@ -2845,9 +2912,84 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
 
   container.innerHTML = html;
 
-  // Wire up click navigation for Blend table rows
+  // Clean stale selections
+  const validKeys = new Set(blendPos.map(bp => `${bp.pool.id}:${bp.asset.id}`));
+  for (const key of selectedPositions) {
+    if (!validKeys.has(key)) {
+      selectedPositions.delete(key);
+    }
+  }
+
+  // Wire up select-all checkbox header logic
+  const selectAllCheckbox = $("select-all-positions") as HTMLInputElement | null;
+  const rowCheckboxes = Array.from(container.querySelectorAll<HTMLInputElement>(".position-select"));
+  
+  if (selectAllCheckbox) {
+    selectAllCheckbox.checked = rowCheckboxes.length > 0 && rowCheckboxes.every(cb => cb.checked);
+    selectAllCheckbox.addEventListener("change", () => {
+      rowCheckboxes.forEach(cb => {
+        cb.checked = selectAllCheckbox.checked;
+        const key = `${cb.dataset.pool}:${cb.dataset.asset}`;
+        if (selectAllCheckbox.checked) {
+          selectedPositions.add(key);
+        } else {
+          selectedPositions.delete(key);
+        }
+      });
+      updateBulkMenuBar();
+    });
+  }
+
+  // Wire up checkbox logic including Shift-click ranges
+  let lastCheckedIndex = -1;
+  rowCheckboxes.forEach((cb, index) => {
+    cb.addEventListener("click", (e) => {
+      // Prevent row click navigation when clicking checkbox directly
+      e.stopPropagation();
+    });
+
+    cb.addEventListener("change", (e) => {
+      const key = `${cb.dataset.pool}:${cb.dataset.asset}`;
+      if (cb.checked) {
+        selectedPositions.add(key);
+      } else {
+        selectedPositions.delete(key);
+      }
+
+      // Multi-select with shift-click range selection
+      const mouseEvent = e as unknown as MouseEvent;
+      if (mouseEvent.shiftKey && lastCheckedIndex !== -1) {
+        const start = Math.min(index, lastCheckedIndex);
+        const end = Math.max(index, lastCheckedIndex);
+        for (let i = start; i <= end; i++) {
+          const currentCb = rowCheckboxes[i];
+          currentCb.checked = cb.checked;
+          const currentKey = `${currentCb.dataset.pool}:${currentCb.dataset.asset}`;
+          if (cb.checked) {
+            selectedPositions.add(currentKey);
+          } else {
+            selectedPositions.delete(currentKey);
+          }
+        }
+      }
+
+      lastCheckedIndex = index;
+
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = rowCheckboxes.every(cb => cb.checked);
+      }
+
+      updateBulkMenuBar();
+    });
+  });
+
+  // Wire up click navigation for Blend table rows (ignoring click on select columns)
   container.querySelectorAll<HTMLElement>("tr[data-nav-pool]").forEach(row => {
-    row.addEventListener("click", () => {
+    row.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(".position-select-cell") || target.closest(".position-select")) {
+        return;
+      }
       const poolId = row.dataset.navPool!;
       const assetId = row.dataset.navAsset!;
       const pool = getKnownPools().find(p => p.id === poolId);
@@ -2864,9 +3006,227 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
   container.querySelectorAll<HTMLElement>(".overview-vault-card").forEach(card => {
     card.addEventListener("click", () => switchView("vault"));
   });
+
+  updateBulkMenuBar();
 }
 
 $("overview-refresh-btn").addEventListener("click", () => loadOverview());
+
+// ── Bulk Actions Management ──────────────────────────────────────────────────
+
+let _currentBulkAction: {
+  type: "close" | "adjust";
+  positions: OverviewBlendPosition[];
+  data?: any;
+} | null = null;
+
+function updateBulkMenuBar() {
+  const bar = $("bulk-actions-bar");
+  const countEl = $("bulk-selected-count");
+  if (!bar || !countEl) return;
+
+  const count = selectedPositions.size;
+  countEl.textContent = String(count);
+
+  if (count > 0 && activeView === "overview") {
+    bar.classList.remove("hidden");
+  } else {
+    bar.classList.add("hidden");
+  }
+}
+
+function initBulkActionListeners() {
+  $("bulk-close-btn").addEventListener("click", () => {
+    const targets = getSelectedOverviewPositions();
+    if (targets.length === 0) return;
+    showBulkConfirmModal("close", targets);
+  });
+
+  $("bulk-adjust-btn").addEventListener("click", () => {
+    const targets = getSelectedOverviewPositions();
+    if (targets.length === 0) return;
+    const inputVal = ($("bulk-adjust-input") as HTMLInputElement).value;
+    const percent = parseFloat(inputVal);
+    if (isNaN(percent) || percent === 0) {
+      toast("Please enter a valid percentage (e.g. 10 or -15)", "error");
+      return;
+    }
+    showBulkConfirmModal("adjust", targets, { percent });
+  });
+
+  $("bulk-confirm-close").addEventListener("click", hideBulkConfirmModal);
+  $("bulk-confirm-cancel").addEventListener("click", hideBulkConfirmModal);
+  $("bulk-confirm-submit").addEventListener("click", executeCurrentBulkAction);
+  
+  // Close confirmation modal by clicking outside
+  $("bulk-confirm-overlay").addEventListener("click", (e) => {
+    if (e.target === $("bulk-confirm-overlay")) {
+      hideBulkConfirmModal();
+    }
+  });
+}
+
+function getSelectedOverviewPositions(): OverviewBlendPosition[] {
+  const list: OverviewBlendPosition[] = [];
+  selectedPositions.forEach(key => {
+    const bp = _lastOverviewBlendPos.find(x => `${x.pool.id}:${x.asset.id}` === key);
+    if (bp) list.push(bp);
+  });
+  return list;
+}
+
+function hideBulkConfirmModal() {
+  $("bulk-confirm-overlay").classList.add("hidden");
+  _currentBulkAction = null;
+}
+
+function showBulkConfirmModal(type: "close" | "adjust", positions: OverviewBlendPosition[], data?: any) {
+  _currentBulkAction = { type, positions, data };
+  const listEl = $("bulk-confirm-list");
+  listEl.innerHTML = "";
+
+  const titleEl = $("bulk-confirm-title");
+  titleEl.textContent = type === "close" ? "Confirm Bulk Close" : "Confirm Bulk Leverage Adjust";
+
+  positions.forEach(bp => {
+    const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
+    const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
+    const item = document.createElement("div");
+    item.className = "bulk-confirm-item";
+
+    let detailsHtml = `
+      <div class="bulk-confirm-details">
+        <span class="bulk-confirm-asset">${bp.asset.symbol}</span>
+        <span class="bulk-confirm-pool">${pool.name}</span>
+      </div>`;
+
+    let actionHtml = "";
+    if (type === "close") {
+      actionHtml = `<div class="bulk-confirm-action hf-bad">CLOSE (Equity: ${fmt(bp.pos.equity, 2)} ${bp.asset.symbol})</div>`;
+    } else {
+      const pct = data.percent;
+      const targetLev = bp.pos.leverage * (1 + pct / 100);
+      const c = rs ? rs.cFactor : bp.asset.cFactor;
+      const l = rs?.lFactor ?? 1;
+      const targetHf = hfForLeverage(targetLev, c, l);
+      const hfColor = targetHf > 1.1 ? "hf-ok" : targetHf > 1.03 ? "hf-warn" : "hf-bad";
+      
+      actionHtml = `
+        <div class="bulk-confirm-action">
+          <div>${bp.pos.leverage.toFixed(1)}&times; &rarr; <span class="mono" style="font-weight:700;">${targetLev.toFixed(1)}&times;</span></div>
+          <div class="${hfColor}" style="font-size:11px;">Est. HF: ${isFinite(targetHf) ? targetHf.toFixed(3) : "\u221E"}</div>
+        </div>`;
+    }
+
+    item.innerHTML = detailsHtml + actionHtml;
+    listEl.appendChild(item);
+  });
+
+  $("bulk-confirm-overlay").classList.remove("hidden");
+}
+
+async function executeCurrentBulkAction() {
+  if (!_currentBulkAction || !userAddress) return;
+  const { type, positions: targetPositions, data } = _currentBulkAction;
+  hideBulkConfirmModal();
+
+  if (demoMode) {
+    toast("Demo mode \u2014 connect a real wallet to transact", "info");
+    return;
+  }
+
+  // 1. Group by pool
+  const poolMap = new Map<string, { pool: PoolDef; positions: AssetPosition[]; adjustments: { asset: AssetInfo; pos: AssetPosition; targetLev: number }[] }>();
+  
+  for (const bp of targetPositions) {
+    let entry = poolMap.get(bp.pool.id);
+    if (!entry) {
+      entry = { pool: bp.pool, positions: [], adjustments: [] };
+      poolMap.set(bp.pool.id, entry);
+    }
+    
+    if (type === "close") {
+      entry.positions.push(bp.pos);
+    } else {
+      const pct = data.percent;
+      const targetLev = bp.pos.leverage * (1 + pct / 100);
+      
+      // Safety checks: check target leverage limits
+      const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
+      const maxLev = maxLeverageFor(rs ? rs.cFactor : bp.asset.cFactor, rs?.lFactor ?? 1, minHF());
+      if (targetLev > maxLev) {
+        toast(`Cannot adjust: target leverage ${targetLev.toFixed(1)}x for ${bp.asset.symbol} exceeds max leverage of ${maxLev.toFixed(1)}x.`, "error");
+        return;
+      }
+      if (targetLev < 1.0) {
+        toast(`Cannot adjust: target leverage for ${bp.asset.symbol} is below 1.0x.`, "error");
+        return;
+      }
+      
+      entry.adjustments.push({ asset: bp.asset, pos: bp.pos, targetLev });
+    }
+  }
+
+  const poolGroups = Array.from(poolMap.values());
+  if (poolGroups.length === 0) return;
+
+  // Show stepper
+  const steps = poolGroups.map(pg => {
+    const actionLabel = type === "close" ? "Close" : "Adjust";
+    const assetsLabel = type === "close" 
+      ? pg.positions.map(p => p.asset.symbol).join(", ")
+      : pg.adjustments.map(a => a.asset.symbol).join(", ");
+    return `${actionLabel} ${assetsLabel} on ${pg.pool.name}`;
+  });
+
+  showTxStepper(steps);
+
+  try {
+    let bulkXdr = "";
+    if (type === "close") {
+      const poolPositionsParam = poolGroups.map(pg => ({ pool: pg.pool, positions: pg.positions }));
+      bulkXdr = await buildBulkCloseXdr(poolPositionsParam, userAddress);
+    } else {
+      const poolAdjustmentsParam = poolGroups.map(pg => ({ pool: pg.pool, adjustments: pg.adjustments }));
+      bulkXdr = await buildBulkAdjustXdr(poolAdjustmentsParam, userAddress);
+    }
+
+    toast(`Signing transaction bundle...`, "info");
+    updateTxStep(0, "active");
+
+    const { signedTxXdr } = await StellarWalletsKit.signTransaction(bulkXdr, {
+      networkPassphrase: getNetworkPassphrase(),
+      address: userAddress,
+    });
+
+    toast(`Submitting transaction bundle...`, "info");
+    const hash = await submitSignedXdr(signedTxXdr);
+    
+    // Mark all stepper steps as done since it's a single atomic transaction bundle
+    for (let i = 0; i < steps.length; i++) {
+      updateTxStep(i, "done");
+    }
+
+    toast(`Bulk action confirmed!`, "success", hash);
+    addTxToHistory(type === "close" ? "Bulk Close" : "Bulk Leverage Adjust", hash, "success");
+    
+    if (type === "close") {
+      targetPositions.forEach(bp => {
+        removePnlEntry(bp.asset.id, bp.pool.id);
+      });
+    }
+
+    hideTxStepper();
+    selectedPositions.clear();
+    updateBulkMenuBar();
+    await loadOverview();
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+    markStepperError(steps.length);
+    toast(`Bulk action failed: ${msg.slice(0, 200)}`, "error");
+  }
+}
+
 
 // ── Vault view ───────────────────────────────────────────────────────────────
 

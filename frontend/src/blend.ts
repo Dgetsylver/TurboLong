@@ -1378,6 +1378,104 @@ export async function submitClassicXdr(signedXdr: string): Promise<string> {
   return (result as any).hash;
 }
 
+export async function buildBulkCloseXdr(
+  poolPositions: { pool: PoolDef; positions: AssetPosition[] }[],
+  userAddress: string,
+): Promise<string> {
+  const MAX_AMOUNT = 9_223_372_036_854_775_807n; // i64::MAX
+  const acc = await server.getAccount(userAddress);
+  const txBuilder = new TransactionBuilder(acc, {
+    fee: (BigInt(BASE_FEE) * 10n).toString(),
+    networkPassphrase: _cfg.passphrase,
+  });
+
+  const addrScVal = new Address(userAddress).toScVal();
+
+  for (const { pool, positions } of poolPositions) {
+    const reqItems: xdr.ScVal[] = [];
+    for (const pos of positions) {
+      if (pos.dTokens > 0n) {
+        reqItems.push(buildRequest(pos.asset.id, MAX_AMOUNT, REPAY));
+      }
+      reqItems.push(buildRequest(pos.asset.id, MAX_AMOUNT, WITHDRAW_COLLATERAL));
+    }
+    const requests = buildRequestsVec(reqItems);
+    const poolContract = new Contract(pool.id);
+    txBuilder.addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests));
+  }
+
+  const tx = txBuilder.setTimeout(60).build();
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim))
+    throw new Error(`Bulk close simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
+  return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
+}
+
+export async function buildBulkAdjustXdr(
+  poolAdjustments: { pool: PoolDef; adjustments: { asset: AssetInfo; pos: AssetPosition; targetLev: number }[] }[],
+  userAddress: string,
+): Promise<string> {
+  const acc = await server.getAccount(userAddress);
+  const txBuilder = new TransactionBuilder(acc, {
+    fee: (BigInt(BASE_FEE) * 10n).toString(),
+    networkPassphrase: _cfg.passphrase,
+  });
+
+  const addrScVal = new Address(userAddress).toScVal();
+
+  for (const { pool, adjustments } of poolAdjustments) {
+    const reqItems: xdr.ScVal[] = [];
+    
+    for (const { asset, pos, targetLev } of adjustments) {
+      if (pos.equity <= 0) throw new Error(`No equity in ${asset.symbol} position`);
+      
+      if (targetLev > pos.leverage) {
+        // Increase leverage
+        const targetCollateral = pos.equity * targetLev;
+        const additionalBorrow = targetCollateral - pos.collateral;
+        if (additionalBorrow <= 0) continue;
+
+        const additionalBorrowStroops = BigInt(Math.round(additionalBorrow * 1e7));
+        const cFactorBn = BigInt(Math.round(asset.cFactor * SCALAR_F));
+        
+        let remaining = additionalBorrowStroops;
+        let balance = 0n;
+        while (remaining > 0n) {
+          const canBorrow = balance > 0n ? balance * cFactorBn / SCALAR : remaining;
+          const borrow = canBorrow < remaining ? canBorrow : remaining;
+          if (borrow <= 0n) break;
+          reqItems.push(buildRequest(asset.id, borrow, BORROW));
+          reqItems.push(buildRequest(asset.id, borrow, SUPPLY_COLLATERAL));
+          balance = borrow;
+          remaining -= borrow;
+        }
+      } else if (targetLev < pos.leverage) {
+        // Decrease leverage
+        const targetDebt = pos.equity * (targetLev - 1);
+        const debtReduction = pos.debt - targetDebt;
+        if (debtReduction <= 0) continue;
+
+        const debtReductionStroops = BigInt(Math.round(debtReduction * 1e7));
+        reqItems.push(buildRequest(asset.id, debtReductionStroops, WITHDRAW_COLLATERAL));
+        reqItems.push(buildRequest(asset.id, debtReductionStroops, REPAY));
+      }
+    }
+
+    if (reqItems.length === 0) continue;
+
+    const requests = buildRequestsVec(reqItems);
+    const poolContract = new Contract(pool.id);
+    txBuilder.addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests));
+  }
+
+  const tx = txBuilder.setTimeout(60).build();
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim))
+    throw new Error(`Bulk adjust simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
+  return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
+}
+
+
 // ── Position event timeline (A25) ─────────────────────────────────────────────
 
 export type PositionEventKind = "open" | "rebalance" | "harvest" | "close";

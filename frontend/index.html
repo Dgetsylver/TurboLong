@@ -865,6 +865,38 @@
         <!-- Toast stack -->
         <div id="toast-stack" class="toast-stack"></div>
 
+        <!-- Bulk actions menu bar -->
+        <div id="bulk-actions-bar" class="bulk-actions-bar hidden">
+          <div class="bulk-actions-info">
+            <span id="bulk-selected-count">0</span> positions selected
+          </div>
+          <div class="bulk-actions-buttons">
+            <button id="bulk-close-btn" class="btn btn-danger btn-sm">Close Selected</button>
+            <div class="bulk-adjust-group">
+              <span>Adjust Leverage by:</span>
+              <input type="number" id="bulk-adjust-input" class="input mono" placeholder="10" style="width: 70px; padding: 4px 8px; height: 28px; padding-right: 8px;" />
+              <span>%</span>
+              <button id="bulk-adjust-btn" class="btn btn-primary btn-sm">Adjust</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bulk Action Confirmation Modal -->
+        <div id="bulk-confirm-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true">
+          <div class="alert-modal" style="max-width: 480px;">
+            <button id="bulk-confirm-close" class="alert-modal-close">&times;</button>
+            <h3 id="bulk-confirm-title">Confirm Bulk Action</h3>
+            <p class="alert-modal-desc">Review the positions affected by this action:</p>
+            <div id="bulk-confirm-list" class="bulk-confirm-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 18px; border: 1px solid var(--border); border-radius: var(--r-xs); padding: 8px; background: var(--input-bg);">
+              <!-- List of positions with details will be injected here -->
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button id="bulk-confirm-submit" class="btn btn-primary" style="flex: 1;">Confirm &amp; Submit</button>
+              <button id="bulk-confirm-cancel" class="btn btn-secondary" style="flex: 1;">Cancel</button>
+            </div>
+          </div>
+        </div>
+
       </main>
     </div><!-- .main-wrap -->
   </div>
