@@ -2737,25 +2737,45 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
   await loadAll();
 })();
 
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// ── Keyboard shortcuts (A12) ──────────────────────────────────────────────────
+
+function isInTextField(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement;
+  return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable;
+}
 
 document.addEventListener("keydown", (e) => {
-  // Ignore shortcuts when typing in inputs
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (isInTextField(e)) return;
 
-  // R = refresh
-  if (e.key === "r" || e.key === "R") {
-    if (activeView === "leverage" && userAddress) loadAll();
-    else if (activeView === "overview" && userAddress) loadOverview();
-    else if (activeView === "vault") refreshVaultView();
-  }
-  // Escape = close modals/dropdowns
-  if (e.key === "Escape") {
-    $("pool-dropdown").classList.add("hidden");
-    $("settings-dropdown").classList.add("hidden");
-    $("alert-modal-overlay").classList.add("hidden");
-    closeDrawer();
+  switch (e.key) {
+    case "r":
+    case "R":
+      if (activeView === "leverage" && userAddress) loadAll();
+      else if (activeView === "overview" && userAddress) loadOverview();
+      else if (activeView === "vault") refreshVaultView();
+      break;
+    case "l":
+    case "L":
+      if (activeView === "leverage") {
+        ($("leverage-slider") as HTMLInputElement).focus();
+      }
+      break;
+    case "c":
+    case "C": {
+      const closeBtn = $("close-btn") as HTMLButtonElement;
+      if (!closeBtn.disabled) closeBtn.click();
+      break;
+    }
+    case "Escape":
+      $("pool-dropdown").classList.add("hidden");
+      $("settings-dropdown").classList.add("hidden");
+      $("alert-modal-overlay").classList.add("hidden");
+      document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      closeDrawer();
+      break;
+    case "?":
+      document.getElementById("shortcut-modal-overlay")?.classList.toggle("hidden");
+      break;
   }
 });
 
@@ -2825,4 +2845,18 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     btn.disabled = false;
     btn.textContent = "Subscribe";
   }
+});
+
+// ── Shortcut help modal (A12) ─────────────────────────────────────────────────
+
+document.getElementById("shortcut-modal-close")?.addEventListener("click", () => {
+  document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcut-modal-overlay")?.addEventListener("click", (e) => {
+  if (e.target === document.getElementById("shortcut-modal-overlay"))
+    document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+});
+document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
+  document.getElementById("settings-dropdown")?.classList.add("hidden");
+  document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
 });

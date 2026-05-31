@@ -55,6 +55,7 @@
         <div id="settings-dropdown" class="settings-dropdown hidden">
           <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
+          <button id="shortcuts-help-btn" class="settings-dropdown-item">Keyboard Shortcuts <span class="settings-badge">?</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -789,6 +790,23 @@
             </div>
             <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe</button>
             <p class="alert-hint">We never store your wallet address.</p>
+          </div>
+        </div>
+
+        <!-- Keyboard Shortcuts modal (A12) -->
+        <div id="shortcut-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+          <div class="alert-modal">
+            <button id="shortcut-modal-close" class="alert-modal-close">&times;</button>
+            <h3>Keyboard Shortcuts</h3>
+            <table class="shortcut-table">
+              <tbody>
+                <tr><td><kbd>L</kbd></td><td>Focus leverage slider</td></tr>
+                <tr><td><kbd>C</kbd></td><td>Close selected position</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Dismiss modals &amp; dropdowns</td></tr>
+                <tr><td><kbd>?</kbd></td><td>Show this help</td></tr>
+              </tbody>
+            </table>
+            <p class="alert-hint">Shortcuts are disabled when a text field is focused.</p>
           </div>
         </div>
 
