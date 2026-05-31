@@ -3,6 +3,7 @@
 mod blend_pool;
 mod constants;
 mod leverage;
+mod receipt;
 mod reserves;
 mod soroswap;
 mod storage;

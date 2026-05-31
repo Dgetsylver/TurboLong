@@ -393,6 +393,13 @@ function animateNumber(el: HTMLElement, to: number, duration = 200, formatFn: (n
   requestAnimationFrame(frame);
 }
 
+// ── Stellar Expert URL helper ─────────────────────────────────────────────────
+
+function expertUrl(type: "tx" | "contract" | "account" | "asset", id: string): string {
+  const net = getActiveNetwork() === "testnet" ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${net}/${type}/${id}`;
+}
+
 // ── Toast stack (#20) ────────────────────────────────────────────────────────
 
 let _toastCounter = 0;
@@ -407,7 +414,7 @@ function toast(msg: string, type: "info" | "success" | "error", hash?: string) {
   el.setAttribute("role", "alert");
   const icon = type === "success" ? "\u2713" : type === "error" ? "\u2717" : "\u27F3";
   const linkHtml = hash
-    ? ` <a class="toast-link" href="https://stellar.expert/explorer/public/tx/${hash}" target="_blank" rel="noopener">View \u2192</a>`
+    ? ` <a class="toast-link" href="${expertUrl("tx", hash)}" target="_blank" rel="noopener">View \u2192</a>`
     : "";
   el.innerHTML = `<span>${icon}</span><span>${msg}</span>${linkHtml}`;
   stack.appendChild(el);
@@ -445,7 +452,7 @@ function renderTxHistory() {
       <span class="tx-history-status-${tx.status === "success" ? "ok" : "err"}">${tx.status === "success" ? "\u2713" : "\u2717"}</span>
       <span class="tx-history-label">${tx.label}</span>
       <span class="tx-history-time">${timeStr}</span>
-      <a class="tx-history-link" href="https://stellar.expert/explorer/public/tx/${tx.hash}" target="_blank" rel="noopener">View</a>
+      <a class="tx-history-link" href="${expertUrl("tx", tx.hash)}" target="_blank" rel="noopener">View</a>
     </div>`;
   }).join("");
 }
@@ -869,7 +876,7 @@ function renderPoolFooter() {
   const addr = selectedPool.id;
   const truncated = addr.slice(0, 6) + "\u2026" + addr.slice(-4);
   footer.innerHTML = `
-    <span>Pool: <a href="https://stellar.expert/explorer/public/contract/${addr}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
+    <span>Pool: <a href="${expertUrl("contract", addr)}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
     <span>\u00B7</span>
     <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
     <span>\u00B7</span>
@@ -2512,13 +2519,10 @@ async function refreshVaultView() {
   $("vault-loops").textContent = String(vault.targetLoops);
 
   // Contract link
-  const explorerBase = getActiveNetwork() === "testnet"
-    ? "https://stellar.expert/explorer/testnet/contract/"
-    : "https://stellar.expert/explorer/public/contract/";
   const linkEl = $("vault-contract-link") as HTMLAnchorElement;
   if (vaultReady) {
     linkEl.textContent = vault.vaultId.slice(0, 8) + "..." + vault.vaultId.slice(-4);
-    linkEl.href = explorerBase + vault.vaultId;
+    linkEl.href = expertUrl("contract", vault.vaultId);
   } else {
     linkEl.textContent = "Not deployed";
     linkEl.href = "#";
