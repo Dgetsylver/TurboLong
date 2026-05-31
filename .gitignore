@@ -2,6 +2,7 @@
 test_snapshots/
 scripts/node_modules/
 scripts/package-lock.json
+alerts/node_modules/
 .DS_Store
 src/.DS_Store
 # Never commit private keys
