@@ -1,0 +1,7 @@
+{
+  "name": "turbolong",
+  "private": true,
+  "scripts": {
+    "test:e2e": "npm run test:e2e --prefix e2e"
+  }
+}
