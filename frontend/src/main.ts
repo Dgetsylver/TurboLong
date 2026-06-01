@@ -2522,12 +2522,17 @@ async function refreshVaultView() {
     // Net APY (stats.netApy is actually APR — convert for display)
     const apyEl = $("vault-apy");
     if (stats.netApy !== null) {
-      const vaultApy = aprToApy(stats.netApy);
+      const realizedApr = stats.realizedHarvestApy ?? 0;
+      const combinedApr = stats.netApy + realizedApr;
+      const vaultApy = aprToApy(combinedApr);
       apyEl.textContent = (vaultApy >= 0 ? "+" : "") + vaultApy.toFixed(2) + "%";
       apyEl.className = "stat-value mono " + (vaultApy > 0 ? "hf-ok" : "hf-bad");
       const vaultTip = $("vault-apy-tip");
-      if (vaultTip) vaultTip.setAttribute("data-tip",
-        `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(stats.netApy, 2)}%`);
+      if (vaultTip) {
+        const harvestLine = stats.realizedHarvestApy ? ` + realized harvest APR: ${fmt(stats.realizedHarvestApy,2)}% (30d sum: ${stats.realizedHarvest30d?.toFixed(4)} ${vault.assetSymbol})` : "";
+        vaultTip.setAttribute("data-tip",
+          `Approximate APY — Blend interest does not auto-compound. Net APR: ${fmt(stats.netApy, 2)}%${harvestLine}`);
+      }
     } else {
       apyEl.textContent = "--";
       apyEl.className = "stat-value mono";

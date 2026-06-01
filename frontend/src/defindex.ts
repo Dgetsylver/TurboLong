@@ -95,6 +95,9 @@ export interface VaultStats {
   netApy: number | null;   // Estimated leveraged APY (null if unavailable)
   supplyApr: number | null;
   borrowApr: number | null;
+  // Realized harvest annualized APR (derived from on-chain harvest events)
+  realizedHarvestApy?: number; // expressed as APR percent (e.g. 1.23 => 1.23%)
+  realizedHarvest30d?: number; // sum of underlying realized in last 30 days (units = underlying)
 }
 
 export interface UserVaultPosition {
@@ -180,6 +183,19 @@ export async function fetchVaultStats(
       }
     }
 
+    // Fetch realized harvest revenue from on-chain events (last 30 days)
+    let realizedHarvestApy: number | undefined = undefined;
+    let realizedHarvest30d: number | undefined = undefined;
+    try {
+      const res = await fetchHarvestRealized30d(vault, 30);
+      realizedHarvest30d = res.sum30;
+      if (realizedHarvest30d > 0 && totalEquity > 0) {
+        const annualized = (realizedHarvest30d / totalEquity) * (365 / 30);
+        // Keep same units as netApy (APR percent)
+        realizedHarvestApy = annualized * 100;
+      }
+    } catch { /* ignore event failures */ }
+
     return {
       totalEquity,
       totalShares,
@@ -195,6 +211,8 @@ export async function fetchVaultStats(
       netApy,
       supplyApr,
       borrowApr,
+      realizedHarvestApy,
+      realizedHarvest30d,
     };
   } catch {
     return null;
@@ -367,3 +385,88 @@ export function formatHf(hf: number): { text: string; cls: string } {
   if (hf >= 1.1) return { text, cls: "hf-warn" };
   return { text, cls: "hf-bad" };
 }
+
+// ── Harvest event helpers (on-chain realized revenue) ───────────────────────
+
+function b64ToBytes(b64: string): Uint8Array {
+  // browser-friendly atob
+  try {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  } catch (e) {
+    return new Uint8Array();
+  }
+}
+
+function bytesToBigIntBE(b: Uint8Array): bigint {
+  let v = 0n;
+  for (let i = 0; i < b.length; i++) {
+    v = (v << 8n) + BigInt(b[i]);
+  }
+  // interpret as signed if high bit set
+  if (b.length > 0 && (b[0] & 0x80) !== 0) {
+    const bits = BigInt(b.length * 8);
+    v = v - (1n << bits);
+  }
+  return v;
+}
+
+/**
+ * Fetch harvest events for a vault and sum realized underlying over `days`.
+ * Returns sum in underlying units (float) and raw count.
+ */
+export async function fetchHarvestRealized30d(vault: VaultConfig, days = 30): Promise<{ sum30: number; count: number }>
+{
+  try {
+    const rpcBase = getActiveNetwork() === "testnet"
+      ? "https://soroban-testnet.stellar.org"
+      : "https://soroban-rpc.creit.tech";
+    const url = rpcBase.replace(/\/$/, "") + "/soroban/events?contract_id=" + encodeURIComponent(vault.vaultId) + "&limit=1000";
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return { sum30: 0, count: 0 };
+    const data = await res.json();
+    const events = data.events ?? [];
+    const cutoff = Date.now() - days * 24 * 3600 * 1000;
+
+    let sumRaw = 0n;
+    let count = 0;
+    for (const ev of events) {
+      try {
+        if (!ev.ledgerClosedAt) continue;
+        const ts = Date.parse(ev.ledgerClosedAt);
+        if (isNaN(ts) || ts < cutoff) continue;
+
+        // Try to identify harvest-like topics: decode first topic and look for 'harv' or 'fee'
+        const topics: string[] = ev.topic ?? [];
+        if (!topics.length) continue;
+        const t0 = topics[0];
+        const t0Bytes = b64ToBytes(t0);
+        const t0Text = new TextDecoder().decode(t0Bytes).toLowerCase();
+        if (!(t0Text.includes("harv") || t0Text.includes("fee") || t0Text.includes("harvest"))) continue;
+
+        // Decode value as big-endian i128/unsigned integer
+        const vB64 = ev.value as string;
+        if (!vB64) continue;
+        const vb = b64ToBytes(vB64);
+        if (vb.length === 0) continue;
+        const vBig = bytesToBigIntBE(vb);
+
+        sumRaw += vBig;
+        count += 1;
+      } catch (e) {
+        // ignore parse errors for individual events
+        continue;
+      }
+    }
+
+    // Convert raw (assumed stroops with vault.decimals) to float underlying
+    const scalar = BigInt(10) ** BigInt(vault.decimals);
+    const sum30 = Number(sumRaw) / Number(scalar || 1n);
+    return { sum30, count };
+  } catch (e) {
+    return { sum30: 0, count: 0 };
+  }
+}
+
