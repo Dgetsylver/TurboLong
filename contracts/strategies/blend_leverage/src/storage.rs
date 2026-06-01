@@ -19,6 +19,8 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
+    Admin,
+    Paused,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -147,6 +149,32 @@ pub fn get_keeper(e: &Env) -> Address {
         .persistent()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
+}
+
+// ── Admin ────────────────────────────────────────────────────────────────────
+
+pub fn set_admin(e: &Env, admin: &Address) {
+    e.storage().instance().set(&DataKey::Admin, admin);
+}
+
+pub fn get_admin(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .expect("Admin not set")
+}
+
+// ── Paused state ─────────────────────────────────────────────────────────────
+
+pub fn set_paused(e: &Env, paused: bool) {
+    e.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+pub fn is_paused(e: &Env) -> bool {
+    e.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────
