@@ -255,6 +255,7 @@ export function setNetwork(net: NetworkMode) {
   horizon = new Horizon.Server(_cfg.horizonUrl);
   // Reset BLND price cache
   _blndPriceCache = null;
+  _blndPriceOverride = null;
 }
 
 /** Exported getters for active config — used by main.ts and other modules */
@@ -367,12 +368,31 @@ async function simulate(op: xdr.Operation): Promise<any> {
 // ── BLND price from CoinGecko ─────────────────────────────────────────────────
 
 let _blndPriceCache: number | null = null;
+let _blndPriceOverride: number | null = null;
+
+function activeBlndPrice(): number {
+  return _blndPriceOverride ?? _blndPriceCache ?? 0;
+}
+
+export function getBlndPriceAssumption(): number | null {
+  return _blndPriceOverride;
+}
+
+export function getDefaultBlndPrice(): number | null {
+  return _blndPriceCache;
+}
+
+export function setBlndPriceAssumption(price: number | null): number | null {
+  _blndPriceOverride = price !== null && Number.isFinite(price) && price > 0 ? price : null;
+  return _blndPriceOverride;
+}
 
 /**
  * Fetch BLND price. Goes straight to CoinGecko since no pool oracle lists BLND.
  * The pool parameter is accepted for API consistency but currently unused.
  */
 export async function fetchBlndPrice(pool: PoolDef, userAddress: string): Promise<number> {
+  if (_blndPriceOverride !== null) return _blndPriceOverride;
   if (_blndPriceCache !== null) return _blndPriceCache;
 
   // CoinGecko free API
@@ -392,6 +412,23 @@ export async function fetchBlndPrice(pool: PoolDef, userAddress: string): Promis
   _blndPriceCache = 0;
   console.warn("[blend] BLND price unavailable — emissions APR will show 0");
   return 0;
+}
+
+export function withBlndPriceAssumption(rs: ReserveStats, blndPrice = activeBlndPrice()): ReserveStats {
+  const supplyBlndYr = Number(rs.supplyEps) * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
+  const borrowBlndYr = Number(rs.borrowEps) * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
+  const totalSupplyUsd = rs.totalSupply * rs.priceUsd;
+  const totalBorrowUsd = rs.totalBorrow * rs.priceUsd;
+  const blndSupplyApr = totalSupplyUsd > 0 ? (supplyBlndYr * blndPrice / totalSupplyUsd) * 100 : 0;
+  const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
+
+  return {
+    ...rs,
+    blndSupplyApr,
+    blndBorrowApr,
+    netSupplyApr: rs.interestSupplyApr + blndSupplyApr,
+    netBorrowCost: rs.interestBorrowApr - blndBorrowApr,
+  };
 }
 
 // ── Per-asset pool data ───────────────────────────────────────────────────────
@@ -617,7 +654,7 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
   const projSupplyUsd = projSupply * rs.priceUsd;
   const projBorrowUsd = projBorrow * rs.priceUsd;
 
-  const bp = _blndPriceCache ?? 0;
+  const bp = activeBlndPrice();
   const blndSupplyApr = projSupplyUsd > 0 ? (supplyBlndYr * bp / projSupplyUsd) * 100 : 0;
   const blndBorrowApr = projBorrowUsd > 0 ? (borrowBlndYr * bp / projBorrowUsd) * 100 : 0;
 
@@ -1339,4 +1376,69 @@ export async function submitClassicXdr(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
   const result = await horizon.submitTransaction(tx);
   return (result as any).hash;
+}
+
+// ── Position event timeline (A25) ─────────────────────────────────────────────
+
+export type PositionEventKind = "open" | "rebalance" | "harvest" | "close";
+
+export interface PositionEvent {
+  kind:      PositionEventKind;
+  hash:      string;
+  timestamp: number; // ms since epoch
+  hf:        number | null;
+}
+
+/**
+ * Fetch on-chain events for a user's position in a pool by scanning Horizon
+ * payment/invoke operations on the pool contract account.
+ *
+ * Horizon's /accounts/{pool}/operations endpoint returns all operations that
+ * touched the pool contract. We filter by the user's source account and map
+ * the operation type / function name to a PositionEventKind.
+ */
+export async function fetchPositionEvents(
+  pool: PoolDef,
+  userAddress: string,
+  assetId: string,
+): Promise<PositionEvent[]> {
+  const events: PositionEvent[] = [];
+  // Horizon returns up to 200 records per page; one page is enough for a timeline.
+  const url = `${_cfg.horizonUrl}/accounts/${pool.id}/operations?limit=200&order=desc&include_failed=false`;
+  let resp: any;
+  try {
+    resp = await (await fetch(url)).json();
+  } catch {
+    return events;
+  }
+  const records: any[] = resp?._embedded?.records ?? [];
+  for (const op of records) {
+    // Only care about invoke_host_function ops from this user
+    if (op.type !== "invoke_host_function") continue;
+    if (op.source_account !== userAddress) continue;
+
+    const fn: string = op.function ?? "";
+    let kind: PositionEventKind | null = null;
+    if (fn === "submit") {
+      // Distinguish open vs close vs rebalance by checking asset involvement.
+      // We use the presence of the assetId in the parameters as a heuristic.
+      const params: string = JSON.stringify(op.parameters ?? []);
+      if (params.includes(assetId)) {
+        // Heuristic: if the ledger_key_hash list is short it's likely an open/close;
+        // we fall back to "rebalance" for all submit calls on existing positions.
+        kind = "rebalance";
+      }
+    } else if (fn === "claim") {
+      kind = "harvest";
+    }
+    if (!kind) continue;
+
+    events.push({
+      kind,
+      hash:      op.transaction_hash,
+      timestamp: new Date(op.created_at).getTime(),
+      hf:        null, // HF snapshot injected by main.ts at record time
+    });
+  }
+  return events;
 }
