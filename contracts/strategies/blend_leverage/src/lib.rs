@@ -11,6 +11,8 @@ mod storage;
 mod test_leverage;
 #[cfg(test)]
 mod test_integration;
+#[cfg(test)]
+mod test_proptest;
 
 use constants::SCALAR_12;
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
