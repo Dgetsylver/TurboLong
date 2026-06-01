@@ -17,6 +17,17 @@ pub const MAX_RATE_SPREAD: i128 = 15_000_000; // 15% in 1e7
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
+/// Maximum number of leverage loops allowed per deposit transaction.
+///
+/// Each loop step issues two pool host-function calls (supply-collateral + borrow).
+/// Soroban's per-transaction instruction budget and the diminishing marginal supply
+/// at high loop counts (c^20 < 0.36 for c = 0.95) make 20 the practical ceiling.
+/// The operator-visible `target_loops` in `Config` is the tunable knob; this constant
+/// is a hard safety ceiling that prevents misconfiguration from bricking transactions.
+///
+/// See `leverage::loop_step_count` and `README.md` § "Loop cap rationale" for details.
+pub const MAX_LOOPS: u32 = 20;
+
 /// Blend v2 request type constants
 pub const REQUEST_TYPE_SUPPLY_COLLATERAL: u32 = 2;
 pub const REQUEST_TYPE_WITHDRAW_COLLATERAL: u32 = 3;
