@@ -19,7 +19,8 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Val, Vec,
+    contract, contractimpl, symbol_short, token::TokenClient, Address, Bytes, Env, IntoVal,
+    String, Val, Vec,
 };
 use storage::{extend_instance_ttl, Config};
 
@@ -49,6 +50,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [5] c_factor: i128         — collateral factor (1e7)
     ///   [6] target_loops: u32      — number of leverage loops
     ///   [7] min_hf: i128           — minimum health factor (1e7)
+    ///   [8] admin: Address         — admin for emergency pause
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -82,6 +84,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .get(7)
             .expect("Missing: min_hf")
             .into_val(&e);
+        let admin: Address = init_args
+            .get(8)
+            .expect("Missing: admin")
+            .into_val(&e);
 
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
@@ -111,6 +117,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_admin(&e, &admin);
     }
 
     fn asset(e: Env) -> Result<Address, StrategyError> {
@@ -127,6 +134,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// 4. Return the depositor's underlying balance
     fn deposit(e: Env, amount: i128, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
+        if storage::is_paused(&e) {
+            return Err(StrategyError::NotAuthorized);
+        }
         check_positive_amount(amount)?;
         from.require_auth();
 
@@ -205,6 +215,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// No new shares are minted — this increases per-share equity.
     fn harvest(e: Env, from: Address, data: Option<Bytes>) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
+        if storage::is_paused(&e) {
+            return Err(StrategyError::NotAuthorized);
+        }
 
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
@@ -378,5 +391,45 @@ impl BlendLeverageStrategy {
             reserves.b_rate,
             reserves.d_rate,
         ))
+    }
+
+    /// Pause new deposits and leverage operations. Withdrawals remain unaffected.
+    /// Only the admin (set at init) may call this.
+    /// Emits a `PauseStateChange` event with `true`.
+    pub fn pause(e: Env) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        let admin = storage::get_admin(&e);
+        admin.require_auth();
+        storage::set_paused(&e, true);
+        e.events().publish(
+            (symbol_short!("pause"), symbol_short!("state")),
+            true,
+        );
+        Ok(())
+    }
+
+    /// Resume normal operation after a pause. Only the admin may call this.
+    /// Emits a `PauseStateChange` event with `false`.
+    pub fn unpause(e: Env) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        let admin = storage::get_admin(&e);
+        admin.require_auth();
+        storage::set_paused(&e, false);
+        e.events().publish(
+            (symbol_short!("pause"), symbol_short!("state")),
+            false,
+        );
+        Ok(())
+    }
+
+    /// Return whether the contract is currently paused.
+    pub fn paused(e: Env) -> bool {
+        storage::is_paused(&e)
+    }
+
+    /// Get the current admin address.
+    pub fn get_admin(e: Env) -> Result<Address, StrategyError> {
+        extend_instance_ttl(&e);
+        Ok(storage::get_admin(&e))
     }
 }
