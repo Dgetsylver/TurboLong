@@ -1,4 +1,4 @@
-use crate::constants::{MAX_SAFE_UTILIZATION, SCALAR_12, SCALAR_7};
+use crate::constants::{MAX_LOOPS, MAX_SAFE_UTILIZATION, SCALAR_12, SCALAR_7};
 use crate::storage::{Config, LeverageReserves};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
@@ -33,9 +33,28 @@ pub fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i12
 }
 
 /// Total number of steps in a leverage loop (n_loops supply+borrow pairs + 1 final supply).
+///
+/// Hard-capped at `MAX_LOOPS` (20) loops for three reasons:
+///
+/// 1. **Soroban instruction budget** – each loop step issues two pool host-function calls
+///    (supply-collateral + borrow). Soroban's per-transaction CPU-instruction and
+///    host-function-call limits are finite; unconstrained loops would cause the
+///    transaction to abort with a resource-exhaustion error beyond ~20 iterations.
+///
+/// 2. **Diminishing returns** – with c = 0.95 the marginal supply added at loop 20 is
+///    initial × 0.95^20 ≈ 0.36 × initial, less than 4% of the total leveraged
+///    position. Every additional loop yields strictly less; 20 is the practical plateau
+///    where the additional leverage gain no longer justifies the extra on-chain cost.
+///
+/// 3. **Safety ceiling vs. operator knob** – the per-deployment `target_loops` in
+///    `Config` is the tunable parameter (validated at init, must be ≤ `MAX_LOOPS`).
+///    This constant is a hard ceiling that prevents misconfigured `target_loops` values
+///    from issuing unbounded on-chain requests even if validation is bypassed.
+///
+/// See also `README.md` § "Loop cap rationale".
 #[inline]
 pub fn loop_step_count(n_loops: u32) -> u32 {
-    (n_loops + 1).min(21)
+    (n_loops + 1).min(MAX_LOOPS + 1)
 }
 
 /// Compute supply and borrow amounts for each loop iteration.
