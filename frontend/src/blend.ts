@@ -276,6 +276,17 @@ export interface AssetInfo {
   maxUtil:      number;   // 0..1
 }
 
+/**
+ * Result of a trustline check before deposit.
+ * `missing` is empty when all required trustlines already exist (no-op path).
+ */
+export interface MissingTrustlineResult {
+  /** Classic assets that need a changeTrust op. Empty = no-op. */
+  missing: Asset[];
+  /** Number of non-native trustlines currently on the account (for limit check). */
+  currentCount: number;
+}
+
 /** Build the AssetInfo array for a given pool from active network's asset metadata. */
 export function getPoolAssets(pool: PoolDef): AssetInfo[] {
   return pool.assetIds.map((id, idx) => {
@@ -1441,4 +1452,113 @@ export async function fetchPositionEvents(
     });
   }
   return events;
+}
+
+// ── Trustline auto-setup ──────────────────────────────────────────────────────
+
+/**
+ * Determine which of the three required classic assets (b_token, d_token, BLND)
+ * are missing trustlines on the user's Stellar account.
+ *
+ * Queries the pool contract for the reserve's b_token and d_token contract IDs,
+ * calls symbol() and issuer() on each to derive the classic Asset, then loads
+ * the user's Horizon account to find which assets lack a trustline.
+ *
+ * @param pool        Active pool definition
+ * @param userAddress Stellar account G-address
+ * @param assetId     Soroban contract ID of the underlying asset being deposited
+ * @returns           Missing assets + current trustline count
+ * @throws            If Horizon account load fails or reserve data is unavailable
+ */
+export async function getMissingTrustlines(
+  pool: PoolDef,
+  userAddress: string,
+  assetId: string,
+): Promise<MissingTrustlineResult> {
+  // Fetch reserve config to get b_token and d_token contract IDs
+  const poolContract = new Contract(pool.id);
+  const reserveRaw = await simulate(
+    poolContract.call("get_reserve", new Address(assetId).toScVal())
+  );
+  if (!reserveRaw) {
+    throw new Error(`Failed to fetch reserve data for asset ${assetId} — cannot check trustlines.`);
+  }
+
+  const bTokenId: string = reserveRaw.config.b_token;
+  const dTokenId: string = reserveRaw.config.d_token;
+
+  // Derive classic Asset for b_token
+  const bSymbol: string | null = await simulate(new Contract(bTokenId).call("symbol"));
+  const bIssuer: string | null = await simulate(new Contract(bTokenId).call("issuer"));
+
+  // Derive classic Asset for d_token
+  const dSymbol: string | null = await simulate(new Contract(dTokenId).call("symbol"));
+  const dIssuer: string | null = await simulate(new Contract(dTokenId).call("issuer"));
+
+  // Build required asset list; skip native assets (no trustline needed for XLM)
+  const required: Asset[] = [];
+  if (bSymbol && bIssuer) required.push(new Asset(bSymbol, bIssuer));
+  if (dSymbol && dIssuer) required.push(new Asset(dSymbol, dIssuer));
+  if (!_cfg.blndClassic.isNative()) required.push(_cfg.blndClassic);
+
+  // Load account from Horizon — propagate any error to the caller
+  const acc = await horizon.loadAccount(userAddress);
+
+  // Build set of existing trustlines as "CODE:ISSUER"
+  const existing = new Set<string>(
+    acc.balances
+      .filter((b: any) => b.asset_type !== "native")
+      .map((b: any) => `${b.asset_code}:${b.asset_issuer}`)
+  );
+
+  // Count current non-native trustlines for limit check
+  const currentCount = acc.balances.filter((b: any) => b.asset_type !== "native").length;
+
+  // Filter to assets that don't yet have a trustline
+  const missing = required.filter(
+    a => !existing.has(`${a.getCode()}:${a.getIssuer()}`)
+  );
+
+  return { missing, currentCount };
+}
+
+/**
+ * Build a standalone classic transaction containing one changeTrust op per
+ * missing asset.
+ *
+ * This MUST be a separate transaction from the Soroban deposit: the Stellar
+ * protocol requires any transaction containing a Soroban operation
+ * (invokeHostFunction) to contain exactly that one operation, so changeTrust
+ * ops cannot be bundled into the leverage-loop submit tx. The caller signs and
+ * submits this classic tx (via Horizon) BEFORE the Soroban deposit tx.
+ *
+ * Returns null when there are no missing trustlines (caller skips the step).
+ *
+ * @param missingAssets Classic assets that need a trustline
+ * @param userAddress   Source account G-address
+ * @returns             Base64 XDR of the classic changeTrust tx, or null if none needed
+ */
+export async function buildTrustlineXdr(
+  missingAssets: Asset[],
+  userAddress: string,
+): Promise<string | null> {
+  if (missingAssets.length === 0) return null;
+
+  const MAX_TRUSTLINE_LIMIT = "922337203685.4775807"; // Stellar i64::MAX in stroops / 1e7
+
+  // Classic tx: load the source account from Horizon for a fresh sequence.
+  const account = await horizon.loadAccount(userAddress);
+
+  const builder = new TransactionBuilder(account, {
+    fee: (BigInt(BASE_FEE) * BigInt(Math.max(1, missingAssets.length))).toString(),
+    networkPassphrase: _cfg.passphrase,
+  });
+
+  for (const asset of missingAssets) {
+    builder.addOperation(
+      Operation.changeTrust({ asset, limit: MAX_TRUSTLINE_LIMIT })
+    );
+  }
+
+  return builder.setTimeout(180).build().toXDR();
 }
