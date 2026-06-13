@@ -14,23 +14,23 @@
   <!-- Disclaimer modal -->
   <div id="disclaimer-overlay" class="disclaimer-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
     <div class="disclaimer-modal">
-      <div class="disclaimer-modal-icon">&#9888;</div>
-      <h2 id="disclaimer-title">Important Disclaimer</h2>
+      <div class="disclaimer-modal-icon" aria-hidden="true">&#9888;</div>
+      <h2 id="disclaimer-title" data-i18n="disclaimer.title">Important Disclaimer</h2>
       <div class="disclaimer-body">
-        <p>This is an <strong>experimental project</strong>. Using leveraged positions on DeFi protocols carries significant financial risk, including the <strong>complete loss of your deposited funds</strong>.</p>
-        <p>By proceeding, you acknowledge that:</p>
+        <p data-i18n="disclaimer.body1">This is an experimental project. Using leveraged positions on DeFi protocols carries significant financial risk, including the complete loss of your deposited funds.</p>
+        <p data-i18n="disclaimer.body2">By proceeding, you acknowledge that:</p>
         <ul>
-          <li>You understand the risks of leveraged DeFi positions, including liquidation.</li>
-          <li>You use this tool <strong>entirely at your own risk</strong>. The developers accept no liability for any losses.</li>
-          <li>This software is provided as-is with no guarantees of correctness or availability.</li>
-          <li>You are <strong>not accessing this from a jurisdiction</strong> where using decentralized finance tools or cryptocurrency is prohibited or restricted by law.</li>
+          <li data-i18n="disclaimer.risk1">You understand the risks of leveraged DeFi positions, including liquidation.</li>
+          <li data-i18n="disclaimer.risk2">You use this tool entirely at your own risk. The developers accept no liability for any losses.</li>
+          <li data-i18n="disclaimer.risk3">This software is provided as-is with no guarantees of correctness or availability.</li>
+          <li data-i18n="disclaimer.risk4">You are not accessing this from a jurisdiction where using decentralized finance tools or cryptocurrency is prohibited or restricted by law.</li>
         </ul>
       </div>
       <label class="disclaimer-check">
         <input type="checkbox" id="disclaimer-checkbox" />
-        <span>I understand and accept these terms</span>
+        <span data-i18n="disclaimer.accept">I understand and accept these terms</span>
       </label>
-      <button id="disclaimer-accept" class="btn btn-primary btn-lg" disabled>Enter App</button>
+      <button id="disclaimer-accept" class="btn btn-primary btn-lg" disabled data-i18n="disclaimer.enter">Enter App</button>
     </div>
   </div>
 
@@ -39,13 +39,13 @@
     <!-- Top Navigation Bar -->
     <nav class="top-nav">
       <div class="top-nav-left">
-        <button id="hamburger-btn" class="hamburger-btn" aria-label="Open navigation menu">&#9776;</button>
+        <button id="hamburger-btn" class="hamburger-btn" aria-label="Open navigation menu" aria-controls="mobile-sidebar" aria-expanded="false">&#9776;</button>
         <div class="logo">
           <img src="logo.svg" alt="Turbolong" class="logo-icon-img" />
           <span class="logo-text">Turbo<span class="logo-accent">long</span></span>
         </div>
         <button class="nav-btn" id="proto-overview" data-i18n="nav.dashboard">Dashboard</button>
-        <button class="nav-btn active" id="proto-blend"><span data-i18n="nav.trade">Trade</span> <span class="nav-caret">&#9662;</span></button>
+        <button class="nav-btn active" id="proto-blend"><span data-i18n="nav.trade">Trade</span> <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
         <div id="pool-dropdown" class="pool-dropdown hidden"></div>
         <button class="nav-btn" id="proto-vault" data-i18n="nav.vault">Vault</button>
         <button class="nav-btn" id="proto-swap" data-i18n="nav.swap">Swap</button>
@@ -54,26 +54,28 @@
       <div class="top-nav-right" id="wallet-area">
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
-          <button id="expert-toggle" class="settings-dropdown-item"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
+          <button id="expert-toggle" class="settings-dropdown-item" data-tip="Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only." data-tip-i18n="settings.expertTip"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item"><span data-i18n="settings.theme">Theme</span> <span class="settings-badge">&#9790;</span></button>
           <button id="shortcuts-help-btn" class="settings-dropdown-item"><span data-i18n="settings.shortcuts">Keyboard Shortcuts</span> <span class="settings-badge">?</span></button>
+          <button id="alerts-menu-btn" class="settings-dropdown-item"><span data-i18n="settings.alerts">Set up alerts</span> <span class="settings-badge">&#128276;</span></button>
+          <button id="tour-btn" class="settings-dropdown-item"><span data-i18n="settings.tour">Take the tour</span></button>
           <button id="lang-toggle" class="settings-dropdown-item"><span data-i18n="settings.language">Language</span> <span class="settings-badge" id="lang-badge">EN</span></button>
         </div>
-        <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
-        <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
+        <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet" data-tip-i18n="net.toggleTip">Mainnet</button>
+        <button id="connect-btn" class="btn btn-primary btn-connect" data-i18n="nav.connect">Connect Wallet</button>
         <div id="wallet-connected" class="wallet-connected hidden">
           <div class="wallet-info">
             <span class="wallet-dot"></span>
             <span id="wallet-address" class="mono"></span>
           </div>
-          <button id="switch-wallet-btn" class="btn btn-ghost btn-sm" data-tip="Switch to a different account">Switch</button>
-          <button id="disconnect-btn" class="btn btn-ghost btn-sm">Disconnect</button>
+          <button id="switch-wallet-btn" class="btn btn-ghost btn-sm" data-tip="Switch to a different account" data-tip-i18n="wallet.switchTip" data-i18n="wallet.switch">Switch</button>
+          <button id="disconnect-btn" class="btn btn-ghost btn-sm" data-i18n="wallet.disconnect">Disconnect</button>
         </div>
       </div>
     </nav>
 
     <!-- Legacy sidebar for mobile drawer -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="mobile-sidebar">
       <div class="sidebar-top">
         <div class="logo">
           <img src="logo.svg" alt="Turbolong" class="logo-icon-img" />
@@ -82,46 +84,46 @@
         <nav class="sidebar-nav">
           <div class="protocol-section">
             <button class="protocol-btn" id="mobile-proto-overview">
-              <span class="protocol-icon">&#9632;</span>
-              Dashboard
+              <span class="protocol-icon" aria-hidden="true">&#9632;</span>
+              <span data-i18n="nav.dashboard">Dashboard</span>
             </button>
           </div>
           <div class="protocol-section">
             <button class="protocol-btn active" id="mobile-proto-blend">
               <span class="protocol-dot protocol-dot-live"></span>
-              Blend Protocol
+              <span data-i18n="sidebar.blend">Blend Protocol</span>
             </button>
             <div id="pool-tabs" class="pool-tabs" role="tablist"></div>
           </div>
           <div class="protocol-section">
             <button class="protocol-btn protocol-btn-disabled" disabled>
               <span class="protocol-dot protocol-dot-soon"></span>
-              More Protocols
-              <span class="coming-soon-badge">Soon</span>
+              <span data-i18n="sidebar.moreProtocols">More Protocols</span>
+              <span class="coming-soon-badge" data-i18n="sidebar.soon">Soon</span>
             </button>
           </div>
           <div class="protocol-section">
             <button class="protocol-btn" id="mobile-proto-vault">
-              <span class="protocol-icon">&#9878;</span>
-              Vault
+              <span class="protocol-icon" aria-hidden="true">&#9878;</span>
+              <span data-i18n="nav.vault">Vault</span>
             </button>
           </div>
           <div class="protocol-section">
             <button class="protocol-btn" id="mobile-proto-swap">
-              <span class="protocol-icon">&#8644;</span>
-              Swap
+              <span class="protocol-icon" aria-hidden="true">&#8644;</span>
+              <span data-i18n="nav.swap">Swap</span>
             </button>
           </div>
           <div class="protocol-section">
             <button class="protocol-btn" id="mobile-proto-compare">
-              <span class="protocol-icon">&#9776;</span>
-              Compare
+              <span class="protocol-icon" aria-hidden="true">&#9776;</span>
+              <span data-i18n="nav.compare">Compare</span>
             </button>
           </div>
         </nav>
       </div>
       <div class="sidebar-bottom">
-        <button id="mobile-expert-toggle" class="sidebar-btn expert-toggle" data-tip="Expert mode: lower minimum HF to 1.005">Expert</button>
+        <button id="mobile-expert-toggle" class="sidebar-btn expert-toggle" data-tip="Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only." data-tip-i18n="settings.expertTip">Expert</button>
         <button id="mobile-theme-toggle" class="sidebar-btn theme-toggle" data-tip="Toggle light/dark mode">&#9790;</button>
       </div>
     </aside>
@@ -131,10 +133,10 @@
     <div class="main-wrap">
       <!-- Testnet banner -->
       <div id="testnet-banner" class="testnet-banner hidden">
-        <span>&#9888; Testnet Mode</span>
-        <span class="testnet-banner-sep">&middot;</span>
-        <span class="testnet-banner-hint">Using Stellar Testnet &mdash; no real funds at risk</span>
-        <button id="fund-testnet-btn" class="btn btn-sm testnet-fund-btn" data-tip="Fund with Friendbot XLM, open USDC trustline, swap XLM for USDC">Fund Wallet</button>
+        <span><span aria-hidden="true">&#9888;</span> <span data-i18n="testnet.mode">Testnet Mode</span></span>
+        <span class="testnet-banner-sep" aria-hidden="true">&middot;</span>
+        <span class="testnet-banner-hint" data-i18n="testnet.hint">Using Stellar Testnet — no real funds at risk</span>
+        <button id="fund-testnet-btn" class="btn btn-sm testnet-fund-btn" data-tip="Fund with Friendbot XLM, open USDC trustline, swap XLM for USDC" data-tip-i18n="testnet.fundTip" data-i18n="testnet.fund">Fund Wallet</button>
       </div>
 
       <!-- Asset tabs bar (below nav, visible on trade view) -->
@@ -164,76 +166,76 @@
           <div class="landing-stats">
             <div class="landing-stat">
               <span class="landing-stat-value">3</span>
-              <span class="landing-stat-label">Pools</span>
+              <span class="landing-stat-label" data-i18n="landing.stat.pools">Pools</span>
             </div>
             <div class="landing-stat">
               <span class="landing-stat-value">8+</span>
-              <span class="landing-stat-label">Assets</span>
+              <span class="landing-stat-label" data-i18n="landing.stat.assets">Assets</span>
             </div>
             <div class="landing-stat">
               <span class="landing-stat-value">12.9&times;</span>
-              <span class="landing-stat-label">Max Leverage</span>
+              <span class="landing-stat-label" data-i18n="landing.stat.maxLev">Max Leverage</span>
             </div>
             <div class="landing-stat">
               <span class="landing-stat-value">&lt;5s</span>
-              <span class="landing-stat-label">Finality</span>
+              <span class="landing-stat-label" data-i18n="landing.stat.finality">Finality</span>
             </div>
           </div>
 
           <div class="landing-steps">
-            <h2>How It Works</h2>
+            <h2 data-i18n="landing.steps.title">How It Works</h2>
             <div class="landing-steps-grid">
               <div class="landing-step">
                 <div class="landing-step-num">1</div>
-                <h3>Connect Wallet</h3>
-                <p>Use Freighter, Lobstr, xBull, or any Stellar wallet to connect in seconds.</p>
+                <h3 data-i18n="landing.step1.title">Connect Wallet</h3>
+                <p data-i18n="landing.step1.body">Use Freighter, Lobstr, xBull, or any Stellar wallet to connect in seconds.</p>
               </div>
               <div class="landing-step">
                 <div class="landing-step-num">2</div>
-                <h3>Choose Asset &amp; Leverage</h3>
-                <p>Select a Blend pool and asset, then set your leverage multiplier with a slider.</p>
+                <h3 data-i18n="landing.step2.title">Choose Asset &amp; Leverage</h3>
+                <p data-i18n="landing.step2.body">Select a Blend pool and asset, then set your leverage multiplier with a slider.</p>
               </div>
               <div class="landing-step">
                 <div class="landing-step-num">3</div>
-                <h3>One-Click Position</h3>
-                <p>Turbolong executes the recursive lending loop atomically. Approve and submit.</p>
+                <h3 data-i18n="landing.step3.title">One-Click Position</h3>
+                <p data-i18n="landing.step3.body">Turbolong executes the recursive lending loop atomically. Approve and submit.</p>
               </div>
             </div>
           </div>
 
           <div class="landing-features">
-            <h2>Features</h2>
+            <h2 data-i18n="landing.features.title">Features</h2>
             <div class="landing-features-grid">
               <div class="landing-feature">
-                <h3>Atomic Leverage Loops</h3>
-                <p>Recursive supply/borrow in a single transaction. No partial execution risk.</p>
+                <h3 data-i18n="landing.feat1.title">Atomic Leverage Loops</h3>
+                <p data-i18n="landing.feat1.body">Recursive supply/borrow in a single transaction. No partial execution risk.</p>
               </div>
               <div class="landing-feature">
-                <h3>Real-Time Health Monitoring</h3>
-                <p>Health factor, liquidation countdown, and borrow headroom updated live.</p>
+                <h3 data-i18n="landing.feat2.title">Real-Time Health Monitoring</h3>
+                <p data-i18n="landing.feat2.body">Health factor, liquidation countdown, and borrow headroom updated live.</p>
               </div>
               <div class="landing-feature">
-                <h3>BLND Rewards</h3>
-                <p>Claim and auto-convert BLND emissions to compound your position.</p>
+                <h3 data-i18n="landing.feat3.title">BLND Rewards</h3>
+                <p data-i18n="landing.feat3.body">Claim and auto-convert BLND emissions to compound your position.</p>
               </div>
               <div class="landing-feature">
-                <h3>Vault Strategy</h3>
-                <p>Set-and-forget leveraged USDC vault with permissionless rebalancing.</p>
+                <h3 data-i18n="landing.feat4.title">Vault Strategy</h3>
+                <p data-i18n="landing.feat4.body">Set-and-forget leveraged USDC vault with permissionless rebalancing.</p>
               </div>
               <div class="landing-feature">
-                <h3>Multi-Pool Support</h3>
-                <p>Trade across Etherfuse, Fixed, and YieldBlox pools on Blend Protocol.</p>
+                <h3 data-i18n="landing.feat5.title">Multi-Pool Support</h3>
+                <p data-i18n="landing.feat5.body">Trade across Etherfuse, Fixed, and YieldBlox pools on Blend Protocol.</p>
               </div>
               <div class="landing-feature">
-                <h3>Built on Stellar</h3>
-                <p>Fast finality, low fees, and battle-tested Soroban smart contracts.</p>
+                <h3 data-i18n="landing.feat6.title">Built on Stellar</h3>
+                <p data-i18n="landing.feat6.body">Fast finality, low fees, and battle-tested Soroban smart contracts.</p>
               </div>
             </div>
           </div>
 
           <div class="landing-risk">
             <div class="landing-risk-banner">
-              <strong>Risk Disclosure:</strong> Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software &mdash; use at your own risk.
+              <strong data-i18n="landing.risk.label">Risk Disclosure:</strong> <span data-i18n="landing.risk.body">Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software — use at your own risk.</span>
             </div>
           </div>
 
@@ -241,6 +243,7 @@
             <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
             <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
             <a href="https://stellar.expert" target="_blank" rel="noopener">Stellar Expert</a>
+            <a href="./status.html" target="_blank" rel="noopener" data-i18n="nav.status">Status</a>
           </div>
         </div>
 
@@ -287,7 +290,7 @@
           <div id="stats-collapsible" class="stats-collapsible">
             <button id="stats-toggle" class="stats-toggle">
               <span>Pool Statistics</span>
-              <span class="stats-toggle-icon">&#9662;</span>
+              <span class="stats-toggle-icon" aria-hidden="true">&#9662;</span>
             </button>
             <div id="stats-body" class="stats-body">
               <!-- Stats row -->
@@ -338,7 +341,7 @@
                     <span class="apr-val apr-blnd" id="supply-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span><span class="rate-trend-slot" id="supply-net-trend"></span></span>
                     <span class="apr-val" id="supply-net-apr">—</span>
                   </div>
                 </div>
@@ -353,7 +356,7 @@
                     <span class="apr-val apr-blnd" id="borrow-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span><span class="rate-trend-slot" id="borrow-net-trend"></span></span>
                     <span class="apr-val" id="borrow-net-cost">—</span>
                   </div>
                 </div>
@@ -374,9 +377,9 @@
           </div><!-- stats-collapsible -->
 
           <!-- Mobile card tabs -->
-          <div class="mobile-card-tabs" id="mobile-card-tabs">
-            <button class="mobile-card-tab active" data-panel="action">Open / Adjust</button>
-            <button class="mobile-card-tab" data-panel="position">Position Data</button>
+          <div class="mobile-card-tabs" id="mobile-card-tabs" role="tablist">
+            <button class="mobile-card-tab active" data-panel="action" role="tab" aria-selected="true">Open / Adjust</button>
+            <button class="mobile-card-tab" data-panel="position" role="tab" aria-selected="false">Position Data</button>
           </div>
 
           <div class="two-col">
@@ -448,6 +451,32 @@
                   <span class="slider-zone zone-maxi-degen hidden" id="zone-maxi-degen" data-zone="maxi-degen">Maxi Degen</span>
                 </div>
                 <p class="hf-warning hidden" id="non-borrowable-notice"></p>
+
+                <!-- Live HF risk band (P2 — always visible while previewing) -->
+                <div id="risk-band" class="risk-band">
+                  <div class="risk-band-head">
+                    <span class="risk-band-label" data-i18n="risk.bandLabel">Risk level</span>
+                    <span class="risk-band-status" id="risk-band-status">—</span>
+                  </div>
+                  <div class="risk-band-track">
+                    <span class="risk-seg risk-seg-safe" data-zone="safe" data-i18n="risk.safe">Safe</span>
+                    <span class="risk-seg risk-seg-caution" data-zone="caution" data-i18n="risk.caution">Caution</span>
+                    <span class="risk-seg risk-seg-high" data-zone="high" data-i18n="risk.high">High risk</span>
+                    <span class="risk-seg risk-seg-nearLiq" data-zone="nearLiq" data-i18n="risk.nearLiq">Near liquidation</span>
+                  </div>
+                </div>
+
+                <!-- Inline open-position warnings (P2) -->
+                <p class="hf-warning hidden" id="neg-apy-warning" data-i18n="warn.negApy">&#9888; Projected net APY is negative at this leverage — you'd pay more in borrow cost than you earn.</p>
+                <p class="hf-warning hidden" id="frozen-pool-warning" data-i18n="warn.frozenPool">&#9888; This pool is frozen. New positions can't be opened, and exiting may be hard — avoid adding exposure here.</p>
+                <p class="hf-warning hidden" id="high-util-warning" data-i18n="warn.highUtil">&#9888; Pool utilization is very high. Liquidity is tight, so exiting may be hard and forced-liquidation risk rises.</p>
+
+                <!-- Inline jargon explainer (P2) -->
+                <details class="learn-box">
+                  <summary data-i18n="learn.title">How leverage works / key terms</summary>
+                  <p data-i18n="learn.body">Leverage looping repeatedly supplies your asset as collateral and borrows against it, stacking exposure on a single deposit. Health Factor (HF) measures how safe the position is: when HF falls below 1.0 your position is liquidated and you lose collateral. The collateral factor (c_factor) caps how much you can borrow per unit of collateral — a higher c_factor allows more leverage. Adverse price moves or rising borrow rates lower your HF over time, pushing you toward liquidation.</p>
+                </details>
+
                 <div id="apy-chart" class="apy-chart"></div>
                 <div class="leverage-preview">
                   <div class="preview-row">
@@ -472,7 +501,7 @@
                     <span>Projected APY after deposit <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
                   <div class="preview-row">
-                    <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
+                    <span>Days to liquidation <span class="tooltip" data-tip="Estimated days before HF drops to 1.0 at current rates, based on the interest spread (borrow − supply). Indicative only — adverse price moves or rate drift can liquidate you much sooner.">?</span></span><strong id="prev-liq-days">—</strong>
                   </div>
                 </div>
                 <!-- Return calculator (#36) -->
@@ -570,7 +599,7 @@
                   <div class="position-metric">
                     <span class="metric-label">Asset HF <span class="tooltip" data-tip="Health Factor for this asset only. HF = (collateral x c_factor) / (debt / l_factor). Below 1.0 = liquidatable.">?</span></span>
                     <span class="metric-value" id="pos-hf">—</span>
-                    <div class="hf-bar-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="hf-bar" id="hf-bar"></div></div>
+                    <div class="hf-bar-wrap" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Health factor"><div class="hf-bar" id="hf-bar"></div></div>
                     <div class="hf-gauge-container"></div>
                   </div>
                   <div class="position-metric">
@@ -620,25 +649,25 @@
         <div id="swap-view" class="hidden">
           <section class="card swap-card">
             <div class="card-header">
-              <h2>Swap</h2>
-              <span class="swap-powered">via Stellar Broker</span>
+              <h2 data-i18n="nav.swap">Swap</h2>
+              <span class="swap-powered" data-i18n="swap.powered">via Stellar Broker</span>
             </div>
 
             <div class="form-group">
-              <label>You sell</label>
+              <label data-i18n="swap.youSell">You sell</label>
               <div class="swap-input-row">
                 <input type="number" id="swap-sell-amount" class="input mono" placeholder="0.00" min="0" step="any" />
                 <select id="swap-sell-asset" class="swap-asset-select"></select>
               </div>
-              <span class="balance-hint">Wallet: <span id="swap-sell-balance">—</span></span>
+              <span class="balance-hint"><span data-i18n="common.wallet">Wallet</span>: <span id="swap-sell-balance">—</span></span>
             </div>
 
             <div class="swap-arrow-row">
-              <button id="swap-reverse" class="swap-arrow-btn" data-tip="Reverse pair">&#8645;</button>
+              <button id="swap-reverse" class="swap-arrow-btn" data-tip="Reverse pair" data-tip-i18n="swap.reverseTip">&#8645;</button>
             </div>
 
             <div class="form-group">
-              <label>You receive (estimated)</label>
+              <label data-i18n="swap.youReceive">You receive (estimated)</label>
               <div class="swap-input-row">
                 <input type="text" id="swap-buy-amount" class="input mono" placeholder="—" readonly />
                 <select id="swap-buy-asset" class="swap-asset-select"></select>
@@ -647,35 +676,38 @@
 
             <div class="swap-quote-details hidden" id="swap-quote-details">
               <div class="preview-row">
-                <span>Rate</span><strong id="swap-rate" class="mono">—</strong>
+                <span data-i18n="swap.rate">Rate</span><strong id="swap-rate" class="mono">—</strong>
               </div>
               <div class="preview-row">
-                <span>Direct trade</span><strong id="swap-direct" class="mono">—</strong>
+                <span data-i18n="swap.route">Route</span><strong id="swap-route">—</strong>
               </div>
               <div class="preview-row">
-                <span>Broker advantage</span><strong id="swap-profit" class="mono">—</strong>
+                <span data-i18n="swap.direct">Direct trade</span><strong id="swap-direct" class="mono">—</strong>
               </div>
               <div class="preview-row">
-                <span>Aquarius rate</span><strong id="swap-aquarius" class="mono">—</strong>
+                <span data-i18n="swap.brokerAdvantage">Broker advantage</span><strong id="swap-profit" class="mono">—</strong>
               </div>
               <div class="preview-row">
-                <span>Best rate</span><strong id="swap-best-rate" class="best-rate-badge">—</strong>
+                <span data-i18n="swap.aquariusRate">Aquarius rate</span><strong id="swap-aquarius" class="mono">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="swap.bestRate">Best rate</span><strong id="swap-best-rate" class="best-rate-badge">—</strong>
               </div>
             </div>
 
             <!-- Broker settings — collapsed by default -->
             <details class="broker-settings">
-              <summary class="broker-settings-title">Broker Settings</summary>
+              <summary class="broker-settings-title" data-i18n="swap.brokerSettings">Broker Settings</summary>
               <div class="broker-settings-body">
                 <div class="preview-row slippage-row">
-                  <span>Slippage tolerance</span>
+                  <span data-i18n="swap.slippage">Slippage tolerance</span>
                   <div class="slippage-selector">
                     <button class="slippage-opt" data-slip="0.005">0.5%</button>
                     <button class="slippage-opt" data-slip="0.01">1%</button>
                     <button class="slippage-opt active" data-slip="0.02">2%</button>
                     <button class="slippage-opt" data-slip="0.05">5%</button>
                     <div class="slippage-custom">
-                      <input type="number" id="slippage-custom-input" class="input mono" placeholder="Custom" min="0.1" max="50" step="0.1" />
+                      <input type="number" id="slippage-custom-input" class="input mono" placeholder="Custom" min="0.1" max="50" step="0.1" data-i18n-ph="swap.custom" />
                       <span class="slippage-pct">%</span>
                     </div>
                   </div>
@@ -683,8 +715,8 @@
               </div>
             </details>
 
-            <button id="swap-btn" class="btn btn-primary btn-lg" disabled>Get Quote</button>
-            <p class="disclaimer">Swaps are executed through <a href="https://stellar.broker" target="_blank" rel="noopener">Stellar Broker</a> for best-route aggregation across Stellar DEXes.</p>
+            <button id="swap-btn" class="btn btn-primary btn-lg" disabled data-i18n="swap.getQuote">Get Quote</button>
+            <p class="disclaimer"><span data-i18n="swap.disclaimer1">Swaps are executed through</span> <a href="https://stellar.broker" target="_blank" rel="noopener">Stellar Broker</a> <span data-i18n="swap.disclaimer2">for best-route aggregation across Stellar DEXes.</span></p>
           </section>
         </div>
 
@@ -692,37 +724,37 @@
         <div id="vault-view" class="hidden">
           <section class="card vault-card">
             <div class="card-header">
-              <h2 id="vault-title">Leveraged USDC Vault</h2>
-              <span class="vault-badge">Strategy</span>
+              <h2 id="vault-title" data-i18n="vault.titleDefault">Leveraged USDC Vault</h2>
+              <span class="vault-badge" data-i18n="vault.strategyBadge">Strategy</span>
             </div>
 
             <!-- Vault stats -->
             <div id="vault-stats" class="vault-stats">
               <div class="stats-row">
                 <div class="stat-card">
-                  <span class="stat-label">Total TVL</span>
+                  <span class="stat-label" data-i18n="vault.totalTvl">Total TVL</span>
                   <span class="stat-value mono" id="vault-tvl">--</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label">Share Price</span>
+                  <span class="stat-label" data-i18n="vault.sharePrice">Share Price</span>
                   <span class="stat-value mono" id="vault-share-price">--</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label">Net APY <span class="tooltip" id="vault-apy-tip" data-tip="">?</span></span>
+                  <span class="stat-label"><span data-i18n="vault.netApy">Net APY</span> <span class="tooltip" id="vault-apy-tip" data-tip="">?</span></span>
                   <span class="stat-value mono" id="vault-apy">--</span>
                 </div>
               </div>
               <div class="stats-row">
                 <div class="stat-card">
-                  <span class="stat-label" data-tip="Current leverage multiplier = collateral / equity">Leverage</span>
+                  <span class="stat-label" data-tip="Current leverage multiplier = collateral / equity" data-tip-i18n="vault.leverageTip" data-i18n="confirm.leverage">Leverage</span>
                   <span class="stat-value mono" id="vault-leverage">--</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label" data-tip="Strategy health factor. Below min HF, anyone can trigger rebalance to deleverage.">Health Factor</span>
+                  <span class="stat-label" data-tip="Strategy health factor. Below min HF, anyone can trigger rebalance to deleverage." data-tip-i18n="vault.hfTip" data-i18n="vault.healthFactor">Health Factor</span>
                   <span class="stat-value" id="vault-hf">--</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label">Min HF</span>
+                  <span class="stat-label" data-i18n="vault.minHf">Min HF</span>
                   <span class="stat-value mono" id="vault-min-hf">--</span>
                 </div>
               </div>
@@ -730,38 +762,39 @@
 
             <!-- Strategy position breakdown -->
             <div id="vault-strategy-pos" class="vault-strategy-pos hidden">
-              <h3>Strategy Position</h3>
+              <h3 data-i18n="vault.strategyPosition">Strategy Position</h3>
               <div class="position-grid vault-pos-grid">
                 <div class="position-metric">
-                  <span class="metric-label">Collateral</span>
+                  <span class="metric-label" data-i18n="vault.collateral">Collateral</span>
                   <span class="metric-value mono" id="vault-collateral">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Debt</span>
+                  <span class="metric-label" data-i18n="vault.debt">Debt</span>
                   <span class="metric-value mono" id="vault-debt">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Net Equity</span>
+                  <span class="metric-label" data-i18n="vault.netEquity">Net Equity</span>
                   <span class="metric-value mono" id="vault-equity">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Supply APY</span>
+                  <span class="metric-label" data-i18n="vault.supplyApy">Supply APY</span>
                   <span class="metric-value mono" id="vault-supply-apr">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Borrow APY</span>
+                  <span class="metric-label" data-i18n="vault.borrowApy">Borrow APY</span>
                   <span class="metric-value mono" id="vault-borrow-apr">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Loops</span>
+                  <span class="metric-label" data-i18n="vault.loops">Loops</span>
                   <span class="metric-value mono" id="vault-loops">--</span>
                 </div>
               </div>
               <div class="vault-rebalance-row">
-                <button id="vault-rebalance-btn" class="btn btn-ghost" disabled>Rebalance</button>
-                <span class="vault-rebalance-hint" id="vault-rebalance-hint">HF is healthy</span>
+                <button id="vault-rebalance-btn" class="btn btn-ghost" disabled data-i18n="vault.rebalance">Rebalance</button>
+                <span class="vault-rebalance-hint" id="vault-rebalance-hint" data-i18n="vault.hfHealthy">HF is healthy</span>
                 <span class="fee-hint mono" id="vault-rebalance-fee-estimate" aria-live="polite">Max network fee: --</span>
               </div>
+              <p class="keeper-note"><span class="keeper-note-icon" aria-hidden="true">&#128737;</span><span data-i18n="vault.keeperNote">Auto-rebalance keeper — monitors health factor and partially unwinds the loop when HF drops below the minimum, protecting all depositors. Applies to Vault positions only.</span></p>
             </div>
 
             <!-- HF visual bar -->
@@ -771,7 +804,7 @@
                 <div class="hf-bar-marker" id="vault-hf-bar-marker"></div>
               </div>
               <div class="hf-bar-labels">
-                <span>1.0 liq</span>
+                <span data-i18n="vault.liqLabel">1.0 liq</span>
                 <span id="vault-hf-bar-label">--</span>
                 <span>2.0+</span>
               </div>
@@ -779,14 +812,14 @@
 
             <!-- User position -->
             <div id="vault-user-pos" class="vault-user-pos hidden">
-              <h3>Your Position</h3>
+              <h3 data-i18n="vault.yourPosition">Your Position</h3>
               <div class="position-grid vault-pos-grid">
                 <div class="position-metric">
-                  <span class="metric-label">Your Equity</span>
+                  <span class="metric-label" data-i18n="vault.yourEquity">Your Equity</span>
                   <span class="metric-value mono" id="vault-user-value">--</span>
                 </div>
                 <div class="position-metric">
-                  <span class="metric-label">Share of Vault</span>
+                  <span class="metric-label" data-i18n="vault.shareOfVault">Share of Vault</span>
                   <span class="metric-value mono" id="vault-user-share-pct">--</span>
                 </div>
               </div>
@@ -795,39 +828,39 @@
             <!-- Deposit / Withdraw with tabs -->
             <div class="vault-actions">
               <div class="vault-tabs">
-                <button class="vault-tab active" data-vault-action="deposit">Deposit</button>
-                <button class="vault-tab" data-vault-action="withdraw">Withdraw</button>
+                <button class="vault-tab active" data-vault-action="deposit" data-i18n="common.deposit">Deposit</button>
+                <button class="vault-tab" data-vault-action="withdraw" data-i18n="common.withdraw">Withdraw</button>
               </div>
 
               <div id="vault-deposit-section">
                 <div class="form-group">
-                  <label>Deposit <span id="vault-asset-label">USDC</span></label>
+                  <label><span data-i18n="common.deposit">Deposit</span> <span id="vault-asset-label">USDC</span></label>
                   <div class="input-wrap">
                     <input type="number" id="vault-deposit-input" class="input mono" placeholder="100" min="0" step="any" />
-                    <button type="button" id="vault-deposit-max" class="btn btn-ghost input-max-btn">Max</button>
+                    <button type="button" id="vault-deposit-max" class="btn btn-ghost input-max-btn" data-i18n="common.max">Max</button>
                     <span class="input-suffix" id="vault-deposit-suffix">USDC</span>
                   </div>
-                  <span class="balance-hint">Wallet: <span id="vault-wallet-balance">--</span></span>
+                  <span class="balance-hint"><span data-i18n="common.wallet">Wallet</span>: <span id="vault-wallet-balance">--</span></span>
                 </div>
-                <button id="vault-deposit-btn" class="btn btn-primary btn-lg" disabled>Deposit</button>
+                <button id="vault-deposit-btn" class="btn btn-primary btn-lg" disabled data-i18n="common.deposit">Deposit</button>
               </div>
 
               <div id="vault-withdraw-section" class="hidden">
                 <div class="form-group">
-                  <label>Withdraw <span id="vault-withdraw-label">USDC</span></label>
+                  <label><span data-i18n="common.withdraw">Withdraw</span> <span id="vault-withdraw-label">USDC</span></label>
                   <div class="input-wrap">
                     <input type="number" id="vault-withdraw-input" class="input mono" placeholder="50" min="0" step="any" />
-                    <button type="button" id="vault-withdraw-max" class="btn btn-ghost input-max-btn">Max</button>
+                    <button type="button" id="vault-withdraw-max" class="btn btn-ghost input-max-btn" data-i18n="common.max">Max</button>
                     <span class="input-suffix" id="vault-withdraw-suffix">USDC</span>
                   </div>
-                  <span class="balance-hint">In vault: <span id="vault-withdraw-balance">--</span></span>
+                  <span class="balance-hint"><span data-i18n="vault.inVault">In vault</span>: <span id="vault-withdraw-balance">--</span></span>
                 </div>
-                <button id="vault-withdraw-btn" class="btn btn-secondary btn-lg" disabled>Withdraw</button>
+                <button id="vault-withdraw-btn" class="btn btn-secondary btn-lg" disabled data-i18n="common.withdraw">Withdraw</button>
               </div>
             </div>
 
             <div class="vault-contract-footer">
-              <span class="vault-contract-label">Strategy:</span>
+              <span class="vault-contract-label" data-i18n="vault.strategyLabel">Strategy:</span>
               <a id="vault-contract-link" class="mono vault-contract-addr" href="#" target="_blank" rel="noopener">--</a>
             </div>
 
@@ -836,14 +869,14 @@
               <div class="aqua-trade-head">
                 <span class="aqua-trade-icon">&#8646;</span>
                 <div>
-                  <h4 class="aqua-trade-title">Trade your position on Aquarius</h4>
-                  <p class="aqua-trade-sub">Your vault deposit is a transferable SEP-41 receipt token. Once listed it trades against USDC on Aquarius, so you can exit without unwinding the leverage loop on-chain.</p>
+                  <h4 class="aqua-trade-title" data-i18n="vault.tradeOnAquariusTitle">Trade your position on Aquarius</h4>
+                  <p class="aqua-trade-sub" data-i18n="vault.tradeOnAquariusSub">Your vault deposit is a transferable SEP-41 receipt token. Once listed it trades against USDC on Aquarius, so you can exit without unwinding the leverage loop on-chain.</p>
                 </div>
               </div>
               <div class="aqua-trade-body" id="aqua-trade-body"></div>
             </div>
 
-            <p class="disclaimer">Deposits are managed by the Turbolong Strategy on Blend Protocol. Leverage loops are executed atomically. Rebalance is permissionless — anyone can trigger it when HF drops below the minimum threshold to protect all depositors.</p>
+            <p class="disclaimer" data-i18n="vault.disclaimer">Deposits are managed by the Turbolong Strategy on Blend Protocol. Leverage loops are executed atomically. Rebalance is permissionless — anyone can trigger it when HF drops below the minimum threshold to protect all depositors.</p>
           </section>
         </div>
 
@@ -864,6 +897,7 @@
                 <button class="btn btn-ghost compare-refresh" id="compare-refresh" title="Refresh">&#8635;</button>
               </div>
             </div>
+            <p class="compare-scroll-hint" aria-hidden="true" data-i18n="compare.scrollHint">Scroll &rarr;</p>
             <div class="compare-table-wrap">
               <table class="compare-table" id="compare-table">
                 <thead>
@@ -874,7 +908,7 @@
                     <th class="ct-num" data-sort="lev" data-i18n="compare.col.levApy">Leveraged APY</th>
                     <th class="ct-num ct-lev" data-i18n="compare.col.maxLev">Max Lev</th>
                     <th class="ct-num" data-sort="rate" data-i18n="compare.col.aquaRate">Aqua Rate</th>
-                    <th class="ct-trend" data-i18n="compare.col.trend">Trend</th>
+                    <th class="ct-trend" id="ct-trend-header">Trend</th>
                   </tr>
                 </thead>
                 <tbody id="compare-tbody">
@@ -882,7 +916,7 @@
                 </tbody>
               </table>
             </div>
-            <p class="compare-foot" data-i18n="compare.foot">Leveraged APY assumes the maximum leverage that keeps health factor ≥ 1.20 at current pool rates; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
+            <p class="compare-foot" data-i18n="compare.foot">Max Lev and Leveraged APY use the same minimum health factor as the trade form, so they match the position you can actually open; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
           </section>
         </div>
 
@@ -890,17 +924,17 @@
         <div id="tx-stepper" class="tx-stepper hidden" role="status"></div>
 
         <!-- APY Alert modal -->
-        <div id="alert-modal-overlay" class="alert-modal-overlay hidden">
+        <div id="alert-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="alert-modal-title">
           <div class="alert-modal">
-            <button id="alert-modal-close" class="alert-modal-close">&times;</button>
-            <h3>APY Alerts</h3>
-            <p class="alert-modal-desc">Get notified when your position's net APY turns negative.</p>
+            <button id="alert-modal-close" class="alert-modal-close" aria-label="Close">&times;</button>
+            <h3 id="alert-modal-title" data-i18n="alert.title">APY Alerts</h3>
+            <p class="alert-modal-desc" data-i18n="alert.desc">Get notified when your position's net APY turns negative.</p>
             <div class="form-group">
-              <label>Email</label>
+              <label data-i18n="alert.email">Email</label>
               <input type="email" id="alert-email" class="input" placeholder="you@example.com" />
             </div>
             <div class="form-group">
-              <label>Pool &amp; Asset</label>
+              <label data-i18n="alert.poolAsset">Pool &amp; Asset</label>
               <div class="alert-pool-asset">
                 <span id="alert-pool-name" class="mono">—</span>
                 <span class="alert-sep">/</span>
@@ -908,7 +942,7 @@
               </div>
             </div>
             <div class="form-group">
-              <label>Leverage bracket</label>
+              <label data-i18n="alert.bracket">Leverage bracket</label>
               <select id="alert-leverage" class="input alert-leverage-select">
                 <option value="2">2x</option>
                 <option value="3">3x</option>
@@ -917,10 +951,17 @@
                 <option value="10">10x</option>
               </select>
             </div>
-            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe with email</button>
-            <p class="alert-or">or</p>
-            <button id="alert-push-btn" class="btn btn-secondary btn-lg">Enable push notifications</button>
-            <p class="alert-hint">We never store your wallet address. Push works on mobile without an app.</p>
+            <div class="form-group">
+              <label class="alert-hf-label">
+                <input type="checkbox" id="alert-hf-enable" />
+                <span data-i18n="alert.hfLabel">Also notify when Health Factor falls below</span>
+              </label>
+              <input type="number" id="alert-hf-threshold" class="input mono" value="1.10" min="1" step="0.01" />
+            </div>
+            <button id="alert-subscribe-btn" class="btn btn-primary btn-lg" data-i18n="alert.subscribe">Subscribe with email</button>
+            <p class="alert-or" data-i18n="alert.or">or</p>
+            <button id="alert-push-btn" class="btn btn-secondary btn-lg" data-i18n="alert.push">Enable push notifications</button>
+            <p class="alert-hint" data-i18n="alert.hint">We never store your wallet address. Push works on mobile without an app.</p>
           </div>
         </div>
 
@@ -928,16 +969,65 @@
         <div id="shortcut-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
           <div class="alert-modal">
             <button id="shortcut-modal-close" class="alert-modal-close">&times;</button>
-            <h3>Keyboard Shortcuts</h3>
+            <h3 data-i18n="settings.shortcuts">Keyboard Shortcuts</h3>
             <table class="shortcut-table">
               <tbody>
-                <tr><td><kbd>L</kbd></td><td>Focus leverage slider</td></tr>
-                <tr><td><kbd>C</kbd></td><td>Close selected position</td></tr>
-                <tr><td><kbd>Esc</kbd></td><td>Dismiss modals &amp; dropdowns</td></tr>
-                <tr><td><kbd>?</kbd></td><td>Show this help</td></tr>
+                <tr><td><kbd>L</kbd></td><td data-i18n="shortcut.leverage">Focus leverage slider</td></tr>
+                <tr><td><kbd>C</kbd></td><td data-i18n="shortcut.close">Close selected position</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td data-i18n="shortcut.esc">Dismiss modals &amp; dropdowns</td></tr>
+                <tr><td><kbd>?</kbd></td><td data-i18n="shortcut.help">Show this help</td></tr>
               </tbody>
             </table>
-            <p class="alert-hint">Shortcuts are disabled when a text field is focused.</p>
+            <p class="alert-hint" data-i18n="shortcut.disabledHint">Shortcuts are disabled when a text field is focused.</p>
+          </div>
+        </div>
+
+        <!-- Generic confirmation modal (P2 — reusable, e.g. Expert Mode enable) -->
+        <div id="confirm-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+          <div class="alert-modal">
+            <h3 id="confirm-modal-title">Confirm</h3>
+            <p class="alert-modal-desc" id="confirm-modal-body"></p>
+            <div class="confirm-actions">
+              <button id="confirm-modal-cancel" class="btn btn-secondary btn-lg" data-i18n="common.cancel">Cancel</button>
+              <button id="confirm-modal-ok" class="btn btn-primary btn-lg" data-i18n="common.confirm">Confirm</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pre-submit position review modal (P2) -->
+        <div id="confirm-position-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-position-title">
+          <div class="alert-modal">
+            <button id="confirm-position-close" class="alert-modal-close">&times;</button>
+            <h3 id="confirm-position-title" data-i18n="confirm.title">Review your position</h3>
+            <div class="leverage-preview confirm-summary">
+              <div class="preview-row">
+                <span data-i18n="confirm.leverage">Leverage</span><strong id="cp-lev">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.deposit">Deposit</span><strong id="cp-deposit">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.totalCollateral">Total collateral</span><strong id="cp-collateral">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.totalBorrowed">Total borrowed</span><strong id="cp-borrowed">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.hf">Initial Health Factor</span><strong id="cp-hf">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.netApy">Est. net APY</span><strong id="cp-apy">—</strong>
+              </div>
+            </div>
+            <p class="hf-warning confirm-liq-warn" id="cp-liq-warn" data-i18n="confirm.liqWarn">&#9888; If your collateral value drops enough, your position is liquidated and you lose collateral.</p>
+            <label class="disclaimer-check confirm-check">
+              <input type="checkbox" id="cp-understand" />
+              <span data-i18n="confirm.understand">I understand the liquidation risk</span>
+            </label>
+            <div class="confirm-actions">
+              <button id="cp-cancel" class="btn btn-secondary btn-lg" data-i18n="common.cancel">Cancel</button>
+              <button id="cp-confirm" class="btn btn-primary btn-lg" data-i18n="confirm.open" disabled>Confirm &amp; Open</button>
+            </div>
           </div>
         </div>
 

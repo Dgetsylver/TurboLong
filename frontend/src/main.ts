@@ -89,8 +89,9 @@ import {
 import { seedHistoryFromServer, fetchSnapshotSeries, type SnapshotPoint } from "./history.ts";
 import { aquariusBestRate, aquariusPrice } from "./aquarius.ts";
 import { getAquariusListing, AQUARIUS_SWAP_URL } from "./aquarius_listings.ts";
-import { initI18n, applyTranslations, t, cycleLang, getLang } from "./i18n.ts";
-import { maybeAutoStartTour } from "./tour.ts";
+import { initI18n, applyTranslations, t, setLang, getLang } from "./i18n.ts";
+import { LANG_NAMES, type Lang } from "./locales.ts";
+import { maybeAutoStartTour, startTour } from "./tour.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -228,7 +229,7 @@ async function switchNetwork(net: NetworkMode) {
 
   // Update UI
   const btn = $("network-toggle");
-  btn.textContent = net === "testnet" ? "Testnet" : "Mainnet";
+  btn.textContent = net === "testnet" ? t("net.testnet") : t("net.mainnet");
   btn.classList.toggle("testnet-active", net === "testnet");
   $("testnet-banner").classList.toggle("hidden", net !== "testnet");
   ($("fund-testnet-btn") as HTMLButtonElement).disabled = false;
@@ -264,8 +265,8 @@ async function switchNetwork(net: NetworkMode) {
   updatePreview();
 
   // Prompt user to switch wallet network
-  const label = net === "testnet" ? "Testnet" : "Mainnet (Public)";
-  toast(`Switched to ${label}. Please also switch your wallet to ${label} before connecting.`, "info");
+  const label = net === "testnet" ? t("net.testnet") : t("net.mainnetPublic");
+  toast(t("toast.switchedNetwork", { label }), "info");
 }
 
 /** Check that the connected wallet's network matches the app's selected network. */
@@ -274,8 +275,8 @@ async function verifyWalletNetwork(): Promise<boolean> {
     const walletNet = await StellarWalletsKit.getNetwork();
     const expectedPassphrase = getNetworkPassphrase();
     if (walletNet.networkPassphrase !== expectedPassphrase) {
-      const expected = getActiveNetwork() === "testnet" ? "Testnet" : "Mainnet";
-      toast(`Network mismatch: your wallet is on a different network. Please switch your wallet to ${expected}.`, "error");
+      const expected = getActiveNetwork() === "testnet" ? t("net.testnet") : t("net.mainnet");
+      toast(t("toast.networkMismatch", { expected }), "error");
       return false;
     }
     return true;
@@ -293,21 +294,21 @@ async function fundTestnetWallet() {
   if (!userAddress || getActiveNetwork() !== "testnet") return;
   const btn = $("fund-testnet-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Funding...";
+  btn.textContent = t("toast.funding");
 
   try {
     // Step 1: Friendbot — fund with 10,000 XLM
-    toast("Requesting testnet XLM from Friendbot...", "info");
+    toast(t("toast.friendbotRequest"), "info");
     const fbRes = await fetch(`https://friendbot.stellar.org?addr=${userAddress}`);
     if (!fbRes.ok) {
       // Any friendbot failure is non-fatal — account likely already exists
-      toast("Account already exists on testnet, skipping Friendbot", "info");
+      toast(t("toast.friendbotExists"), "info");
     } else {
-      toast("Received testnet XLM from Friendbot!", "success");
+      toast(t("toast.friendbotReceived"), "success");
     }
 
     // Step 2: Open USDC trustline + swap XLM → USDC via path payment
-    toast("Opening USDC trustline and acquiring USDC...", "info");
+    toast(t("toast.openingTrustline"), "info");
     const usdcAsset = new Asset("USDC", TESTNET_USDC_ISSUER);
 
     const horizonServer = new Horizon.Server(getHorizonUrl());
@@ -352,7 +353,7 @@ async function fundTestnetWallet() {
       throw new Error("Transaction failed");
     }
 
-    toast("Testnet wallet funded! USDC trustline opened and tokens acquired.", "success");
+    toast(t("toast.fundSuccess"), "success");
     // Reload current view data
     if (activeView === "leverage") await loadAll();
     else if (activeView === "vault") await refreshVaultView();
@@ -360,13 +361,13 @@ async function fundTestnetWallet() {
     const msg = e?.message ?? String(e);
     // If path payment fails (no liquidity), still report trustline success
     if (msg.includes("PATH_PAYMENT") || msg.includes("path")) {
-      toast("USDC trustline opened but no DEX liquidity to swap. You may need to acquire USDC manually.", "info");
+      toast(t("toast.fundNoLiquidity"), "info");
     } else {
-      toast(`Fund failed: ${msg.slice(0, 150)}`, "error");
+      toast(t("toast.fundFailed", { msg: msg.slice(0, 150) }), "error");
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = "Fund Wallet";
+    btn.textContent = t("testnet.fund");
   }
 }
 
@@ -403,7 +404,9 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()
 // ── Disclaimer ───────────────────────────────────────────────────────────
 
 if (!localStorage.getItem("disclaimerAccepted")) {
-  document.getElementById("disclaimer-overlay")!.classList.remove("hidden");
+  openModal(document.getElementById("disclaimer-overlay")!, {
+    focus: document.getElementById("disclaimer-checkbox"),
+  });
 }
 document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) => {
   (document.getElementById("disclaimer-accept") as HTMLButtonElement).disabled =
@@ -411,7 +414,7 @@ document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) =
 });
 document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
   localStorage.setItem("disclaimerAccepted", "1");
-  document.getElementById("disclaimer-overlay")!.classList.add("hidden");
+  closeModal(document.getElementById("disclaimer-overlay")!);
 });
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
@@ -480,10 +483,13 @@ function updateFreshnessDisplay() {
   if (!lastRefreshTime) return;
   const secs = Math.round((Date.now() - lastRefreshTime) / 1000);
   const el = $("data-freshness");
-  if (secs < 5) { el.textContent = "Just now"; }
-  else if (secs < 60) { el.textContent = `${secs}s ago`; }
-  else { el.textContent = `${Math.floor(secs / 60)}m ago`; }
-  el.classList.toggle("stale", secs > 60);
+  if (secs < 5) { el.textContent = t("time.justNow"); }
+  else if (secs < 60) { el.textContent = t("time.secondsAgo", { n: secs }); }
+  else { el.textContent = t("time.minutesAgo", { n: Math.floor(secs / 60) }); }
+  const stale = secs > 60;
+  el.classList.toggle("stale", stale);
+  // Convey staleness textually, not by colour alone (#9)
+  el.setAttribute("title", `${t("time.lastUpdated", { ago: el.textContent ?? "" })}${stale ? ` — ${t("time.stale")}` : ""}`);
 }
 
 function startFreshnessTimer() {
@@ -569,7 +575,7 @@ function renderTxHistory() {
   $("tx-history").style.display = "";
   list.innerHTML = history.map(tx => {
     const ago = Math.round((Date.now() - tx.time) / 60000);
-    const timeStr = ago < 1 ? "just now" : ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+    const timeStr = ago < 1 ? t("time.justNow") : ago < 60 ? t("time.minutesAgo", { n: ago }) : t("time.hoursAgo", { n: Math.round(ago / 60) });
     return `<div class="tx-history-item">
       <span class="tx-history-status-${tx.status === "success" ? "ok" : "err"}">${tx.status === "success" ? "\u2713" : "\u2717"}</span>
       <span class="tx-history-label">${tx.label}</span>
@@ -760,59 +766,57 @@ function getRateAtWindow(poolId: string, assetId: string, field: string, windowM
   return candidates[candidates.length - 1].val;
 }
 
-/** Render a trend arrow element next to an APY value element. */
+/** Render trend arrows into a dedicated slot next to an APY value label. */
 function renderTrendArrow(
-  targetEl: HTMLElement,
+  slotEl: HTMLElement,
   current: number,
   past24h: number | null,
   past7d: number | null
 ) {
-  // Remove any existing arrow
-  const existing = targetEl.parentElement?.querySelector(".rate-trend");
-  if (existing) existing.remove();
-
-  if (past24h === null && past7d === null) return;
-
-  const arrow = document.createElement("span");
-  arrow.className = "rate-trend";
+  if (past24h === null && past7d === null) { slotEl.innerHTML = ""; return; }
 
   const parts: string[] = [];
   const tipParts: string[] = [];
 
-  for (const [label, past, ms] of [
-    ["24h", past24h, 24 * 3600_000],
-    ["7d",  past7d,  7 * 24 * 3600_000],
-  ] as [string, number | null, number][]) {
+  for (const [label, past] of [
+    ["24h", past24h],
+    ["7d",  past7d],
+  ] as [string, number | null][]) {
     if (past === null) continue;
     const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
+    const absDelta = Math.abs(delta);
+    // Treat sub-0.05% moves as flat — a neutral marker, not a misleading ▲0.0%.
+    const flat = absDelta < 0.05;
     const up = delta >= 0;
-    const sym = up ? "▲" : "▼";
-    const cls = up ? "rate-trend-up" : "rate-trend-down";
-    parts.push(`<span class="${cls}">${sym}${fmt(Math.abs(delta), 1)}%</span><span class="rate-trend-label">${label}</span>`);
+    const sym = flat ? "→" : up ? "▲" : "▼";
+    const cls = flat ? "rate-trend-flat" : up ? "rate-trend-up" : "rate-trend-down";
+    // Clamp the shown delta so huge swings don't overflow the row.
+    const shown = absDelta > 999.9 ? "&gt;999.9%" : `${fmt(absDelta, 1)}%`;
+    const aria = flat ? `${label} unchanged` : `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
+    parts.push(`<span class="rate-trend" role="img" aria-label="${aria}"><span class="${cls}">${sym}${shown}</span><span class="rate-trend-label">${label}</span></span>`);
     tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
   }
 
-  if (parts.length === 0) return;
-  arrow.innerHTML = parts.join(" ");
-  arrow.setAttribute("title", tipParts.join(" | "));
-  targetEl.insertAdjacentElement("afterend", arrow);
+  if (parts.length === 0) { slotEl.innerHTML = ""; return; }
+  slotEl.innerHTML = parts.join(" ");
+  slotEl.setAttribute("title", tipParts.join(" | "));
 }
 
 // ── Sign + submit ─────────────────────────────────────────────────────────────
 
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
-  toast(`Sign "${label}" in your wallet\u2026`, "info");
+  toast(t("toast.signInWallet", { label }), "info");
   const { signedTxXdr } = txSeam
     ? await txSeam.signTransaction(xdrStr)
     : await StellarWalletsKit.signTransaction(xdrStr, {
         networkPassphrase: getNetworkPassphrase(),
         address: userAddress!,
       });
-  toast(`Submitting "${label}"\u2026`, "info");
+  toast(t("toast.submitting", { label }), "info");
   const hash = txSeam ? await txSeam.submitSoroban(signedTxXdr) : await submitSignedXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
-  toast(`"${label}" confirmed!`, "success", hash);
+  toast(t("toast.confirmed", { label }), "success", hash);
   addTxToHistory(label, hash, "success");
   return hash;
 }
@@ -823,17 +827,17 @@ async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number):
  */
 async function signAndSubmitClassic(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
-  toast(`Sign "${label}" in your wallet\u2026`, "info");
+  toast(t("toast.signInWallet", { label }), "info");
   const { signedTxXdr } = txSeam
     ? await txSeam.signTransaction(xdrStr)
     : await StellarWalletsKit.signTransaction(xdrStr, {
         networkPassphrase: getNetworkPassphrase(),
         address: userAddress!,
       });
-  toast(`Submitting "${label}"\u2026`, "info");
+  toast(t("toast.submitting", { label }), "info");
   const hash = txSeam ? await txSeam.submitClassic(signedTxXdr) : await submitClassicXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
-  toast(`"${label}" confirmed!`, "success", hash);
+  toast(t("toast.confirmed", { label }), "success", hash);
   addTxToHistory(label, hash, "success");
   return hash;
 }
@@ -851,7 +855,10 @@ function buildPoolTabs() {
     btn.dataset["poolId"] = pool.id;
     btn.textContent = pool.name;
     btn.setAttribute("role", "tab");
-    if (isFrozen) btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+    if (isFrozen) {
+      btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+      btn.setAttribute("aria-label", `${pool.name} \u2014 Admin Frozen, exploited Feb 2026`);
+    }
     btn.addEventListener("click", () => selectPool(pool));
     container.appendChild(btn);
   });
@@ -865,7 +872,10 @@ function buildPoolTabs() {
     btn.className = `pool-dropdown-item ${pool.id === selectedPool.id ? "active" : ""} ${isFrozen ? "pool-tab-frozen" : ""}`;
     btn.dataset["poolId"] = pool.id;
     btn.textContent = pool.name;
-    if (isFrozen) btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+    if (isFrozen) {
+      btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+      btn.setAttribute("aria-label", `${pool.name} \u2014 Admin Frozen, exploited Feb 2026`);
+    }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       selectPool(pool);
@@ -1014,6 +1024,15 @@ async function refreshTabData() {
 }
 
 // ── HF Gauge (#7) ────────────────────────────────────────────────────────────
+
+/**
+ * Text zone word for a health factor — so risk is not signalled by colour
+ * alone (WCAG 1.4.1). Mirrors the colour thresholds used across the UI.
+ */
+function hfZoneWord(hf: number): string {
+  if (!Number.isFinite(hf)) return "Safe";
+  return hf > 1.1 ? "Safe" : hf > 1.03 ? "Caution" : "Danger";
+}
 
 function renderHFGauge(hf: number): string {
   const cx = 60, cy = 55, r = 45;
@@ -1250,13 +1269,13 @@ function renderSelectedAsset() {
 
   // Render arrows on net rows
   renderTrendArrow(
-    $("supply-net-apr"),
+    $("supply-net-trend"),
     supplyNetVal,
     getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W24),
     getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W7D),
   );
   renderTrendArrow(
-    $("borrow-net-cost"),
+    $("borrow-net-trend"),
     borrowNetVal,
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
@@ -1329,11 +1348,11 @@ function renderPortfolioSummary() {
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
     card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
     card.innerHTML = `
-      <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
+      <span class="portfolio-card-hf-dot" aria-hidden="true" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)} (${hfZoneWord(pos.hf)})</span>
       </span>`;
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
@@ -1355,6 +1374,8 @@ function renderPoolFooter() {
     <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
     <span>\u00B7</span>
     <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
+    <span>\u00B7</span>
+    <a href="./status.html" target="_blank" rel="noopener">${t("nav.status")}</a>
   `;
 }
 
@@ -1421,15 +1442,21 @@ function renderPosition() {
   const hfDec = expertMode ? 5 : 3;
   hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
   hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
+  // Text zone word so risk isn't colour/icon-only (#9)
+  hfEl.setAttribute("aria-label", `Asset health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZoneWord(hf)}`);
   const barPct = Math.min(100, Math.max(0, (hf - 1) / 0.3 * 100));
   const bar = $("hf-bar");
   bar.style.width      = `${barPct}%`;
   bar.style.background = hf > 1.1 ? "var(--success)" : hf > 1.03 ? "var(--warning)" : "var(--danger)";
 
-  // ARIA on HF bar (#6)
+  // ARIA on HF bar (#8) — role="meter" with live valuetext incl. zone word
+  const hfZone = hfZoneWord(hf);
   const barWrap = $("hf-bar").parentElement!;
   barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
-  barWrap.setAttribute("aria-label", `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}`);
+  barWrap.setAttribute(
+    "aria-valuetext",
+    `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZone}`,
+  );
 
   // HF Gauge (#7)
   const gaugeEl = document.querySelector(".hf-gauge-container") as HTMLElement;
@@ -1457,6 +1484,8 @@ function renderPosition() {
   const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
   poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
   poolHFEl.className   = `metric-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
+  // Text zone word so risk isn't colour/icon-only (#9)
+  poolHFEl.setAttribute("aria-label", `Pool health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZoneWord(poolHF)}`);
 
   // Borrow headroom
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -1503,18 +1532,18 @@ function renderPosition() {
   if (rs && pos.leverage > 0 && Number.isFinite(pos.hf) && pos.hf > 1) {
     const spreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
     if (spreadPct <= 0) {
-      liqDaysEl.textContent = "Never (supply rate \u2265 borrow rate)";
+      liqDaysEl.textContent = t("dashboard.liqNever");
       liqDaysEl.className   = "metric-value hf-ok";
       liqNoteEl.textContent = "";
     } else {
       const daysLeft = Math.log(pos.hf) / (spreadPct / 100) * 365;
       if (daysLeft <= 365) {
-        liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>~${Math.round(daysLeft)} days</span></span>`;
+        liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>${t("dashboard.daysApprox", { n: Math.round(daysLeft) })}</span></span>`;
       } else {
-        liqDaysEl.textContent = daysLeft > 3650 ? ">10 years" : `~${Math.round(daysLeft)} days`;
+        liqDaysEl.textContent = daysLeft > 3650 ? t("dashboard.over10y") : t("dashboard.daysApprox", { n: Math.round(daysLeft) });
       }
       liqDaysEl.className   = `metric-value ${daysLeft < 30 ? "hf-bad" : daysLeft < 90 ? "hf-warn" : "hf-ok"}`;
-      liqNoteEl.textContent = `Interest spread: ${fmt(aprToApy(spreadPct), 2)}%/yr (borrow \u2212 supply). Claim & convert BLND to extend runway.`;
+      liqNoteEl.textContent = t("dashboard.interestSpread", { pct: fmt(aprToApy(spreadPct), 2) });
     }
   } else {
     liqDaysEl.textContent = "\u2014";
@@ -1570,7 +1599,7 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
   actionMode = mode === "adjust" ? "adjust" : "open";
   const isAdjust = mode === "adjust";
 
-  $("action-card-title").textContent = isAdjust ? "Adjust Position" : "Open Position";
+  $("action-card-title").textContent = isAdjust ? t("action.adjustPosition") : t("action.openPosition");
   $("adjust-tabs").classList.toggle("hidden", !isAdjust);
   $("open-deposit-group").classList.toggle("hidden", isAdjust);
   $("adjust-current").classList.toggle("hidden", !isAdjust);
@@ -1592,7 +1621,7 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
 
   if (isAdjust && pos) {
     $("adjust-current-lev").textContent = `${fmt(pos.leverage, 2)}\u00D7`;
-    $("leverage-label").textContent = "Target leverage";
+    $("leverage-label").textContent = t("action.targetLeverage");
     $("add-funds-symbol").textContent = pos.asset.symbol;
     // Set slider to current leverage
     const slider = $("leverage-slider") as HTMLInputElement;
@@ -1644,7 +1673,7 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds" | "remove-funds") {
     ($("remove-funds-input") as HTMLInputElement).value = "";
     refreshRemoveFundsBalance();
   } else if (isAddFunds) {
-    $("action-card-title").textContent = "Add Funds";
+    $("action-card-title").textContent = t("action.addFunds");
     $("leverage-label").innerHTML = 'Leverage <span class="tooltip" data-tip="Leverage for the new deposit. This deposit is added on top of your existing position.">?</span>';
     // Default leverage to current position leverage
     const slider = $("leverage-slider") as HTMLInputElement;
@@ -1661,8 +1690,8 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds" | "remove-funds") {
     }
     initTooltips();
   } else {
-    $("action-card-title").textContent = "Adjust Position";
-    $("leverage-label").textContent = "Target leverage";
+    $("action-card-title").textContent = t("action.adjustPosition");
+    $("leverage-label").textContent = t("action.targetLeverage");
     const slider = $("leverage-slider") as HTMLInputElement;
     const numIn  = $("leverage-input")  as HTMLInputElement;
     const curLev = Math.round(pos.leverage * 10) / 10;
@@ -1673,6 +1702,26 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds" | "remove-funds") {
 }
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
+
+// Live HF risk band (P2). Classifies the current HF into a labeled zone and
+// shows both the HF value and the zone name in TEXT (never color alone).
+function updateRiskBand(hf: number) {
+  let zone: "safe" | "caution" | "high" | "nearLiq";
+  let label: string;
+  if (!Number.isFinite(hf) || hf > 1.3) { zone = "safe"; label = t("risk.safe"); }
+  else if (hf > 1.1)  { zone = "caution"; label = t("risk.caution"); }
+  else if (hf > 1.03) { zone = "high"; label = t("risk.high"); }
+  else                { zone = "nearLiq"; label = t("risk.nearLiq"); }
+
+  const hfText = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 3) : "∞";
+  const statusEl = $("risk-band-status");
+  statusEl.textContent = `HF ${hfText} · ${label}`;
+  statusEl.className = `risk-band-status zone-${zone}`;
+
+  document.querySelectorAll<HTMLElement>("#risk-band .risk-seg").forEach((seg) => {
+    seg.classList.toggle("active", seg.dataset.zone === zone);
+  });
+}
 
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
@@ -1685,6 +1734,7 @@ function updatePreview() {
   const l       = rs?.lFactor ?? 1;
   const hf      = hfForLeverage(lev, c, l);
   const pos     = positions.byAsset.get(selectedAsset.id);
+  let projectedNetApy = Number.NaN; // captured for the negative-APY warning (P2)
 
   // In adjust mode, use equity as the base; in add-funds mode, use the add-funds
   // input; in remove-funds mode, use the post-unwind equity (equity − remove);
@@ -1736,6 +1786,7 @@ function updatePreview() {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
+    projectedNetApy = netApy;
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
@@ -1746,11 +1797,11 @@ function updatePreview() {
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
     const prevLiqEl = $("prev-liq-days");
     if (spreadPct <= 0) {
-      prevLiqEl.textContent = "Never";
+      prevLiqEl.textContent = t("dashboard.never");
       prevLiqEl.className   = "hf-ok";
     } else if (Number.isFinite(hf) && hf > 1) {
       const days = Math.log(hf) / (spreadPct / 100) * 365;
-      prevLiqEl.textContent = days > 3650 ? ">10 years" : `~${Math.round(days)} days`;
+      prevLiqEl.textContent = days > 3650 ? t("dashboard.over10y") : t("dashboard.daysApprox", { n: Math.round(days) });
       prevLiqEl.className   = days < 30 ? "hf-bad" : days < 90 ? "hf-warn" : "hf-ok";
     } else {
       prevLiqEl.textContent = "\u2014";
@@ -1822,6 +1873,22 @@ function updatePreview() {
   } else {
     liquidityWarnEl.classList.add("hidden");
   }
+
+  // Live HF risk band (P2) — always visible while previewing, text + color.
+  updateRiskBand(hf);
+
+  // Inline risk warnings at open / add-funds time (P2).
+  const isOpenLike = actionMode === "open" || actionMode === "add-funds";
+  // Negative projected net APY — you'd pay more in borrow cost than you earn.
+  ($("neg-apy-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && Number.isFinite(projectedNetApy) && projectedNetApy < 0));
+  // Frozen pool — can't open, hard to exit.
+  ($("frozen-pool-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && selectedPool.status !== 1));
+  // Very high utilization (≥95%) — tight liquidity, forced-liquidation risk.
+  const util = rs && rs.totalSupply > 0 ? rs.totalBorrow / rs.totalSupply : 0;
+  ($("high-util-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && !!rs && util >= 0.95));
 
   const safe = hf >= minHF() && selectedPool.status === 1 && liquidityOk;
   ($("hf-warning") as HTMLElement).classList.toggle("hidden", hf >= minHF() || selectedPool.status !== 1);
@@ -1901,35 +1968,109 @@ async function loadAll() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Failed to load pool data:", e);
-    toast(`Load failed: ${msg.slice(0, 120)}`, "error");
+    toast(t("toast.loadFailed", { msg: msg.slice(0, 120) }), "error");
   } finally {
     _loadInProgress = false;
   }
 }
 
+// ── Pre-submit position confirmation (P2) ─────────────────────────────────────
+
+let _confirmPosResolve: ((ok: boolean) => void) | null = null;
+
+function closeConfirmPosition(ok = false) {
+  closeModal($("confirm-position-overlay"));
+  const r = _confirmPosResolve;
+  _confirmPosResolve = null;
+  if (r) r(ok);
+}
+
+/**
+ * Show the pre-submit review modal. Reuses the same HF and projected-APY math
+ * as updatePreview(). Resolves true only when the user ticks the risk checkbox
+ * and clicks Confirm & Open; false on cancel / close / backdrop / Escape.
+ */
+function confirmPositionModal(
+  initial: number,
+  leverage: number,
+  liveAsset: AssetInfo,
+  rs: ReserveStats | undefined,
+): Promise<boolean> {
+  const c   = rs ? rs.cFactor : liveAsset.cFactor;
+  const l   = rs?.lFactor ?? 1;
+  const hf  = hfForLeverage(leverage, c, l);
+  const supply = initial * leverage;
+  const borrow = initial * (leverage - 1);
+
+  // Projected net APY after deposit — same computation the preview uses.
+  let netApy = Number.NaN;
+  if (rs) {
+    const proj = projectRates(rs, supply, borrow);
+    const netApr = proj.netSupplyApr * leverage - proj.netBorrowCost * (leverage - 1);
+    netApy = aprToApy(netApr);
+  }
+
+  $("cp-lev").textContent        = `${leverage.toFixed(1)}×`;
+  $("cp-deposit").textContent    = `${fmt(initial, 2)} ${liveAsset.symbol}`;
+  $("cp-collateral").textContent = `${fmt(supply, 2)} ${liveAsset.symbol}`;
+  $("cp-borrowed").textContent   = `${fmt(borrow, 2)} ${liveAsset.symbol}`;
+  $("cp-hf").textContent         = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "∞";
+  $("cp-hf").className           = hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
+  if (Number.isFinite(netApy)) {
+    $("cp-apy").textContent = `${fmt(netApy, 2)}% APY`;
+    $("cp-apy").className   = netApy >= 0 ? "hf-ok" : "hf-bad";
+  } else {
+    $("cp-apy").textContent = "—";
+    $("cp-apy").className   = "";
+  }
+
+  // Reset the gate: checkbox unticked, confirm disabled.
+  const chk = $("cp-understand") as HTMLInputElement;
+  chk.checked = false;
+  ($("cp-confirm") as HTMLButtonElement).disabled = true;
+
+  // Focus the close button first; the confirm button starts disabled.
+  openModal($("confirm-position-overlay"), { focus: $("confirm-position-close") });
+  return new Promise<boolean>((resolve) => { _confirmPosResolve = resolve; });
+}
+
+($("cp-understand") as HTMLInputElement).addEventListener("change", (e) => {
+  ($("cp-confirm") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked;
+});
+$("cp-confirm").addEventListener("click", () => closeConfirmPosition(true));
+$("cp-cancel").addEventListener("click", () => closeConfirmPosition(false));
+$("confirm-position-close").addEventListener("click", () => closeConfirmPosition(false));
+$("confirm-position-overlay").addEventListener("click", (e) => {
+  if (e.target === $("confirm-position-overlay")) closeConfirmPosition(false);
+});
+
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 async function openPosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
-  if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot open new positions", "error"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
+  if (selectedPool.status !== 1) { toast(t("toast.poolFrozenOpen"), "error"); return; }
   const initial  = Number.parseFloat(($("initial-input") as HTMLInputElement).value);
   const leverage = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (Number.isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
+  if (Number.isNaN(initial) || initial <= 0) { toast(t("toast.enterValidAmount"), "error"); return; }
 
   // Use live cFactor from reserves so intermediate borrow steps don't exceed pool limits
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
-  if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) { toast("HF too low \u2014 reduce leverage", "error"); return; }
+  if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) { toast(t("toast.hfTooLow"), "error"); return; }
 
   const totalBorrow   = initial * (leverage - 1);
   const firstBorrow   = Math.min(initial * liveAsset.cFactor, totalBorrow);
   const poolAvailAfterDeposit = (rs?.available ?? 0) + initial * (rs ? rs.asset.maxUtil : 0.95);
   if (rs && firstBorrow > poolAvailAfterDeposit) {
-    toast(`First borrow step (${fmt(firstBorrow, 0)}) exceeds pool available after deposit (${fmt(poolAvailAfterDeposit, 0)} ${rs.asset.symbol}). Reduce leverage.`, "error");
+    toast(t("toast.firstBorrowExceeds", { first: fmt(firstBorrow, 0), avail: fmt(poolAvailAfterDeposit, 0), sym: rs.asset.symbol }), "error");
     return;
   }
+
+  // P2 — pre-submit position review. Build/submit only runs on explicit confirm.
+  const confirmed = await confirmPositionModal(initial, leverage, liveAsset, rs);
+  if (!confirmed) return;
 
   const initialStroops = BigInt(Math.round(initial * 1e7));
   setLoading($("open-btn") as HTMLButtonElement, true);
@@ -1943,7 +2084,7 @@ async function openPosition() {
       ? await txSeam.getMissingTrustlines(new Asset("USDC", TESTNET_USDC_ISSUER))
       : await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
   } catch (e: any) {
-    toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
+    toast(t("toast.trustlineCheckFailed", { msg: (e?.message ?? String(e)).slice(0, 150) }), "error");
     setLoading($("open-btn") as HTMLButtonElement, false);
     return;
   }
@@ -1951,8 +2092,7 @@ async function openPosition() {
   const STELLAR_TRUSTLINE_LIMIT = 1000;
   if (trustlineResult.currentCount + trustlineResult.missing.length > STELLAR_TRUSTLINE_LIMIT) {
     toast(
-      `Adding ${trustlineResult.missing.length} trustline(s) would exceed the Stellar limit of 1,000. ` +
-      `You currently have ${trustlineResult.currentCount}. Remove unused trustlines before depositing.`,
+      t("toast.trustlineLimit", { n: trustlineResult.missing.length, current: trustlineResult.currentCount }),
       "error",
     );
     setLoading($("open-btn") as HTMLButtonElement, false);
@@ -2002,11 +2142,11 @@ async function openPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(activeStep);
-    const msg: string = e?.message ?? "Transaction failed";
+    const msg: string = e?.message ?? t("toast.txFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low \u2014 reduce leverage.", "error");
+      toast(t("toast.hfTooLowErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached \u2014 not enough liquidity for this borrow. Reduce leverage or deposit.", "error");
+      toast(t("toast.utilLimitBorrow"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2017,7 +2157,7 @@ async function openPosition() {
 
 async function closePosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
   setLoading($("close-btn") as HTMLButtonElement, true);
@@ -2036,7 +2176,7 @@ async function closePosition() {
     // 2) Withdraw remaining collateral (now debt-free, smaller supply impact)
     if ((msg.includes("#1207") || msg.includes("InvalidUtilRate")) && pos.dTokens > 0n) {
       try {
-        toast("Pool utilization high \u2014 closing in two steps\u2026", "info");
+        toast(t("toast.closeTwoSteps"), "info");
         showTxStepper(["Repay Debt", "Withdraw Collateral"]);
         // Step 1: deleverage \u2014 repay all debt using collateral
         const repayXdr = await buildRepayXdr(selectedPool, userAddress, pos);
@@ -2050,10 +2190,10 @@ async function closePosition() {
         await loadAll();
         return;
       } catch (e2: any) {
-        const msg2: string = e2?.message ?? "Transaction failed";
+        const msg2: string = e2?.message ?? t("toast.txFailed");
         markStepperError(2);
         if (msg2.includes("#1207") || msg2.includes("InvalidUtilRate")) {
-          toast("Pool utilization too high to withdraw all collateral. Debt was repaid \u2014 try withdrawing later when liquidity improves.", "error");
+          toast(t("toast.utilWithdrawAll"), "error");
         } else {
           toast(msg2.slice(0, 200), "error");
         }
@@ -2063,9 +2203,9 @@ async function closePosition() {
     }
     markStepperError(1);
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization too high \u2014 not enough liquidity to close. Try again later.", "error");
+      toast(t("toast.utilCloseTooHigh"), "error");
     } else {
-      toast(msg.slice(0, 200) || "Transaction failed", "error");
+      toast(msg.slice(0, 200) || t("toast.txFailed"), "error");
     }
   } finally {
     setLoading($("close-btn") as HTMLButtonElement, false);
@@ -2074,7 +2214,7 @@ async function closePosition() {
 
 async function repayDebt() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos || pos.dTokens === 0n) return;
   setLoading($("repay-btn") as HTMLButtonElement, true);
@@ -2086,7 +2226,7 @@ async function repayDebt() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    toast(e?.message ?? "Transaction failed", "error");
+    toast(e?.message ?? t("toast.txFailed"), "error");
   } finally {
     setLoading($("repay-btn") as HTMLButtonElement, false);
   }
@@ -2103,14 +2243,14 @@ async function maxDeposit() {
 
 async function claimBlnd() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   // Collect all token IDs for ALL positions in this pool
   const tokenIds: number[] = [];
   for (const pos of positions.byAsset.values()) {
     if (pos.bTokens > 0n) tokenIds.push(pos.asset.supplyTokenId);
     if (pos.dTokens > 0n) tokenIds.push(pos.asset.borrowTokenId);
   }
-  if (tokenIds.length === 0) { toast("No positions to claim from", "error"); return; }
+  if (tokenIds.length === 0) { toast(t("toast.noPositionsClaim"), "error"); return; }
 
   setLoading($("claim-btn") as HTMLButtonElement, true);
   showTxStepper(["Claim BLND"]);
@@ -2122,7 +2262,7 @@ async function claimBlnd() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    toast(e?.message ?? "Transaction failed", "error");
+    toast(e?.message ?? t("toast.txFailed"), "error");
   } finally {
     setLoading($("claim-btn") as HTMLButtonElement, false);
   }
@@ -2131,19 +2271,19 @@ async function claimBlnd() {
 /** Adjust leverage on an existing position (increase or decrease). */
 async function adjustLeverage() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const targetLev = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
   const curLev = pos.leverage;
-  if (Math.abs(targetLev - curLev) < 0.05) { toast("Target leverage is same as current", "error"); return; }
+  if (Math.abs(targetLev - curLev) < 0.05) { toast(t("toast.targetSameAsCurrent"), "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
   if (hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) {
-    toast("HF too low at target leverage \u2014 reduce target", "error");
+    toast(t("toast.hfTooLowTarget"), "error");
     return;
   }
 
@@ -2164,11 +2304,11 @@ async function adjustLeverage() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    const msg: string = e?.message ?? "Adjust leverage failed";
+    const msg: string = e?.message ?? t("toast.adjustFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low — reduce target leverage.", "error");
+      toast(t("toast.hfTooLowTargetErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached — not enough liquidity. Reduce target leverage.", "error");
+      toast(t("toast.utilLimitTarget"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2180,20 +2320,20 @@ async function adjustLeverage() {
 /** Add funds: deposit additional capital into an existing position at a chosen leverage. */
 async function addFundsToPosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
-  if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot add funds", "error"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
+  if (selectedPool.status !== 1) { toast(t("toast.poolFrozenAddFunds"), "error"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const additional = Number.parseFloat(($("add-funds-input") as HTMLInputElement).value);
   const leverage   = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (Number.isNaN(additional) || additional <= 0) { toast("Enter a valid amount", "error"); return; }
+  if (Number.isNaN(additional) || additional <= 0) { toast(t("toast.enterValidAmount"), "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
   if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) {
-    toast("HF too low \u2014 reduce leverage", "error"); return;
+    toast(t("toast.hfTooLow"), "error"); return;
   }
 
   const additionalStroops = BigInt(Math.round(additional * 1e7));
@@ -2213,11 +2353,11 @@ async function addFundsToPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    const msg: string = e?.message ?? "Transaction failed";
+    const msg: string = e?.message ?? t("toast.txFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low \u2014 reduce leverage.", "error");
+      toast(t("toast.hfTooLowErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached \u2014 not enough liquidity. Reduce leverage or deposit.", "error");
+      toast(t("toast.utilLimitAddFunds"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2276,12 +2416,12 @@ async function removeFundsFromPosition() {
 /** Resupply: deposit entire wallet balance of the position asset as extra collateral. */
 async function resupply() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const bal = await fetchAssetBalance(userAddress, selectedAsset.id);
-  if (bal <= 0) { toast(`No ${selectedAsset.symbol} in wallet to resupply`, "error"); return; }
+  if (bal <= 0) { toast(t("toast.noAssetResupply", { sym: selectedAsset.symbol }), "error"); return; }
 
   const amountStroops = BigInt(Math.round(bal * 1e7));
   setLoading($("resupply-btn") as HTMLButtonElement, true);
@@ -2296,7 +2436,7 @@ async function resupply() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    toast(e?.message ?? "Resupply failed", "error");
+    toast(e?.message ?? t("toast.resupplyFailed"), "error");
   } finally {
     setLoading($("resupply-btn") as HTMLButtonElement, false);
   }
@@ -2305,7 +2445,7 @@ async function resupply() {
 /** Claim BLND from pool, then swap to the selected asset via Stellar DEX path payment. */
 async function claimAndConvert() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
@@ -2315,7 +2455,7 @@ async function claimAndConvert() {
     if (p.bTokens > 0n) tokenIds.push(p.asset.supplyTokenId);
     if (p.dTokens > 0n) tokenIds.push(p.asset.borrowTokenId);
   }
-  if (tokenIds.length === 0) { toast("No positions to claim from", "error"); return; }
+  if (tokenIds.length === 0) { toast(t("toast.noPositionsClaim"), "error"); return; }
 
   setLoading($("compound-btn") as HTMLButtonElement, true);
   showTxStepper(["Claim BLND", "Swap"]);
@@ -2327,11 +2467,11 @@ async function claimAndConvert() {
 
     // Check actual BLND balance after claim
     const blndBalance = await fetchAssetBalance(userAddress, getBlndId());
-    if (blndBalance <= 0) { toast("No BLND to convert", "error"); hideTxStepper(1000); await loadAll(); return; }
+    if (blndBalance <= 0) { toast(t("toast.noBlndConvert"), "error"); hideTxStepper(1000); await loadAll(); return; }
 
     // Step 2: Swap BLND -> position asset via DEX path payment (classic tx)
     updateTxStep(1, "active");
-    toast(`Swapping ${fmt(blndBalance, 2)} BLND \u2192 ${selectedAsset.symbol}\u2026`, "info");
+    toast(t("toast.swappingBlnd", { amt: fmt(blndBalance, 2), sym: selectedAsset.symbol }), "info");
     const { xdr: swapXdr, estimate } = await buildSwapBlndXdr(
       userAddress,
       blndBalance,
@@ -2339,22 +2479,22 @@ async function claimAndConvert() {
       swapSlippage,
     );
     // Sign via wallet kit
-    toast(`Sign swap in your wallet\u2026`, "info");
+    toast(t("toast.signSwap"), "info");
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(swapXdr, {
       networkPassphrase: getNetworkPassphrase(),
       address: userAddress!,
     });
-    toast(`Submitting swap\u2026`, "info");
+    toast(t("toast.submittingSwap"), "info");
     const swapHash = await submitClassicXdr(signedTxXdr);
     updateTxStep(1, "done");
-    toast(`Converted ${fmt(blndBalance, 2)} BLND \u2192 ~${estimate} ${selectedAsset.symbol}`, "success");
+    toast(t("toast.convertedBlnd", { amt: fmt(blndBalance, 2), est: estimate, sym: selectedAsset.symbol }), "success");
     addTxToHistory(`Swap BLND \u2192 ${selectedAsset.symbol}`, swapHash, "success");
     hideTxStepper();
 
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    toast(e?.message ?? "Claim & Convert failed", "error");
+    toast(e?.message ?? t("toast.claimConvertFailed"), "error");
   } finally {
     setLoading($("compound-btn") as HTMLButtonElement, false);
   }
@@ -2363,6 +2503,9 @@ async function claimAndConvert() {
 function setLoading(btn: HTMLButtonElement, on: boolean) {
   btn.disabled = on;
   btn.classList.toggle("btn-loading", on);
+  // Announce busy state to assistive tech (#15)
+  if (on) btn.setAttribute("aria-busy", "true");
+  else btn.removeAttribute("aria-busy");
 }
 
 // ── Wallet connect / switch / disconnect ──────────────────────────────────────
@@ -2398,7 +2541,7 @@ async function connect() {
     if (txSeam) seedE2EState();
     else await loadAll();
   } catch (e: any) {
-    if (e?.message !== "User closed the modal") toast("Failed to connect wallet", "error");
+    if (e?.message !== "User closed the modal") toast(t("toast.connectFailed"), "error");
   }
 }
 
@@ -2432,9 +2575,9 @@ async function switchWallet() {
     reserves  = [];
     positions = { byAsset: new Map() };
     await loadAll();
-    toast("Switched wallet", "success");
+    toast(t("toast.switchedWallet"), "success");
   } catch (e: any) {
-    if (e?.message !== "User closed the modal") toast("Failed to switch wallet", "error");
+    if (e?.message !== "User closed the modal") toast(t("toast.switchFailed"), "error");
   }
 }
 
@@ -2466,15 +2609,14 @@ interface CompareRow {
   asset:     AssetInfo;
   rs:        ReserveStats;
   baseApy:   number;          // aprToApy(netSupplyApr)
-  safeLev:   number;          // max leverage keeping HF ≥ COMPARE_HF_FLOOR, capped
+  safeLev:   number;          // max leverage at minHF() — matches the trade form
   levApy:    number;          // net APY at the carry-optimal leverage
   aquaPrice: number | null;   // indicative 1 unit → USDC, null = no route
   series:    SnapshotPoint[]; // net supply APR history within the window
 }
 
-const COMPARE_HF_FLOOR = 1.2;
-const COMPARE_LEV_CAP  = 8;
-
+// Max leverage shown in Compare uses the SAME health-factor floor as the trade
+// form (minHF()), so the figure matches what a user can actually open.
 let compareWindowDays = 30;
 let compareSortKey: "lev" | "base" | "rate" = "lev";
 let compareRows: CompareRow[] = [];
@@ -2490,9 +2632,12 @@ function usdcAssetId(): string | null {
   return null;
 }
 
-/** Carry-optimal leverage + the net APY it yields at current pool rates. */
+/** Carry-optimal leverage + the net APY it yields at current pool rates.
+ *  Max leverage uses minHF() — identical to the trade form's slider ceiling —
+ *  so Compare's "Max Lev" and ranking reflect the achievable position, not a
+ *  more conservative hidden assumption. (maxLeverageFor caps at 100.) */
 function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
-  const safeLev = Math.min(COMPARE_LEV_CAP, Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, COMPARE_HF_FLOOR)));
+  const safeLev = Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, minHF()));
   const carry   = rs.netSupplyApr - rs.netBorrowCost; // marginal yield per extra leverage unit
   const effLev  = carry > 0 ? safeLev : 1;            // negative carry → no leverage
   const levApy  = aprToApy(rs.netSupplyApr * effLev - rs.netBorrowCost * (effLev - 1));
@@ -2500,7 +2645,10 @@ function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
 }
 
 function compareSparkline(series: SnapshotPoint[]): string {
-  if (series.length < 2) return `<span class="ct-spark-empty">—</span>`;
+  // Empty case: text "n/a" with a descriptive label, not colour-only (#9)
+  if (series.length < 2) {
+    return `<span class="ct-spark-empty" title="${compareWindowDays}-day trend: no data" aria-label="${compareWindowDays}-day trend: no data">—</span>`;
+  }
   const W = 88, H = 26, pad = 3;
   const vals = series.map((p) => p.val);
   const min = Math.min(...vals), max = Math.max(...vals);
@@ -2511,7 +2659,9 @@ function compareSparkline(series: SnapshotPoint[]): string {
   const pts = series.map((p, i) => `${x(i).toFixed(1)},${y(p.val).toFixed(1)}`).join(" ");
   const up = vals[n - 1] >= vals[0];
   const lastX = x(n - 1).toFixed(1), lastY = y(vals[n - 1]).toFixed(1);
-  return `<svg class="ct-spark ${up ? "ct-spark-up" : "ct-spark-down"}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none">
+  // Text/ARIA trend direction so it isn't conveyed by colour alone (#9)
+  const trendLabel = `${compareWindowDays}-day trend: ${up ? "up" : "down"}`;
+  return `<svg class="ct-spark ${up ? "ct-spark-up" : "ct-spark-down"}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" role="img" aria-label="${trendLabel}"><title>${trendLabel}</title>
     <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="${lastX}" cy="${lastY}" r="1.8" fill="currentColor"/>
   </svg>`;
@@ -2528,6 +2678,13 @@ function compareSortRows(): CompareRow[] {
 }
 
 function renderCompareTable(): void {
+  // Sync sort indicator (colour + aria-sort) with the active sort key (#9)
+  for (const h of document.querySelectorAll<HTMLElement>("#compare-table th[data-sort]")) {
+    const sorted = h.dataset.sort === compareSortKey;
+    h.classList.toggle("ct-sorted", sorted);
+    if (sorted) h.setAttribute("aria-sort", "descending");
+    else h.removeAttribute("aria-sort");
+  }
   const tbody = $("compare-tbody");
   const rows = compareSortRows();
   if (rows.length === 0) {
@@ -2540,7 +2697,7 @@ function renderCompareTable(): void {
     const best = i === 0 && compareSortKey === "lev";
     const rate = r.aquaPrice == null ? `<span class="ct-muted">n/a</span>` : r.aquaPrice.toFixed(4);
     return `<tr class="${best ? "ct-best-row" : ""}">
-      <td class="ct-rank">${best ? `<span class="ct-medal">&#9733;</span>` : i + 1}</td>
+      <td class="ct-rank">${best ? `<span class="ct-medal" aria-hidden="true">&#9733;</span><span class="sr-only">Rank 1</span>` : i + 1}</td>
       <td class="ct-asset">
         <div class="ct-asset-cell">
           <span class="ct-sym">${r.asset.symbol}</span>
@@ -2557,10 +2714,18 @@ function renderCompareTable(): void {
   }).join("");
 }
 
+/** Trend column header reflects the selected window, so the 7D/30D/1Y toggle
+ *  gives visible feedback (it scopes the trend sparkline, not the live columns). */
+function updateTrendHeader(): void {
+  const el = document.getElementById("ct-trend-header");
+  if (el) el.textContent = `${t("compare.col.trend")} · ${compareWindowDays >= 365 ? "1y" : `${compareWindowDays}d`}`;
+}
+
 async function renderCompareView(): Promise<void> {
   const token = ++compareToken;
   compareLoading = true;
   compareRows = [];
+  updateTrendHeader();
   renderCompareTable();
 
   const usdc   = usdcAssetId();
@@ -2578,6 +2743,10 @@ async function renderCompareView(): Promise<void> {
     }
     if (token !== compareToken) return; // superseded by a newer render
     for (const rs of reserves) {
+      // Compare ranks LEVERAGED yield. Skip reserves that can't be used as
+      // collateral (c_factor = 0, e.g. EURC on YieldBlox) — they can't be
+      // looped, and their raw emissions-inflated APY would mis-rank the table.
+      if (rs.cFactor <= 0) continue;
       const { safeLev, levApy } = compareLevApy(rs);
       compareRows.push({
         poolName: pool.name, poolId: pool.id, asset: rs.asset, rs,
@@ -2624,6 +2793,14 @@ function switchView(view: AppView) {
   swapBtn.classList.toggle("active", view === "swap");
   vaultBtn.classList.toggle("active", view === "vault");
   compareBtn.classList.toggle("active", view === "compare");
+  // Mark the active protocol-nav button for AT (#13)
+  const setCurrent = (btn: HTMLElement, on: boolean) =>
+    on ? btn.setAttribute("aria-current", "page") : btn.removeAttribute("aria-current");
+  setCurrent(overviewBtn, view === "overview");
+  setCurrent(blendBtn, view === "leverage");
+  setCurrent(swapBtn, view === "swap");
+  setCurrent(vaultBtn, view === "vault");
+  setCurrent(compareBtn, view === "compare");
 
   // Mobile sidebar active states
   document.getElementById("mobile-proto-overview")?.classList.toggle("active", view === "overview");
@@ -2682,6 +2859,7 @@ function switchView(view: AppView) {
 function closeDrawer() {
   document.querySelector(".sidebar")!.classList.remove("open");
   $("sidebar-backdrop").classList.add("hidden");
+  document.getElementById("hamburger-btn")?.setAttribute("aria-expanded", "false");
 }
 
 // ── Swap assets ──────────────────────────────────────────────────────────
@@ -2760,6 +2938,9 @@ async function fetchSwapQuote() {
       const buySym  = ($("swap-buy-asset") as HTMLSelectElement).selectedOptions[0].text;
 
       $("swap-rate").textContent = `1 ${sellSym} \u2248 ${(buyNum / sellNum).toFixed(6)} ${buySym}`;
+      // Surface which venue the broker routed through (falls back to the broker itself).
+      const q = quote as { route?: string; source?: string };
+      $("swap-route").textContent = q.route ?? q.source ?? "Stellar Broker";
       $("swap-direct").textContent = quote.directTrade
         ? `${Number.parseFloat(quote.directTrade.buying).toFixed(7)} ${buySym}`
         : "\u2014";
@@ -2801,7 +2982,8 @@ async function compareAquariusRate(
   const sellC = BROKER_TO_CONTRACT[sellBrokerId];
   const buyC = BROKER_TO_CONTRACT[buyBrokerId];
   if (!sellC || !buyC) {
-    aqEl.textContent = "—";
+    aqEl.textContent = t("common.na");
+    aqEl.setAttribute("title", "No Aquarius route for this pair");
     badgeEl.textContent = "—";
     badgeEl.className = "best-rate-badge";
     return;
@@ -2810,12 +2992,14 @@ async function compareAquariusRate(
   const aq = await aquariusBestRate(sellC, buyC, amountStroops);
   if (!aq) {
     aqEl.textContent = "unavailable";
+    aqEl.removeAttribute("title");
     badgeEl.textContent = "Broker";
     badgeEl.className = "best-rate-badge best-broker";
     return;
   }
   const aqOut = Number(aq.amountOut) / 1e7;
   aqEl.textContent = `${aqOut.toFixed(7)} ${buySym}`;
+  aqEl.removeAttribute("title");
   const brokerWins = brokerBuyNum >= aqOut;
   badgeEl.textContent = brokerWins ? "Broker" : "Aquarius";
   badgeEl.className = `best-rate-badge ${brokerWins ? "best-broker" : "best-aquarius"}`;
@@ -2830,19 +3014,19 @@ function updateSwapBtn() {
   const samePair = sellAsset === buyAsset;
 
   if (!userAddress) {
-    btn.textContent = "Connect Wallet";
+    btn.textContent = t("nav.connect");
     btn.disabled = true;
   } else if (samePair) {
-    btn.textContent = "Select different assets";
+    btn.textContent = t("swap.selectDifferent");
     btn.disabled = true;
   } else if (!hasAmount) {
-    btn.textContent = "Enter amount";
+    btn.textContent = t("swap.enterAmount");
     btn.disabled = true;
   } else if (_lastQuote && _lastQuote.status === "success") {
-    btn.textContent = "Swap (coming soon)";
+    btn.textContent = t("swap.comingSoon");
     btn.disabled = true; // Execution will be enabled in a future update
   } else {
-    btn.textContent = "Get Quote";
+    btn.textContent = t("swap.getQuote");
     btn.disabled = true;
   }
 }
@@ -2850,6 +3034,56 @@ function updateSwapBtn() {
 function debounceQuote() {
   if (_quoteTimer) clearTimeout(_quoteTimer);
   _quoteTimer = setTimeout(fetchSwapQuote, 500);
+}
+
+// ── Modal focus management (#10) ──────────────────────────────────────────────
+//
+// Shared helpers wired into the existing show/hide paths. openModal() reveals an
+// overlay, remembers the trigger, moves focus inside and traps Tab; closeModal()
+// hides it and returns focus to the trigger. Behaviour (which element opens/closes
+// the modal, Escape handling, backdrop clicks) is unchanged — these only add the
+// focus + ARIA layer on top.
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Per-overlay state: the element to restore focus to, and the active trap handler.
+const _modalState = new WeakMap<HTMLElement, { trigger: HTMLElement | null; trap: (e: KeyboardEvent) => void }>();
+
+function _focusable(overlay: HTMLElement): HTMLElement[] {
+  return Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE))
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+}
+
+function openModal(overlay: HTMLElement, opts: { focus?: HTMLElement | null } = {}): void {
+  overlay.classList.remove("hidden");
+  const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const trap = (e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const items = _focusable(overlay);
+    if (items.length === 0) return;
+    const first = items[0], last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
+  overlay.addEventListener("keydown", trap);
+  _modalState.set(overlay, { trigger, trap });
+  // Move focus inside: explicit target, else first focusable element.
+  const target = opts.focus ?? _focusable(overlay)[0] ?? null;
+  // Defer so the element is laid out (display toggled this frame).
+  requestAnimationFrame(() => target?.focus());
+}
+
+function closeModal(overlay: HTMLElement): void {
+  overlay.classList.add("hidden");
+  const state = _modalState.get(overlay);
+  if (state) {
+    overlay.removeEventListener("keydown", state.trap);
+    _modalState.delete(overlay);
+    // Return focus to the trigger if it's still in the document.
+    if (state.trigger && document.contains(state.trigger)) state.trigger.focus();
+  }
 }
 
 // ── Tooltip popovers (#1) ────────────────────────────────────────────────────
@@ -2868,9 +3102,19 @@ function initTooltips() {
       el.dataset.tip = el.getAttribute("title") || "";
       el.removeAttribute("title");
     }
+    // Keyboard/screen-reader access (#12): reachable + announces the tip text.
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", el.dataset.tip || "");
 
     el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
     el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
+    // Keyboard focus mirrors hover; refresh aria-label in case the tip changed.
+    el.addEventListener("focus", () => {
+      el.setAttribute("aria-label", el.dataset.tip || "");
+      showTip(el); popover.classList.add("visible");
+    });
+    el.addEventListener("blur", () => popover.classList.remove("visible"));
     // Mobile: toggle on click
     el.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2888,24 +3132,64 @@ function initTooltips() {
   document.addEventListener("click", () => popover.classList.remove("visible"));
 }
 
+// ── Reusable confirmation modal (P2) ──────────────────────────────────────────
+
+// Promise-based confirm dialog reusing the generic #confirm-modal-overlay.
+// Resolves true on confirm, false on cancel / backdrop / Escape.
+let _confirmResolve: ((ok: boolean) => void) | null = null;
+
+function showConfirm(opts: { title: string; body: string; confirmLabel?: string }): Promise<boolean> {
+  $("confirm-modal-title").textContent = opts.title;
+  $("confirm-modal-body").textContent = opts.body;
+  $("confirm-modal-ok").textContent = opts.confirmLabel ?? t("common.confirm");
+  openModal($("confirm-modal-overlay"), { focus: $("confirm-modal-cancel") });
+  return new Promise<boolean>((resolve) => { _confirmResolve = resolve; });
+}
+
+function closeConfirm(ok: boolean) {
+  closeModal($("confirm-modal-overlay"));
+  const r = _confirmResolve;
+  _confirmResolve = null;
+  if (r) r(ok);
+}
+
+$("confirm-modal-ok").addEventListener("click", () => closeConfirm(true));
+$("confirm-modal-cancel").addEventListener("click", () => closeConfirm(false));
+$("confirm-modal-overlay").addEventListener("click", (e) => {
+  if (e.target === $("confirm-modal-overlay")) closeConfirm(false);
+});
+
 // ── Event listeners ───────────────────────────────────────────────────────────
 
 // Expert toggle (settings dropdown)
-function toggleExpert() {
-  expertMode = !expertMode;
+function applyExpertState() {
   // Update settings dropdown badge
   const btn = $("expert-toggle");
   const badge = btn.querySelector(".settings-badge");
-  if (badge) badge.textContent = expertMode ? "On" : "Off";
+  if (badge) badge.textContent = expertMode ? t("common.on") : t("common.off");
   btn.classList.toggle("expert-active", expertMode);
   // Update mobile sidebar toggle
   const mobileBtn = document.getElementById("mobile-expert-toggle");
   if (mobileBtn) {
     mobileBtn.classList.toggle("expert-active", expertMode);
-    mobileBtn.textContent = expertMode ? "Expert ON" : "Expert";
+    mobileBtn.textContent = expertMode ? t("expert.mobileOn") : t("expert.mobileOff");
   }
   renderSelectedAsset();
   updatePreview();
+}
+
+async function toggleExpert() {
+  // Enabling (off -> on) requires explicit confirmation; disabling does not.
+  if (!expertMode) {
+    const ok = await showConfirm({
+      title: t("expert.confirmTitle"),
+      body: t("expert.confirmBody"),
+      confirmLabel: t("expert.enable"),
+    });
+    if (!ok) return;
+  }
+  expertMode = !expertMode;
+  applyExpertState();
 }
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
@@ -2996,9 +3280,7 @@ $("compare-table").addEventListener("click", (e) => {
   const th = (e.target as HTMLElement).closest("th[data-sort]") as HTMLElement | null;
   if (!th) return;
   compareSortKey = th.dataset.sort as "lev" | "base" | "rate";
-  for (const h of document.querySelectorAll("#compare-table th[data-sort]")) {
-    h.classList.toggle("ct-sorted", h === th);
-  }
+  // ct-sorted + aria-sort are synced inside renderCompareTable() (#9)
   renderCompareTable();
 });
 // Compare view: manual refresh
@@ -3025,14 +3307,19 @@ document.addEventListener("click", () => {
 $("hamburger-btn").addEventListener("click", () => {
   document.querySelector(".sidebar")!.classList.add("open");
   $("sidebar-backdrop").classList.remove("hidden");
+  $("hamburger-btn").setAttribute("aria-expanded", "true");
 });
 $("sidebar-backdrop").addEventListener("click", closeDrawer);
 
 // Mobile card tabs (#12) — note: order is swapped in new layout (action=left=0, position=right=1)
 document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".mobile-card-tab").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".mobile-card-tab").forEach(b => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
     btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
     const panel = btn.dataset.panel;
     const cards = document.querySelectorAll<HTMLElement>(".two-col > .card");
     if (window.innerWidth <= 900) {
@@ -3243,7 +3530,7 @@ $("demo-btn").addEventListener("click", () => {
   $("asset-balance").textContent = "10,000.0000 " + selectedAsset.symbol;
   $("pos-blnd").textContent = "125.3400 BLND";
   renderSelectedAsset();
-  toast("Demo mode \u2014 explore the UI without a wallet", "info");
+  toast(t("toast.demoExplore"), "info");
 });
 
 // Init preview with defaults
@@ -3501,12 +3788,12 @@ async function refreshVaultView() {
     linkEl.textContent = vault.vaultId.slice(0, 8) + "..." + vault.vaultId.slice(-4);
     linkEl.href = expertUrl("contract", vault.vaultId);
   } else {
-    linkEl.textContent = "Not deployed";
+    linkEl.textContent = t("common.notDeployed");
     linkEl.href = "#";
   }
 
   if (!vaultReady) {
-    $("vault-tvl").textContent = "Not deployed";
+    $("vault-tvl").textContent = t("common.notDeployed");
     $("vault-share-price").textContent = "--";
     $("vault-apy").textContent = "--";
     $("vault-leverage").textContent = "--";
@@ -3606,10 +3893,10 @@ async function refreshVaultView() {
     rebalBtn.disabled = !connected || !needsRebalance;
     const hintEl = $("vault-rebalance-hint");
     if (needsRebalance) {
-      hintEl.textContent = "HF below minimum — rebalance available";
+      hintEl.textContent = t("vault.hfBelowMin");
       hintEl.className = "vault-rebalance-hint hf-bad";
     } else {
-      hintEl.textContent = "HF is healthy";
+      hintEl.textContent = t("vault.hfHealthy");
       hintEl.className = "vault-rebalance-hint hf-ok";
     }
   }
@@ -3762,7 +4049,7 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     selectedPool = getKnownPools()[0];
     assets = getPoolAssets(selectedPool);
     selectedAsset = assets[0];
-    $("network-toggle").textContent = "Testnet";
+    $("network-toggle").textContent = t("net.testnet");
     $("network-toggle").classList.add("testnet-active");
     $("testnet-banner").classList.remove("hidden");
   }
@@ -3810,16 +4097,24 @@ document.addEventListener("keydown", (e) => {
       if (!closeBtn.disabled) closeBtn.click();
       break;
     }
-    case "Escape":
+    case "Escape": {
       $("pool-dropdown").classList.add("hidden");
       $("settings-dropdown").classList.add("hidden");
-      $("alert-modal-overlay").classList.add("hidden");
-      document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      if (!$("alert-modal-overlay").classList.contains("hidden")) closeModal($("alert-modal-overlay"));
+      const shortcut = document.getElementById("shortcut-modal-overlay");
+      if (shortcut && !shortcut.classList.contains("hidden")) closeModal(shortcut);
+      if (!$("confirm-modal-overlay").classList.contains("hidden")) closeConfirm(false);
+      if (!$("confirm-position-overlay").classList.contains("hidden")) closeConfirmPosition();
       closeDrawer();
       break;
-    case "?":
-      document.getElementById("shortcut-modal-overlay")?.classList.toggle("hidden");
+    }
+    case "?": {
+      const shortcut = document.getElementById("shortcut-modal-overlay");
+      if (!shortcut) break;
+      if (shortcut.classList.contains("hidden")) openModal(shortcut, { focus: document.getElementById("shortcut-modal-close") });
+      else closeModal(shortcut);
       break;
+    }
   }
 });
 
@@ -3848,7 +4143,7 @@ async function registerAlertServiceWorker(): Promise<ServiceWorkerRegistration |
 
 registerAlertServiceWorker();
 
-$("alert-bell-btn").addEventListener("click", () => {
+function openAlertModal() {
   $("alert-pool-name").textContent = selectedPool.name;
   $("alert-asset-name").textContent = selectedAsset.symbol;
 
@@ -3858,30 +4153,40 @@ $("alert-bell-btn").addEventListener("click", () => {
   const closest = brackets.reduce((a, b) => Math.abs(b - curLev) < Math.abs(a - curLev) ? b : a);
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);
 
-  $("alert-modal-overlay").classList.remove("hidden");
+  openModal($("alert-modal-overlay"), { focus: $("alert-email") });
+}
+
+$("alert-bell-btn").addEventListener("click", openAlertModal);
+
+// Settings dropdown "Set up alerts" — reachable from any view, not just Trade.
+document.getElementById("alerts-menu-btn")?.addEventListener("click", () => {
+  $("settings-dropdown").classList.add("hidden");
+  openAlertModal();
 });
 
 $("alert-modal-close").addEventListener("click", () => {
-  $("alert-modal-overlay").classList.add("hidden");
+  closeModal($("alert-modal-overlay"));
 });
 
 $("alert-modal-overlay").addEventListener("click", (e) => {
   if (e.target === $("alert-modal-overlay")) {
-    $("alert-modal-overlay").classList.add("hidden");
+    closeModal($("alert-modal-overlay"));
   }
 });
 
 $("alert-subscribe-btn").addEventListener("click", async () => {
   const email = ($("alert-email") as HTMLInputElement).value.trim();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    toast("Please enter a valid email address.", "error");
+    toast(t("toast.invalidEmail"), "error");
     return;
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const hfEnabled = ($("alert-hf-enable") as HTMLInputElement).checked;
+  const hfThreshold = Number(($("alert-hf-threshold") as HTMLInputElement).value);
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Subscribing...";
+  btn.textContent = t("alert.subscribing");
 
   try {
     const res = await fetch(`${ALERTS_WORKER_URL}/subscribe`, {
@@ -3892,45 +4197,46 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
         pool_id: selectedPool.id,
         asset_symbol: selectedAsset.symbol,
         leverage_bracket: leverageBracket,
+        ...(hfEnabled && Number.isFinite(hfThreshold) ? { hf_threshold: hfThreshold } : {}),
       }),
     });
 
     const data = await res.json() as any;
 
     if (data.ok) {
-      toast("Check your email to verify your alert subscription.", "success");
-      $("alert-modal-overlay").classList.add("hidden");
+      toast(t("toast.checkEmail"), "success");
+      closeModal($("alert-modal-overlay"));
       ($("alert-email") as HTMLInputElement).value = "";
     } else {
-      toast(data.error || "Subscription failed.", "error");
+      toast(data.error || t("toast.subscriptionFailed"), "error");
     }
   } catch (e: any) {
-    toast(`Subscription failed: ${e.message?.slice(0, 100)}`, "error");
+    toast(t("toast.subscriptionFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Subscribe with email";
+    btn.textContent = t("alert.subscribe");
   }
 });
 
 $("alert-push-btn").addEventListener("click", async () => {
   if (!userAddress || demoMode) {
-    toast("Connect your wallet to enable push alerts.", "info");
+    toast(t("toast.connectForPush"), "info");
     return;
   }
   if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-    toast("Push notifications are not supported in this browser.", "error");
+    toast(t("toast.pushUnsupported"), "error");
     return;
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
   const btn = $("alert-push-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Enabling...";
+  btn.textContent = t("alert.enabling");
 
   try {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
-      toast("Notification permission denied.", "error");
+      toast(t("toast.permissionDenied"), "error");
       return;
     }
 
@@ -3938,7 +4244,7 @@ $("alert-push-btn").addEventListener("click", async () => {
     const keyRes = await fetch(`${ALERTS_WORKER_URL}/vapid-public-key`);
     const keyData = await keyRes.json() as { ok?: boolean; publicKey?: string; error?: string };
     if (!keyData.ok || !keyData.publicKey) {
-      toast(keyData.error || "Push is not configured on the server.", "error");
+      toast(keyData.error || t("toast.pushNotConfigured"), "error");
       return;
     }
 
@@ -3964,31 +4270,33 @@ $("alert-push-btn").addEventListener("click", async () => {
 
     const data = await res.json() as { ok?: boolean; error?: string };
     if (data.ok) {
-      toast("Push alerts enabled for this position.", "success");
-      $("alert-modal-overlay").classList.add("hidden");
+      toast(t("toast.pushEnabled"), "success");
+      closeModal($("alert-modal-overlay"));
     } else {
-      toast(data.error || "Push subscription failed.", "error");
+      toast(data.error || t("toast.pushSubFailed"), "error");
     }
   } catch (e: any) {
-    toast(`Push subscription failed: ${e.message?.slice(0, 100)}`, "error");
+    toast(t("toast.pushSubFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Enable push notifications";
+    btn.textContent = t("alert.push");
   }
 });
 
 // ── Shortcut help modal (A12) ─────────────────────────────────────────────────
 
 document.getElementById("shortcut-modal-close")?.addEventListener("click", () => {
-  document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay) closeModal(overlay);
 });
 document.getElementById("shortcut-modal-overlay")?.addEventListener("click", (e) => {
-  if (e.target === document.getElementById("shortcut-modal-overlay"))
-    document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay && e.target === overlay) closeModal(overlay);
 });
 document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
   document.getElementById("settings-dropdown")?.classList.add("hidden");
-  document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay) openModal(overlay, { focus: document.getElementById("shortcut-modal-close") });
 });
 
 // ── i18n + onboarding tour (T3.5) ─────────────────────────────────────────────
@@ -3997,12 +4305,53 @@ function updateLangBadge(): void {
   if (badge) badge.textContent = getLang().toUpperCase();
 }
 
-document.getElementById("lang-toggle")?.addEventListener("click", () => {
-  cycleLang();
+// Re-render dynamic views that build strings in JS after a language change.
+function refreshDynamicLangStrings(): void {
   updateLangBadge();
-  // Re-render dynamic views that build strings in JS.
+  // Imperatively-set chrome labels that don't carry data-i18n.
+  applyExpertState(); // expert On/Off badge + mobile label
+  const netBtn = document.getElementById("network-toggle");
+  if (netBtn) netBtn.textContent = getActiveNetwork() === "testnet" ? t("net.testnet") : t("net.mainnet");
+  updateSwapBtn(); // swap CTA label (Connect / Get Quote / …)
   if (activeView === "compare") renderCompareView();
-  if (activeView === "vault") renderAquariusTradeCard(getActiveVault());
+  if (activeView === "vault") { renderAquariusTradeCard(getActiveVault()); refreshVaultView().catch(() => {}); }
+  if (activeView === "leverage") updatePreview(); // P2 — risk band status text + action card refreshed via render
+  renderPoolFooter();
+}
+
+// Language picker — replaces the blind EN→ES→PT cycle with a real submenu.
+function buildLangMenu(): void {
+  const toggle = document.getElementById("lang-toggle");
+  if (!toggle) return;
+  let menu = document.getElementById("lang-submenu");
+  if (menu) { menu.classList.toggle("hidden"); return; }
+  menu = document.createElement("div");
+  menu.id = "lang-submenu";
+  menu.className = "lang-submenu";
+  for (const code of ["en", "es", "pt"] as Lang[]) {
+    const btn = document.createElement("button");
+    btn.className = "settings-dropdown-item";
+    btn.textContent = LANG_NAMES[code];
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setLang(code);
+      refreshDynamicLangStrings();
+      menu!.classList.add("hidden");
+    });
+    menu.appendChild(btn);
+  }
+  toggle.insertAdjacentElement("afterend", menu);
+}
+
+document.getElementById("lang-toggle")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  buildLangMenu();
+});
+
+// Take the tour from the settings dropdown.
+document.getElementById("tour-btn")?.addEventListener("click", () => {
+  $("settings-dropdown").classList.add("hidden");
+  startTour();
 });
 
 initI18n();

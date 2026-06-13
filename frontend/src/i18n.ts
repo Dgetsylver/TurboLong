@@ -39,6 +39,10 @@ export function applyTranslations(root: ParentNode = document): void {
     const key = el.dataset.i18nPh;
     if (key && "placeholder" in el) (el as HTMLInputElement).placeholder = t(key);
   }
+  for (const el of root.querySelectorAll<HTMLElement>("[data-tip-i18n]")) {
+    const key = el.dataset.tipI18n;
+    if (key) el.setAttribute("data-tip", t(key));
+  }
 }
 
 function normalize(raw: string | null | undefined): Lang | null {
