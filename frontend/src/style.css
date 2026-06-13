@@ -720,6 +720,59 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .keeper-note { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; color: var(--text-2); margin-top: 10px; line-height: 1.5; }
 .keeper-note-icon { flex-shrink: 0; }
 
+/* ── Live HF risk band (P2) ─────────────────────────────────────────────── */
+.risk-band {
+  margin-top: 12px; padding: 10px 12px;
+  background: var(--metric-bg); border: 1px solid var(--border); border-radius: var(--r);
+}
+.risk-band-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.risk-band-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--text-3);
+}
+.risk-band-status { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--text); }
+.risk-band-status.zone-safe    { color: var(--success); }
+.risk-band-status.zone-caution { color: var(--warning); }
+.risk-band-status.zone-high    { color: var(--warning); }
+.risk-band-status.zone-nearLiq { color: var(--danger); }
+.risk-band-track {
+  display: flex; gap: 4px;
+}
+.risk-seg {
+  flex: 1; text-align: center; padding: 4px 2px; border-radius: 4px;
+  font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
+  color: var(--text-3); border: 1px solid var(--border); opacity: .45; transition: all .2s;
+}
+.risk-seg-safe.active    { opacity: 1; color: var(--success); border-color: var(--success-border); background: var(--success-bg, rgba(45,232,163,.08)); }
+.risk-seg-caution.active { opacity: 1; color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }
+.risk-seg-high.active    { opacity: 1; color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }
+.risk-seg-nearLiq.active { opacity: 1; color: var(--danger);  border-color: var(--danger-border);  background: var(--danger-bg); }
+
+/* ── Inline jargon explainer (P2) ───────────────────────────────────────── */
+.learn-box {
+  margin-top: 12px; padding: 0 12px;
+  background: var(--metric-bg); border: 1px solid var(--border); border-radius: var(--r);
+}
+.learn-box > summary {
+  cursor: pointer; padding: 10px 0; font-size: 12px; font-weight: 600; color: var(--text-2);
+  list-style: none; user-select: none;
+}
+.learn-box > summary::-webkit-details-marker { display: none; }
+.learn-box > summary::before { content: "\25B8 "; color: var(--text-3); }
+.learn-box[open] > summary::before { content: "\25BE "; }
+.learn-box > summary:hover { color: var(--text); }
+.learn-box > p {
+  font-size: 12px; color: var(--text-2); line-height: 1.6; margin: 0 0 12px; padding-top: 2px;
+}
+
+/* ── Confirmation modals (P2) ───────────────────────────────────────────── */
+.confirm-actions { display: flex; gap: 10px; margin-top: 18px; }
+.confirm-actions .btn { flex: 1; }
+.confirm-summary { margin-bottom: 14px; }
+.confirm-liq-warn { margin-top: 0; margin-bottom: 14px; }
+.confirm-check { justify-content: flex-start; margin-bottom: 0; }
+
 /* ── Expert toggle (now in settings dropdown) ───────────────────────────── */
 .expert-toggle { font-size: 12px; }
 .expert-toggle:hover { color: var(--warning) !important; border-color: var(--expert-border) !important; background: var(--expert-hover-bg) !important; }

@@ -1651,6 +1651,26 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
+// Live HF risk band (P2). Classifies the current HF into a labeled zone and
+// shows both the HF value and the zone name in TEXT (never color alone).
+function updateRiskBand(hf: number) {
+  let zone: "safe" | "caution" | "high" | "nearLiq";
+  let label: string;
+  if (!Number.isFinite(hf) || hf > 1.3) { zone = "safe"; label = t("risk.safe"); }
+  else if (hf > 1.1)  { zone = "caution"; label = t("risk.caution"); }
+  else if (hf > 1.03) { zone = "high"; label = t("risk.high"); }
+  else                { zone = "nearLiq"; label = t("risk.nearLiq"); }
+
+  const hfText = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 3) : "∞";
+  const statusEl = $("risk-band-status");
+  statusEl.textContent = `HF ${hfText} · ${label}`;
+  statusEl.className = `risk-band-status zone-${zone}`;
+
+  document.querySelectorAll<HTMLElement>("#risk-band .risk-seg").forEach((seg) => {
+    seg.classList.toggle("active", seg.dataset.zone === zone);
+  });
+}
+
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
@@ -1662,6 +1682,7 @@ function updatePreview() {
   const l       = rs?.lFactor ?? 1;
   const hf      = hfForLeverage(lev, c, l);
   const pos     = positions.byAsset.get(selectedAsset.id);
+  let projectedNetApy = Number.NaN; // captured for the negative-APY warning (P2)
 
   // In adjust mode, use equity as the base; in add-funds mode, use the add-funds input; in open mode, use initial deposit
   const equity  = (actionMode === "adjust" && pos) ? pos.equity
@@ -1706,6 +1727,7 @@ function updatePreview() {
     const proj = projectRates(rs, supply - oldSupply, borrow - oldBorrow);
     const netApr = proj.netSupplyApr * lev - proj.netBorrowCost * (lev - 1);
     const netApy = aprToApy(netApr);
+    projectedNetApy = netApy;
     $("prev-net-apr").textContent = `${fmt(netApy, 2)}% APY on equity`;
     $("prev-net-apr").className   = `prev-net-apr ${netApy > 0 ? "apr-great" : "apr-bad"}`;
     const prevTip = $("prev-net-tip");
@@ -1793,6 +1815,22 @@ function updatePreview() {
     liquidityWarnEl.classList.add("hidden");
   }
 
+  // Live HF risk band (P2) — always visible while previewing, text + color.
+  updateRiskBand(hf);
+
+  // Inline risk warnings at open / add-funds time (P2).
+  const isOpenLike = actionMode === "open" || actionMode === "add-funds";
+  // Negative projected net APY — you'd pay more in borrow cost than you earn.
+  ($("neg-apy-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && Number.isFinite(projectedNetApy) && projectedNetApy < 0));
+  // Frozen pool — can't open, hard to exit.
+  ($("frozen-pool-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && selectedPool.status !== 1));
+  // Very high utilization (≥95%) — tight liquidity, forced-liquidation risk.
+  const util = rs && rs.totalSupply > 0 ? rs.totalBorrow / rs.totalSupply : 0;
+  ($("high-util-warning") as HTMLElement).classList.toggle(
+    "hidden", !(isOpenLike && !!rs && util >= 0.95));
+
   const safe = hf >= minHF() && selectedPool.status === 1 && liquidityOk;
   ($("hf-warning") as HTMLElement).classList.toggle("hidden", hf >= minHF() || selectedPool.status !== 1);
   ($("open-btn") as HTMLButtonElement).disabled = !safe;
@@ -1862,6 +1900,75 @@ async function loadAll() {
   }
 }
 
+// ── Pre-submit position confirmation (P2) ─────────────────────────────────────
+
+let _confirmPosResolve: ((ok: boolean) => void) | null = null;
+
+function closeConfirmPosition(ok = false) {
+  $("confirm-position-overlay").classList.add("hidden");
+  const r = _confirmPosResolve;
+  _confirmPosResolve = null;
+  if (r) r(ok);
+}
+
+/**
+ * Show the pre-submit review modal. Reuses the same HF and projected-APY math
+ * as updatePreview(). Resolves true only when the user ticks the risk checkbox
+ * and clicks Confirm & Open; false on cancel / close / backdrop / Escape.
+ */
+function confirmPositionModal(
+  initial: number,
+  leverage: number,
+  liveAsset: AssetInfo,
+  rs: ReserveStats | undefined,
+): Promise<boolean> {
+  const c   = rs ? rs.cFactor : liveAsset.cFactor;
+  const l   = rs?.lFactor ?? 1;
+  const hf  = hfForLeverage(leverage, c, l);
+  const supply = initial * leverage;
+  const borrow = initial * (leverage - 1);
+
+  // Projected net APY after deposit — same computation the preview uses.
+  let netApy = Number.NaN;
+  if (rs) {
+    const proj = projectRates(rs, supply, borrow);
+    const netApr = proj.netSupplyApr * leverage - proj.netBorrowCost * (leverage - 1);
+    netApy = aprToApy(netApr);
+  }
+
+  $("cp-lev").textContent        = `${leverage.toFixed(1)}×`;
+  $("cp-deposit").textContent    = `${fmt(initial, 2)} ${liveAsset.symbol}`;
+  $("cp-collateral").textContent = `${fmt(supply, 2)} ${liveAsset.symbol}`;
+  $("cp-borrowed").textContent   = `${fmt(borrow, 2)} ${liveAsset.symbol}`;
+  $("cp-hf").textContent         = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "∞";
+  $("cp-hf").className           = hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
+  if (Number.isFinite(netApy)) {
+    $("cp-apy").textContent = `${fmt(netApy, 2)}% APY`;
+    $("cp-apy").className   = netApy >= 0 ? "hf-ok" : "hf-bad";
+  } else {
+    $("cp-apy").textContent = "—";
+    $("cp-apy").className   = "";
+  }
+
+  // Reset the gate: checkbox unticked, confirm disabled.
+  const chk = $("cp-understand") as HTMLInputElement;
+  chk.checked = false;
+  ($("cp-confirm") as HTMLButtonElement).disabled = true;
+
+  $("confirm-position-overlay").classList.remove("hidden");
+  return new Promise<boolean>((resolve) => { _confirmPosResolve = resolve; });
+}
+
+($("cp-understand") as HTMLInputElement).addEventListener("change", (e) => {
+  ($("cp-confirm") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked;
+});
+$("cp-confirm").addEventListener("click", () => closeConfirmPosition(true));
+$("cp-cancel").addEventListener("click", () => closeConfirmPosition(false));
+$("confirm-position-close").addEventListener("click", () => closeConfirmPosition(false));
+$("confirm-position-overlay").addEventListener("click", (e) => {
+  if (e.target === $("confirm-position-overlay")) closeConfirmPosition(false);
+});
+
 // ── Actions ───────────────────────────────────────────────────────────────────
 
 async function openPosition() {
@@ -1885,6 +1992,10 @@ async function openPosition() {
     toast(`First borrow step (${fmt(firstBorrow, 0)}) exceeds pool available after deposit (${fmt(poolAvailAfterDeposit, 0)} ${rs.asset.symbol}). Reduce leverage.`, "error");
     return;
   }
+
+  // P2 — pre-submit position review. Build/submit only runs on explicit confirm.
+  const confirmed = await confirmPositionModal(initial, leverage, liveAsset, rs);
+  if (!confirmed) return;
 
   const initialStroops = BigInt(Math.round(initial * 1e7));
   setLoading($("open-btn") as HTMLButtonElement, true);
@@ -2802,11 +2913,37 @@ function initTooltips() {
   document.addEventListener("click", () => popover.classList.remove("visible"));
 }
 
+// ── Reusable confirmation modal (P2) ──────────────────────────────────────────
+
+// Promise-based confirm dialog reusing the generic #confirm-modal-overlay.
+// Resolves true on confirm, false on cancel / backdrop / Escape.
+let _confirmResolve: ((ok: boolean) => void) | null = null;
+
+function showConfirm(opts: { title: string; body: string; confirmLabel?: string }): Promise<boolean> {
+  $("confirm-modal-title").textContent = opts.title;
+  $("confirm-modal-body").textContent = opts.body;
+  $("confirm-modal-ok").textContent = opts.confirmLabel ?? t("common.confirm");
+  $("confirm-modal-overlay").classList.remove("hidden");
+  return new Promise<boolean>((resolve) => { _confirmResolve = resolve; });
+}
+
+function closeConfirm(ok: boolean) {
+  $("confirm-modal-overlay").classList.add("hidden");
+  const r = _confirmResolve;
+  _confirmResolve = null;
+  if (r) r(ok);
+}
+
+$("confirm-modal-ok").addEventListener("click", () => closeConfirm(true));
+$("confirm-modal-cancel").addEventListener("click", () => closeConfirm(false));
+$("confirm-modal-overlay").addEventListener("click", (e) => {
+  if (e.target === $("confirm-modal-overlay")) closeConfirm(false);
+});
+
 // ── Event listeners ───────────────────────────────────────────────────────────
 
 // Expert toggle (settings dropdown)
-function toggleExpert() {
-  expertMode = !expertMode;
+function applyExpertState() {
   // Update settings dropdown badge
   const btn = $("expert-toggle");
   const badge = btn.querySelector(".settings-badge");
@@ -2820,6 +2957,20 @@ function toggleExpert() {
   }
   renderSelectedAsset();
   updatePreview();
+}
+
+async function toggleExpert() {
+  // Enabling (off -> on) requires explicit confirmation; disabling does not.
+  if (!expertMode) {
+    const ok = await showConfirm({
+      title: t("expert.confirmTitle"),
+      body: t("expert.confirmBody"),
+      confirmLabel: t("expert.enable"),
+    });
+    if (!ok) return;
+  }
+  expertMode = !expertMode;
+  applyExpertState();
 }
 $("expert-toggle").addEventListener("click", toggleExpert);
 document.getElementById("mobile-expert-toggle")?.addEventListener("click", toggleExpert);
@@ -3709,6 +3860,8 @@ document.addEventListener("keydown", (e) => {
       $("settings-dropdown").classList.add("hidden");
       $("alert-modal-overlay").classList.add("hidden");
       document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      if (!$("confirm-modal-overlay").classList.contains("hidden")) closeConfirm(false);
+      if (!$("confirm-position-overlay").classList.contains("hidden")) closeConfirmPosition();
       closeDrawer();
       break;
     case "?":
@@ -3907,6 +4060,7 @@ function refreshDynamicLangStrings(): void {
   updateLangBadge();
   if (activeView === "compare") renderCompareView();
   if (activeView === "vault") renderAquariusTradeCard(getActiveVault());
+  if (activeView === "leverage") updatePreview(); // P2 — risk band status text
   renderPoolFooter();
 }
 
