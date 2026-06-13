@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B0E14"></stop>
+      <stop offset="100%" stop-color="#080A10"></stop>
+    </linearGradient>
+    <linearGradient id="bolt" x1="200" y1="80" x2="320" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5EEDB8"></stop>
+      <stop offset="50%" stop-color="#2DE8A3"></stop>
+      <stop offset="100%" stop-color="#20D99A"></stop>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="blur"></feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="blur"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+  </defs>
+
+  
+  <circle cx="256" cy="256" r="248" fill="url(#bg)" stroke="#2DE8A3" stroke-width="3" opacity="0.3"></circle>
+
+  
+  <g filter="url(#glow)">
+    <polygon points="290,80 180,280 250,280 222,432 332,220 260,220" fill="url(#bolt)" opacity="0.95"></polygon>
+  </g>
+</svg>
