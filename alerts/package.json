@@ -13,6 +13,7 @@
     "setup:remote": "powershell -ExecutionPolicy Bypass -File scripts/deploy-remote.ps1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
     "typescript": "^5.7.3",
     "wrangler": "^3.99.0"
   },

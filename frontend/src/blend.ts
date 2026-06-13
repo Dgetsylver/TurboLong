@@ -718,7 +718,7 @@ export async function fetchUserPositions(
     const debt       = Number(dTokens * rs.dRate / RATE_DEC) / SCALAR_F;
     const equity     = collateral - debt;
     const leverage   = equity > 0 ? collateral / equity : 0;
-    const hf         = debt > 0 ? (collateral * rs.cFactor) / (debt / rs.lFactor) : Infinity;
+    const hf         = debt > 0 ? (collateral * rs.cFactor) / (debt / rs.lFactor) : Number.POSITIVE_INFINITY;
 
     byAsset.set(rs.asset.id, {
       asset: rs.asset,
@@ -750,12 +750,12 @@ export async function fetchAssetBalance(userAddress: string, assetId: string): P
 // ── Leverage math ─────────────────────────────────────────────────────────────
 
 /** Health factor at a given leverage, collateral factor, and liability factor. */
-export function hfForLeverage(lev: number, c: number, l: number = 1): number {
-  return lev <= 1 ? Infinity : (c * lev) / ((lev - 1) / l);
+export function hfForLeverage(lev: number, c: number, l = 1): number {
+  return lev <= 1 ? Number.POSITIVE_INFINITY : (c * lev) / ((lev - 1) / l);
 }
 
 /** Maximum leverage where HF ≥ given minimum. */
-export function maxLeverageFor(c: number, l: number = 1, minHF: number = 1.01): number {
+export function maxLeverageFor(c: number, l = 1, minHF = 1.01): number {
   // HF = c * lev / ((lev - 1) / l) = c * l * lev / (lev - 1)
   // Solve HF = minHF: lev = minHF / (minHF - c * l)
   const cl = c * l;
@@ -1294,7 +1294,7 @@ export async function buildSwapBlndXdr(
   userAddress: string,
   blndAmount: number,
   destAssetId: string,
-  slippage: number = 0.02,
+  slippage = 0.02,
 ): Promise<{ xdr: string; estimate: string }> {
   const destAsset = _cfg.classicAssets[destAssetId];
   if (!destAsset) throw new Error(`No classic asset mapping for ${destAssetId}`);
@@ -1312,7 +1312,7 @@ export async function buildSwapBlndXdr(
   // Pick the best path (first record = highest destination amount)
   const best = paths.records[0];
   const estimatedDest = best.destination_amount;
-  const minDest = (parseFloat(estimatedDest) * (1 - slippage)).toFixed(7);
+  const minDest = (Number.parseFloat(estimatedDest) * (1 - slippage)).toFixed(7);
 
   // Build intermediate path assets
   const pathAssets = best.path.map((p: any) =>
@@ -1356,7 +1356,7 @@ export async function estimateBlndSwap(
     const best = paths.records[0];
     const via = best.path.map((p: any) => p.asset_type === "native" ? "XLM" : p.asset_code).join(" → ");
     return {
-      estimate: parseFloat(best.destination_amount),
+      estimate: Number.parseFloat(best.destination_amount),
       path: via ? `BLND → ${via} → ${destAsset.isNative() ? "XLM" : destAsset.getCode()}` : `BLND → ${destAsset.isNative() ? "XLM" : destAsset.getCode()}`,
     };
   } catch {

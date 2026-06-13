@@ -164,7 +164,7 @@ export async function fetchVaultStats(
     // Fetch HF
     const hfResult = await invokeRead(vault.vaultId, "health_factor");
     const hfRaw = Number(scValToNative(hfResult));
-    const healthFactor = hfRaw > 1e15 ? Infinity : hfRaw / 1e7;
+    const healthFactor = hfRaw > 1e15 ? Number.POSITIVE_INFINITY : hfRaw / 1e7;
 
     // Compute leveraged net APY from pool reserve data
     let netApy: number | null = null;
@@ -398,7 +398,7 @@ export async function buildVaultRebalanceXdr(
 export async function fetchTokenBalance(
   tokenContractId: string,
   userAddress: string,
-  decimals: number = 7,
+  decimals = 7,
 ): Promise<number> {
   try {
     const addressVal = nativeToScVal(userAddress, { type: "address" });
@@ -417,7 +417,7 @@ export function formatUsd(n: number, decimals = 2): string {
 }
 
 export function formatHf(hf: number): { text: string; cls: string } {
-  if (!isFinite(hf) || hf > 100) return { text: "\u221e", cls: "hf-ok" };
+  if (!Number.isFinite(hf) || hf > 100) return { text: "\u221e", cls: "hf-ok" };
   const text = hf.toFixed(4);
   if (hf >= 1.5) return { text, cls: "hf-ok" };
   if (hf >= 1.1) return { text, cls: "hf-warn" };
