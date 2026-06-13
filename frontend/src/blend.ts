@@ -562,9 +562,15 @@ export async function fetchAllReserves(pool: PoolDef, userAddress: string): Prom
       const supplyCapture_fp  = Math.floor((SCALAR_F - BACKSTOP_FP) * curUtil_fp / SCALAR_F);
       const interestSupplyApr = (Math.floor(curIr_fp * supplyCapture_fp / SCALAR_F) / SCALAR_F) * 100;
 
-      // BLND emissions APR
-      const supplyEps = supplyEmissions?.eps != null ? BigInt(supplyEmissions.eps) : 0n;
-      const borrowEps = borrowEmissions?.eps != null ? BigInt(borrowEmissions.eps) : 0n;
+      // BLND emissions APR — only count emissions that are still ACTIVE. A reserve
+      // whose emission window has expired still returns a stale `eps`; using it
+      // shows a phantom BLND APR (e.g. EURC on YieldBlox, emissions expired ~3
+      // weeks ago, was showing thousands of % while other assets were fine).
+      const nowSec = Math.floor(Date.now() / 1000);
+      const supplyEps = supplyEmissions?.eps != null && Number(supplyEmissions.expiration ?? 0) > nowSec
+        ? BigInt(supplyEmissions.eps) : 0n;
+      const borrowEps = borrowEmissions?.eps != null && Number(borrowEmissions.expiration ?? 0) > nowSec
+        ? BigInt(borrowEmissions.eps) : 0n;
       const totalSupplyUsd = totalSupply * priceUsd;
 
       // BLND/yr = eps × seconds_per_year / 1e7 / 1e7
