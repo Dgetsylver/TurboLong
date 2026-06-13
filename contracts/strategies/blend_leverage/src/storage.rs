@@ -46,6 +46,10 @@ pub struct Config {
     pub target_loops: u32,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
+    /// Reflector oracle address (optional — None disables the divergence guard)
+    pub reflector: Option<Address>,
+    /// Maximum allowed price divergence in basis points (e.g. 200 = 2%)
+    pub oracle_threshold: i128,
 }
 
 pub fn set_config(e: &Env, config: Config) {
