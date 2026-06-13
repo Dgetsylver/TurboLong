@@ -1,0 +1,38 @@
+/* ============================================================================
+   Turbolong — Spacing, radius, elevation & motion tokens
+   ============================================================================ */
+
+:root {
+  /* Spacing scale (px) — the app lives on a 4px grid */
+  --tl-space-1:  4px;
+  --tl-space-2:  6px;
+  --tl-space-3:  8px;
+  --tl-space-4:  10px;
+  --tl-space-5:  12px;
+  --tl-space-6:  14px;
+  --tl-space-7:  16px;
+  --tl-space-8:  20px;
+  --tl-space-9:  24px;
+  --tl-space-10: 32px;
+
+  /* Radii */
+  --tl-radius-xs:  6px;    /* chips, small buttons, wells */
+  --tl-radius-sm:  8px;    /* buttons, tabs               */
+  --tl-radius:     12px;   /* cards, inputs, modals       */
+  --tl-radius-pill: 99px;  /* asset tabs, wallet pill     */
+
+  /* Elevation */
+  --tl-shadow-pop:   0 8px 40px rgba(0,0,0,.5);
+  --tl-glow-primary: 0 2px 12px rgba(45,232,163,.2);
+  --tl-glow-primary-h: 0 4px 20px rgba(45,232,163,.35);
+
+  /* Motion — quick, restrained. No bounce; springless ease. */
+  --tl-ease:        cubic-bezier(.4, 0, .2, 1);  /* @kind other */
+  --tl-dur-fast:    .15s;  /* @kind other */
+  --tl-dur:         .2s;   /* @kind other */
+  --tl-dur-slow:    .3s;   /* @kind other */
+
+  /* Layout */
+  --tl-nav-height:    56px;
+  --tl-content-max:   1200px;
+}
