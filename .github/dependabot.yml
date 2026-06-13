@@ -1,5 +1,10 @@
 # Dependabot keeps dependencies current across the four surfaces of the monorepo.
-# Weekly cadence; minor/patch grouped to keep PR noise down, majors separate.
+# Weekly cadence; minor/patch grouped to keep PR noise down. MAJOR version
+# bumps are ignored here — they tend to carry breaking changes (e.g. a
+# soroban-sdk, biome, or wrangler major) and are handled deliberately, not
+# auto-proposed. Security fixes are unaffected: Dependabot security updates and
+# the cargo-audit workflow still surface vulnerable deps regardless of these
+# version-update ignore rules.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -19,6 +24,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Alerts worker (Cloudflare Workers/TS) — npm manifest in alerts/
   - package-ecosystem: "npm"
@@ -30,6 +38,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Rust simulator / scripts crate at the repo root (over_leveraging)
   - package-ecosystem: "cargo"
@@ -41,10 +52,11 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Soroban strategy contract crate
-  # NOTE: soroban-sdk is pinned to a git branch (snapshot-source-tx) and is not
-  # version-managed by Dependabot; crates.io deps here still get bumped.
   - package-ecosystem: "cargo"
     directory: "/contracts/strategies/blend_leverage"
     schedule:
@@ -54,3 +66,20 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # SEP-41 vault-share token crate
+  - package-ecosystem: "cargo"
+    directory: "/contracts/tokens/vault_share"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(contracts)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
