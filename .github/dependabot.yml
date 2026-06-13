@@ -1,0 +1,56 @@
+# Dependabot keeps dependencies current across the four surfaces of the monorepo.
+# Weekly cadence; minor/patch grouped to keep PR noise down, majors separate.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # Frontend (Vite/TS) — npm manifest in frontend/
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(frontend)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Alerts worker (Cloudflare Workers/TS) — npm manifest in alerts/
+  - package-ecosystem: "npm"
+    directory: "/alerts"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(alerts)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Rust simulator / scripts crate at the repo root (over_leveraging)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(sim)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Soroban strategy contract crate
+  # NOTE: soroban-sdk is pinned to a git branch (snapshot-source-tx) and is not
+  # version-managed by Dependabot; crates.io deps here still get bumped.
+  - package-ecosystem: "cargo"
+    directory: "/contracts/strategies/blend_leverage"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(contracts)"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
