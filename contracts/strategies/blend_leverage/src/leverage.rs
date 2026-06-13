@@ -66,11 +66,7 @@ pub fn compute_loop_pairs(
 }
 
 /// Compute total supply and total borrow from the loop.
-pub fn compute_totals(
-    initial_amount: i128,
-    c_factor: i128,
-    n_loops: u32,
-) -> (i128, i128) {
+pub fn compute_totals(initial_amount: i128, c_factor: i128, n_loops: u32) -> (i128, i128) {
     let count = loop_step_count(n_loops);
     let mut total_supply = 0i128;
     let mut total_borrow = 0i128;
@@ -187,6 +183,7 @@ pub fn compute_health_factor(
 /// - Pool utilization must be below MAX_SAFE_UTILIZATION
 /// - Projected utilization after the loop must be below MAX_SAFE_UTILIZATION
 /// - Post-loop HF must be above min_hf
+#[allow(clippy::too_many_arguments)] // safety check legitimately needs the full pool + position context
 pub fn check_deposit_safety(
     e: &Env,
     pool_supply_underlying: i128,
@@ -331,5 +328,5 @@ pub fn compute_partial_unwind(
     }
 
     let loops = ((repay_underlying + layer_size - 1) / layer_size) as u32;
-    Ok((repay_underlying, loops.max(1).min(20)))
+    Ok((repay_underlying, loops.clamp(1, 20)))
 }

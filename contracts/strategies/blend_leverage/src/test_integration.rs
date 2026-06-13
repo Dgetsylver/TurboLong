@@ -27,9 +27,7 @@ use crate::constants::{
     REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
     REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12, SCALAR_7,
 };
-use crate::leverage::{
-    compute_health_factor, compute_loop_pairs, shares_to_underlying,
-};
+use crate::leverage::{compute_health_factor, compute_loop_pairs, shares_to_underlying};
 use crate::storage::LeverageReserves;
 use crate::{blend_pool, reserves, storage};
 
@@ -106,7 +104,7 @@ fn setup_blend_env(e: &Env) -> (Address, Address, Address, BlendFixture<'_>, Add
         &String::from_str(e, "test_leverage_pool"),
         &BytesN::<32>::random(e),
         &oracle,
-        &0_1000000,
+        &1_000_000,
         &4,
         &0,
     );
@@ -158,21 +156,19 @@ fn seed_pool_liquidity(e: &Env, pool_addr: &Address, token: &Address, amount: i1
         .mock_all_auths()
         .mint(&whale, &amount);
 
-    pool::Client::new(e, pool_addr)
-        .mock_all_auths()
-        .submit(
-            &whale,
-            &whale,
-            &whale,
-            &vec![
-                e,
-                pool::Request {
-                    address: token.clone(),
-                    amount,
-                    request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
-                },
-            ],
-        );
+    pool::Client::new(e, pool_addr).mock_all_auths().submit(
+        &whale,
+        &whale,
+        &whale,
+        &vec![
+            e,
+            pool::Request {
+                address: token.clone(),
+                amount,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
 }
 
 /// Execute a leverage loop step-by-step: supply→borrow in separate pool.submit() calls.
@@ -211,12 +207,9 @@ fn execute_leverage_loop_stepped(
             });
         }
 
-        pool_client.mock_all_auths().submit(
-            strategy,
-            strategy,
-            strategy,
-            &requests,
-        );
+        pool_client
+            .mock_all_auths()
+            .submit(strategy, strategy, strategy, &requests);
     }
 
     // Read final positions
@@ -317,7 +310,11 @@ fn test_simple_supply_and_borrow() {
 
     let positions = pool_client.get_positions(&strategy);
     let b_tokens = positions.collateral.get(0).unwrap_or(0);
-    assert!(b_tokens > 0, "Should have b-tokens after supply: {}", b_tokens);
+    assert!(
+        b_tokens > 0,
+        "Should have b-tokens after supply: {}",
+        b_tokens
+    );
 
     // Borrow 900 (c=0.90, below pool's c=0.95 to keep HF > 1.0)
     pool_client.mock_all_auths().submit(
@@ -336,7 +333,11 @@ fn test_simple_supply_and_borrow() {
 
     let positions = pool_client.get_positions(&strategy);
     let d_tokens = positions.liabilities.get(0).unwrap_or(0);
-    assert!(d_tokens > 0, "Should have d-tokens after borrow: {}", d_tokens);
+    assert!(
+        d_tokens > 0,
+        "Should have d-tokens after borrow: {}",
+        d_tokens
+    );
 
     // Strategy should have received borrow proceeds
     let token_client = TokenClient::new(&e, &token);
@@ -461,15 +462,7 @@ fn test_deposit_withdraw_full_cycle() {
     });
 
     // Execute the actual unwind on pool
-    execute_unwind(
-        &e,
-        &pool_addr,
-        &strategy,
-        &user,
-        &token,
-        b_tokens,
-        d_tokens,
-    );
+    execute_unwind(&e, &pool_addr, &strategy, &user, &token, b_tokens, d_tokens);
 
     // User received full withdrawal (b_tokens underlying value).
     // The net equity = withdrawal - repay = b_tokens_value - d_tokens_value ≈ deposit_amount.
@@ -511,9 +504,7 @@ fn test_two_users_proportional() {
 
     // Alice deposits 1000
     let alice_amount = 1_000_0000000_i128;
-    token_admin
-        .mock_all_auths()
-        .mint(&strategy, &alice_amount);
+    token_admin.mock_all_auths().mint(&strategy, &alice_amount);
 
     let (b1, d1) = execute_leverage_loop_stepped(
         &e,
@@ -562,10 +553,8 @@ fn test_two_users_proportional() {
         };
         storage::set_strategy_reserves(&e, init.clone());
 
-        let (alice_shares, after_alice) =
-            reserves::deposit(&e, &alice, b1, d1, &init).unwrap();
-        let (bob_shares, after_bob) =
-            reserves::deposit(&e, &bob, b2, d2, &after_alice).unwrap();
+        let (alice_shares, after_alice) = reserves::deposit(&e, &alice, b1, d1, &init).unwrap();
+        let (bob_shares, after_bob) = reserves::deposit(&e, &bob, b2, d2, &after_alice).unwrap();
 
         let alice_val = shares_to_underlying(alice_shares, &after_bob).unwrap();
         let bob_val = shares_to_underlying(bob_shares, &after_bob).unwrap();
@@ -619,11 +608,7 @@ fn test_health_factor_from_pool() {
         config.min_hf
     );
     // HF should be reasonable (not astronomical)
-    assert!(
-        hf < 100 * SCALAR_7,
-        "HF {} seems too high",
-        hf
-    );
+    assert!(hf < 100 * SCALAR_7, "HF {} seems too high", hf);
 }
 
 #[test]
@@ -635,16 +620,8 @@ fn test_pool_rates_query() {
     e.cost_estimate().budget().reset_unlimited();
 
     let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
-    assert!(
-        b_rate >= SCALAR_12,
-        "b_rate should be >= 1.0: {}",
-        b_rate
-    );
-    assert!(
-        d_rate >= SCALAR_12,
-        "d_rate should be >= 1.0: {}",
-        d_rate
-    );
+    assert!(b_rate >= SCALAR_12, "b_rate should be >= 1.0: {}", b_rate);
+    assert!(d_rate >= SCALAR_12, "d_rate should be >= 1.0: {}", d_rate);
 }
 
 #[test]

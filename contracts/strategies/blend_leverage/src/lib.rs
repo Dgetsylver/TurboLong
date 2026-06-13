@@ -1,4 +1,13 @@
 #![no_std]
+// Cosmetic only: many 1e7/1e12-scaled financial literals use intentional
+// non-uniform underscore grouping for readability (e.g. 10_500_000 = 1.05).
+// Rewriting 100+ numeric constants risks a value typo in a fund-holding
+// contract, so this purely-stylistic lint is allowed crate-wide.
+#![allow(clippy::inconsistent_digit_grouping)]
+// TODO(events): migrate `e.events().publish(...)` to the #[contractevent]
+// macro alongside the SEP-41 receipt-token event rework (SCF T1 D2), then
+// drop this allow.
+#![allow(deprecated)]
 
 mod blend_pool;
 mod constants;
@@ -9,9 +18,9 @@ mod soroswap;
 mod storage;
 
 #[cfg(test)]
-mod test_leverage;
-#[cfg(test)]
 mod test_integration;
+#[cfg(test)]
+mod test_leverage;
 
 use constants::SCALAR_12;
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
@@ -57,38 +66,20 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .get(0)
             .expect("Missing: pool address")
             .into_val(&e);
-        let blend_token: Address = init_args
-            .get(1)
-            .expect("Missing: blend_token")
-            .into_val(&e);
-        let router: Address = init_args
-            .get(2)
-            .expect("Missing: router")
-            .into_val(&e);
+        let blend_token: Address = init_args.get(1).expect("Missing: blend_token").into_val(&e);
+        let router: Address = init_args.get(2).expect("Missing: router").into_val(&e);
         let reward_threshold: i128 = init_args
             .get(3)
             .expect("Missing: reward_threshold")
             .into_val(&e);
-        let keeper: Address = init_args
-            .get(4)
-            .expect("Missing: keeper")
-            .into_val(&e);
-        let c_factor: i128 = init_args
-            .get(5)
-            .expect("Missing: c_factor")
-            .into_val(&e);
+        let keeper: Address = init_args.get(4).expect("Missing: keeper").into_val(&e);
+        let c_factor: i128 = init_args.get(5).expect("Missing: c_factor").into_val(&e);
         let target_loops: u32 = init_args
             .get(6)
             .expect("Missing: target_loops")
             .into_val(&e);
-        let min_hf: i128 = init_args
-            .get(7)
-            .expect("Missing: min_hf")
-            .into_val(&e);
-        let orange_hf: i128 = init_args
-            .get(8)
-            .expect("Missing: orange_hf")
-            .into_val(&e);
+        let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
+        let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
 
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
@@ -96,10 +87,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let reserve_id = reserve.config.index;
 
         // Claim IDs: supply side = index*2+1, borrow side = index*2
-        let claim_ids: Vec<u32> = Vec::from_array(
-            &e,
-            [reserve_id * 2 + 1, reserve_id * 2],
-        );
+        let claim_ids: Vec<u32> = Vec::from_array(&e, [reserve_id * 2 + 1, reserve_id * 2]);
 
         check_positive_amount(reward_threshold).expect("reward_threshold must be positive");
 
@@ -143,8 +131,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Safety: check pool utilization before depositing
         let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(&e, &config);
-        let (add_supply, add_borrow) =
-            compute_totals(amount, config.c_factor, config.target_loops);
+        let (add_supply, add_borrow) = compute_totals(amount, config.c_factor, config.target_loops);
 
         // Compute projected position for HF check
         let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
@@ -184,7 +171,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Transfer the initial deposit from user to strategy contract
         let token_client = TokenClient::new(&e, &config.asset);
-        token_client.transfer(&from, &e.current_contract_address(), &amount);
+        token_client.transfer(&from, e.current_contract_address(), &amount);
 
         // Execute the leverage loop — contract sends `amount` to pool,
         // pool processes supply+borrow atomically, netting means only `amount` leaves
@@ -196,12 +183,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let underlying_balance = shares_to_underlying(vault_shares, &updated_reserves)?;
 
-        event::emit_deposit(
-            &e,
-            String::from_str(&e, STRATEGY_NAME),
-            amount,
-            from,
-        );
+        event::emit_deposit(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
         Ok(underlying_balance)
     }
@@ -237,7 +219,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         };
 
         // Swap BLND → underlying, then re-leverage
-        let (b_delta, d_delta, realized_underlying) = blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
+        let (b_delta, d_delta, realized_underlying) =
+            blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
 
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
@@ -252,7 +235,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
             // Emit custom event for realized underlying
             e.events().publish(
-                (Symbol::new(&e, "harvest_realized"), String::from_str(&e, STRATEGY_NAME)),
+                (
+                    Symbol::new(&e, "harvest_realized"),
+                    String::from_str(&e, STRATEGY_NAME),
+                ),
                 realized_underlying,
             );
         }
@@ -284,12 +270,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let underlying_balance = shares_to_underlying(remaining_shares, &updated_reserves)?;
 
-        event::emit_withdraw(
-            &e,
-            String::from_str(&e, STRATEGY_NAME),
-            amount,
-            from,
-        );
+        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
         Ok(underlying_balance)
     }
@@ -337,15 +318,19 @@ impl BlendLeverageStrategy {
 
         // Use orange_hf as target so we restore to the safe zone, not just min_hf
         let (_, unwind_loops) = compute_partial_unwind(
-            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, config.orange_hf,
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            config.orange_hf,
         )?;
 
         if unwind_loops == 0 {
             return Ok(());
         }
 
-        let (b_removed, d_removed) =
-            blend_pool::submit_deleverage(&e, unwind_loops, &config)?;
+        let (b_removed, d_removed) = blend_pool::submit_deleverage(&e, unwind_loops, &config)?;
 
         reserves::deleverage(&e, b_removed, d_removed, &config)?;
 
@@ -383,15 +368,19 @@ impl BlendLeverageStrategy {
         let effective_target = target_hf.max(config.orange_hf);
 
         let (_, loops) = compute_partial_unwind(
-            b_tokens, d_tokens, b_rate, d_rate, config.c_factor, effective_target,
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            effective_target,
         )?;
 
         if loops == 0 {
             return Ok(0);
         }
 
-        let (b_removed, d_removed) =
-            blend_pool::submit_deleverage(&e, loops, &config)?;
+        let (b_removed, d_removed) = blend_pool::submit_deleverage(&e, loops, &config)?;
 
         reserves::deleverage(&e, b_removed, d_removed, &config)?;
 

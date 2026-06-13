@@ -65,7 +65,7 @@ pub fn get_config(e: &Env) -> Config {
 // ── Leverage reserves (strategy-level accounting) ────────────────────────────
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct LeverageReserves {
     /// Total shares outstanding across all depositors
     pub total_shares: i128,
@@ -79,22 +79,8 @@ pub struct LeverageReserves {
     pub d_rate: i128,
 }
 
-impl Default for LeverageReserves {
-    fn default() -> Self {
-        Self {
-            total_shares: 0,
-            total_b_tokens: 0,
-            total_d_tokens: 0,
-            b_rate: 0,
-            d_rate: 0,
-        }
-    }
-}
-
 pub fn set_strategy_reserves(e: &Env, reserves: LeverageReserves) {
-    e.storage()
-        .persistent()
-        .set(&DataKey::Reserves, &reserves);
+    e.storage().persistent().set(&DataKey::Reserves, &reserves);
     e.storage().persistent().extend_ttl(
         &DataKey::Reserves,
         PERSISTENT_LIFETIME_THRESHOLD,
@@ -114,9 +100,11 @@ pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
 pub fn set_vault_shares(e: &Env, address: &Address, shares: i128) {
     let key = DataKey::VaultPos(address.clone());
     e.storage().persistent().set(&key, &shares);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    e.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
 
 pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
@@ -135,9 +123,7 @@ pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
 // ── Keeper ───────────────────────────────────────────────────────────────────
 
 pub fn set_keeper(e: &Env, keeper: &Address) {
-    e.storage()
-        .persistent()
-        .set(&DataKey::Keeper, keeper);
+    e.storage().persistent().set(&DataKey::Keeper, keeper);
     e.storage().persistent().extend_ttl(
         &DataKey::Keeper,
         PERSISTENT_LIFETIME_THRESHOLD,

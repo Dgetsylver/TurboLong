@@ -93,8 +93,12 @@ fn test_totals_leverage_ratio() {
 
     let leverage_x100 = total_supply * 100 / initial;
     // Leverage should be between 7 and 9
-    assert!(leverage_x100 > 700 && leverage_x100 < 900,
-        "Leverage {}.{} out of expected range", leverage_x100 / 100, leverage_x100 % 100);
+    assert!(
+        leverage_x100 > 700 && leverage_x100 < 900,
+        "Leverage {}.{} out of expected range",
+        leverage_x100 / 100,
+        leverage_x100 % 100
+    );
 
     // Borrow should be supply - initial (equity)
     assert_eq!(total_supply - total_borrow, initial);
@@ -106,8 +110,12 @@ fn test_totals_net_equals_initial() {
     for n in 0..15 {
         let initial = 1_000_0000000_i128;
         let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, n);
-        assert_eq!(total_supply - total_borrow, initial,
-            "Net supply != initial at {} loops", n);
+        assert_eq!(
+            total_supply - total_borrow,
+            initial,
+            "Net supply != initial at {} loops",
+            n
+        );
     }
 }
 
@@ -222,7 +230,10 @@ fn test_underlying_to_shares_first_deposit() {
         d_rate: SCALAR_12,
     };
     // First deposit: 1 share = 1 unit
-    assert_eq!(underlying_to_shares(1_000_0000000, &reserves).unwrap(), 1_000_0000000);
+    assert_eq!(
+        underlying_to_shares(1_000_0000000, &reserves).unwrap(),
+        1_000_0000000
+    );
 }
 
 #[test]
@@ -255,8 +266,12 @@ fn test_shares_roundtrip() {
     let shares = underlying_to_shares(equity, &reserves).unwrap();
     let recovered = shares_to_underlying(shares, &reserves).unwrap();
     // Allow 1 stroop rounding
-    assert!((recovered - equity).abs() <= 1,
-        "Roundtrip error: equity={}, recovered={}", equity, recovered);
+    assert!(
+        (recovered - equity).abs() <= 1,
+        "Roundtrip error: equity={}, recovered={}",
+        equity,
+        recovered
+    );
 }
 
 // ── compute_health_factor ────────────────────────────────────────────────────
@@ -277,7 +292,8 @@ fn test_hf_equal_rates() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     // HF = supply_value * c_factor / debt_value = 2000 * 9500000 / 1000 = 19_000_000
     assert_eq!(hf, 19_000_000);
 }
@@ -292,7 +308,8 @@ fn test_hf_near_liquidation() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     // 8000 * 9500000 / 7000 = 76000000000000000 / 7000_0000000 = 10_857_142
     assert_eq!(hf, 10_857_142);
     assert!(hf > SCALAR_7); // HF > 1.0
@@ -307,7 +324,8 @@ fn test_hf_below_one() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(hf, 9_500_000);
     assert!(hf < SCALAR_7); // HF < 1.0 → liquidatable
 }
@@ -324,7 +342,8 @@ fn test_partial_unwind_already_at_target_returns_zero() {
         SCALAR_12,
         9_500_000,
         11_500_000, // target_hf = 1.15
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(repay, 0);
     assert_eq!(loops, 0);
 }
@@ -338,7 +357,8 @@ fn test_partial_unwind_no_debt_returns_zero() {
         SCALAR_12,
         9_500_000,
         11_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(repay, 0);
     assert_eq!(loops, 0);
 }
@@ -354,7 +374,8 @@ fn test_partial_unwind_single_loop_position() {
         SCALAR_12,
         9_500_000,
         11_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(repay, 0);
     assert_eq!(loops, 0);
 
@@ -366,7 +387,8 @@ fn test_partial_unwind_single_loop_position() {
         SCALAR_12,
         9_500_000,
         11_500_000,
-    ).unwrap();
+    )
+    .unwrap();
     assert!(repay2 > 0, "Should need repayment");
     assert!(loops2 >= 1, "Should need at least 1 loop");
 
@@ -378,7 +400,11 @@ fn test_partial_unwind_single_loop_position() {
     let new_d = 1_000_0000000 - x;
     if new_d > 0 {
         let hf_new = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
-        assert!(hf_new >= 11_500_000, "HF after unwind={} should be >= target 1.15", hf_new);
+        assert!(
+            hf_new >= 11_500_000,
+            "HF after unwind={} should be >= target 1.15",
+            hf_new
+        );
     }
 }
 
@@ -393,16 +419,21 @@ fn test_partial_unwind_max_loops_position() {
         SCALAR_12,
         9_500_000,
         11_500_000, // target = 1.15
-    ).unwrap();
+    )
+    .unwrap();
     assert!(repay > 0);
-    assert!(loops >= 1 && loops <= 20, "loops={} out of range", loops);
+    assert!((1..=20).contains(&loops), "loops={} out of range", loops);
 
     // Verify restoration
     let new_b = 20_000_0000000 - repay;
     let new_d = 19_000_0000000 - repay;
     if new_d > 0 {
         let hf_new = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
-        assert!(hf_new >= 11_500_000, "HF after unwind={} should be >= 1.15", hf_new);
+        assert!(
+            hf_new >= 11_500_000,
+            "HF after unwind={} should be >= 1.15",
+            hf_new
+        );
     }
 }
 
@@ -418,15 +449,20 @@ fn test_partial_unwind_minimal_repay_is_exact() {
         SCALAR_12,
         9_500_000,
         11_500_000,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Repaying 1 less stroop should leave HF below target
     if repay > 1 {
         let x_minus = repay - 2;
         let new_b = 10_500_0000000 - x_minus;
         let new_d = 9_500_0000000 - x_minus;
-        let hf_short = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
-        assert!(hf_short < 11_500_000, "Repaying less should leave HF below target");
+        let hf_short =
+            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+        assert!(
+            hf_short < 11_500_000,
+            "Repaying less should leave HF below target"
+        );
     }
 
     // Repaying the computed amount should reach target
@@ -434,7 +470,11 @@ fn test_partial_unwind_minimal_repay_is_exact() {
     let new_d = 9_500_0000000 - repay;
     if new_d > 0 {
         let hf_ok = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
-        assert!(hf_ok >= 11_500_000, "HF after exact repay={} should be >= target", hf_ok);
+        assert!(
+            hf_ok >= 11_500_000,
+            "HF after exact repay={} should be >= target",
+            hf_ok
+        );
     }
 }
 
@@ -458,10 +498,16 @@ fn test_leverage_table_matches_simulator() {
 
         // Allow 1‰ tolerance for integer rounding
         let diff = (our_lev_x1000 - expected_x1000).abs();
-        assert!(diff <= 1,
+        assert!(
+            diff <= 1,
             "Loop {}: our={}.{:03}x, expected={}.{:03}x (diff={})",
-            n, our_lev_x1000/1000, our_lev_x1000%1000,
-            expected_x1000/1000, expected_x1000%1000, diff);
+            n,
+            our_lev_x1000 / 1000,
+            our_lev_x1000 % 1000,
+            expected_x1000 / 1000,
+            expected_x1000 % 1000,
+            diff
+        );
     }
 }
 
@@ -513,7 +559,8 @@ fn test_deposit_first_depositor() {
         // Simulating: b_delta = 8000 (leverage 8x), d_delta = 7000, equity = 1000
         let b_delta = 8_000_0000000_i128;
         let d_delta = 7_000_0000000_i128;
-        let (vault_shares, updated) = reserves::deposit(e, &user, b_delta, d_delta, &init_reserves).unwrap();
+        let (vault_shares, updated) =
+            reserves::deposit(e, &user, b_delta, d_delta, &init_reserves).unwrap();
 
         // Equity added = 8000 - 7000 = 1000 (since rates = 1.0)
         // First deposit: new_shares = 1000, vault_minted = 1000 - 1000(lockup) = 999.9999
@@ -534,12 +581,12 @@ fn test_deposit_second_depositor() {
         // First deposit
         let init = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, init.clone());
-        let (_, after_first) = reserves::deposit(e, &user1, 8_000_0000000, 7_000_0000000, &init).unwrap();
+        let (_, after_first) =
+            reserves::deposit(e, &user1, 8_000_0000000, 7_000_0000000, &init).unwrap();
 
         // Second deposit: same equity (1000)
-        let (user2_shares, after_second) = reserves::deposit(
-            e, &user2, 8_000_0000000, 7_000_0000000, &after_first
-        ).unwrap();
+        let (user2_shares, after_second) =
+            reserves::deposit(e, &user2, 8_000_0000000, 7_000_0000000, &after_first).unwrap();
 
         // User2 should get proportional shares (1000 out of total 2000)
         assert_eq!(user2_shares, 1_000_0000000);
@@ -628,8 +675,12 @@ fn test_harvest_increases_share_value() {
 
     let post_value = shares_to_underlying(1_000_0000000, &updated).unwrap();
 
-    assert!(post_value > pre_value,
-        "Share value should increase after harvest: pre={}, post={}", pre_value, post_value);
+    assert!(
+        post_value > pre_value,
+        "Share value should increase after harvest: pre={}, post={}",
+        pre_value,
+        post_value
+    );
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
 }
 
@@ -684,7 +735,9 @@ fn test_multi_user_proportional() {
         let alice_actual = alice_shares; // minus lockup
         assert!(
             (bob_shares as f64 / alice_actual as f64 - 2.0).abs() < 0.01,
-            "Bob should have ~2x Alice's shares: alice={}, bob={}", alice_actual, bob_shares
+            "Bob should have ~2x Alice's shares: alice={}, bob={}",
+            alice_actual,
+            bob_shares
         );
 
         // Total equity should be 3000
@@ -694,10 +747,15 @@ fn test_multi_user_proportional() {
         // Alice's value should be ~1000
         let alice_value = shares_to_underlying(alice_shares, &after_bob).unwrap();
         // Allow for lockup adjustment
-        let expected = 1_000_0000000 - (FIRST_DEPOSIT_LOCKUP * 1_000_0000000 / after_bob.total_shares);
+        let expected =
+            1_000_0000000 - (FIRST_DEPOSIT_LOCKUP * 1_000_0000000 / after_bob.total_shares);
         // Allow small rounding from fixed-point math (up to 1000 stroops)
-        assert!((alice_value - expected).abs() <= 1000,
-            "Alice value={}, expected~={}", alice_value, expected);
+        assert!(
+            (alice_value - expected).abs() <= 1000,
+            "Alice value={}, expected~={}",
+            alice_value,
+            expected
+        );
     });
 }
 
@@ -728,16 +786,17 @@ fn test_safety_rejects_high_utilization() {
     // Pool at 96% utilization → should panic (above 95% limit)
     check_deposit_safety(
         &e,
-        1_000_0000000,   // pool supply
-        960_0000000,     // pool borrow (96%)
-        100_0000000,     // add supply
-        50_0000000,      // add borrow
-        1_000_0000000,   // post b
-        500_0000000,     // post d
+        1_000_0000000, // pool supply
+        960_0000000,   // pool borrow (96%)
+        100_0000000,   // add supply
+        50_0000000,    // add borrow
+        1_000_0000000, // post b
+        500_0000000,   // post d
         SCALAR_12,
         SCALAR_12,
         &config,
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 #[test]
@@ -765,14 +824,17 @@ fn test_safety_allows_healthy_pool() {
     let result = check_deposit_safety(
         &e,
         1_000_0000000,
-        500_0000000,      // 50% util
+        500_0000000, // 50% util
         100_0000000,
         50_0000000,
-        2_000_0000000,    // plenty of collateral
+        2_000_0000000, // plenty of collateral
         500_0000000,
         SCALAR_12,
         SCALAR_12,
         &config,
     );
-    assert!(result.is_ok(), "Should allow at 50% utilization with healthy HF");
+    assert!(
+        result.is_ok(),
+        "Should allow at 50% utilization with healthy HF"
+    );
 }

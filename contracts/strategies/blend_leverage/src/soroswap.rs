@@ -54,12 +54,7 @@ pub fn internal_swap_exact_tokens_for_tokens(
                     }
                 },
                 fn_name: Symbol::new(e, "transfer"),
-                args: (
-                    e.current_contract_address(),
-                    pair_address,
-                    amount_in.clone(),
-                )
-                    .into_val(e),
+                args: (e.current_contract_address(), pair_address, *amount_in).into_val(e),
             },
             sub_invocations: vec![e],
         }),
