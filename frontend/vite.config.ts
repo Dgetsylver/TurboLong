@@ -12,6 +12,15 @@ export default defineConfig({
     // Some Stellar SDK internals check for global
     global: "globalThis",
   },
+  resolve: {
+    alias: {
+      // The Nido wallet module peer-deps on the npm-registry kit name (`@creit.tech`,
+      // dot); we use the JSR distribution (`@creit-tech`, dash). Same v2 project —
+      // alias so NidoModule resolves to our single kit instance (it only imports
+      // ModuleType + the ModuleInterface type).
+      "@creit.tech/stellar-wallets-kit": "@creit-tech/stellar-wallets-kit",
+    },
+  },
   build: {
     target: "es2020",
     rollupOptions: {
