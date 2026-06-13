@@ -14,6 +14,13 @@ use soroban_sdk::{panic_with_error, Env};
 // …
 // Loop n-1: supply initial × c^(n-1), borrow initial × c^n
 // Final:    supply initial × c^n      (no borrow)
+//
+// The strategy caps the loop at 20 supply/borrow pairs plus one final
+// supply-only step. This keeps Soroban request growth, WASM stack usage, and
+// transaction gas bounded even if a caller supplies a larger target loop count.
+pub const MAX_LOOP_PAIRS: u32 = 20;
+pub const MAX_LOOP_STEPS: u32 = MAX_LOOP_PAIRS + 1;
+const MAX_LOOP_STEPS_USIZE: usize = MAX_LOOP_STEPS as usize;
 
 /// Compute supply and borrow amount for a single loop step.
 /// Call repeatedly with updated `balance` to build the full loop.
@@ -35,7 +42,7 @@ pub fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i12
 /// Total number of steps in a leverage loop (n_loops supply+borrow pairs + 1 final supply).
 #[inline]
 pub fn loop_step_count(n_loops: u32) -> u32 {
-    (n_loops + 1).min(21)
+    (n_loops + 1).min(MAX_LOOP_STEPS)
 }
 
 /// Compute supply and borrow amounts for each loop iteration.
@@ -48,14 +55,15 @@ pub fn compute_loop_pairs(
     initial_amount: i128,
     c_factor: i128,
     n_loops: u32,
-) -> ([i128; 21], [i128; 21], u32) {
-    let mut supplies = [0i128; 21];
-    let mut borrows = [0i128; 21];
+) -> ([i128; MAX_LOOP_STEPS_USIZE], [i128; MAX_LOOP_STEPS_USIZE], u32) {
+    let mut supplies = [0i128; MAX_LOOP_STEPS_USIZE];
+    let mut borrows = [0i128; MAX_LOOP_STEPS_USIZE];
     let count = loop_step_count(n_loops);
+    let capped_loops = n_loops.min(MAX_LOOP_PAIRS);
 
     let mut balance = initial_amount;
     for i in 0..count as usize {
-        let is_final = i as u32 == n_loops.min(20);
+        let is_final = i as u32 == capped_loops;
         let (s, b) = compute_step(balance, c_factor, is_final);
         supplies[i] = s;
         borrows[i] = b;
@@ -68,12 +76,13 @@ pub fn compute_loop_pairs(
 /// Compute total supply and total borrow from the loop.
 pub fn compute_totals(initial_amount: i128, c_factor: i128, n_loops: u32) -> (i128, i128) {
     let count = loop_step_count(n_loops);
+    let capped_loops = n_loops.min(MAX_LOOP_PAIRS);
     let mut total_supply = 0i128;
     let mut total_borrow = 0i128;
     let mut balance = initial_amount;
 
     for i in 0..count {
-        let is_final = i == n_loops.min(20);
+        let is_final = i == capped_loops;
         let (s, b) = compute_step(balance, c_factor, is_final);
         total_supply = total_supply.checked_add(s).unwrap_or(total_supply);
         total_borrow = total_borrow.checked_add(b).unwrap_or(total_borrow);
