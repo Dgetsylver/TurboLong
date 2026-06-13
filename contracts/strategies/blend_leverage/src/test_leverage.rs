@@ -549,8 +549,6 @@ fn with_contract<F: FnOnce(&Env, &Address)>(e: &Env, f: F) {
 fn test_deposit_first_depositor() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
-
         // Set up empty reserves in storage
         let init_reserves = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, init_reserves.clone());
@@ -559,12 +557,13 @@ fn test_deposit_first_depositor() {
         // Simulating: b_delta = 8000 (leverage 8x), d_delta = 7000, equity = 1000
         let b_delta = 8_000_0000000_i128;
         let d_delta = 7_000_0000000_i128;
-        let (vault_shares, updated) =
-            reserves::deposit(e, &user, b_delta, d_delta, &init_reserves).unwrap();
+        let (vault_minted, lockup, updated) =
+            reserves::deposit(e, b_delta, d_delta, &init_reserves).unwrap();
 
         // Equity added = 8000 - 7000 = 1000 (since rates = 1.0)
         // First deposit: new_shares = 1000, vault_minted = 1000 - 1000(lockup) = 999.9999
-        assert_eq!(vault_shares, 1_000_0000000 - FIRST_DEPOSIT_LOCKUP);
+        assert_eq!(vault_minted, 1_000_0000000 - FIRST_DEPOSIT_LOCKUP);
+        assert_eq!(lockup, FIRST_DEPOSIT_LOCKUP);
         assert_eq!(updated.total_shares, 1_000_0000000); // includes lockup
         assert_eq!(updated.total_b_tokens, b_delta);
         assert_eq!(updated.total_d_tokens, d_delta);
@@ -575,18 +574,15 @@ fn test_deposit_first_depositor() {
 fn test_deposit_second_depositor() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user1 = Address::generate(e);
-        let user2 = Address::generate(e);
-
         // First deposit
         let init = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, init.clone());
-        let (_, after_first) =
-            reserves::deposit(e, &user1, 8_000_0000000, 7_000_0000000, &init).unwrap();
+        let (_, _, after_first) =
+            reserves::deposit(e, 8_000_0000000, 7_000_0000000, &init).unwrap();
 
         // Second deposit: same equity (1000)
-        let (user2_shares, after_second) =
-            reserves::deposit(e, &user2, 8_000_0000000, 7_000_0000000, &after_first).unwrap();
+        let (user2_shares, _, after_second) =
+            reserves::deposit(e, 8_000_0000000, 7_000_0000000, &after_first).unwrap();
 
         // User2 should get proportional shares (1000 out of total 2000)
         assert_eq!(user2_shares, 1_000_0000000);
@@ -600,18 +596,16 @@ fn test_deposit_second_depositor() {
 fn test_withdraw_full() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
-
-        // Set up: user has all shares
+        // Set up: user has all shares (read from the token in production).
+        let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
-        storage::set_vault_shares(e, &user, 1_000_0000000);
 
         // Withdraw all equity (1000)
-        let (remaining, b_remove, d_remove, updated) =
-            reserves::withdraw(e, &user, 1_000_0000000, &reserves_state).unwrap();
+        let (burned, b_remove, d_remove, updated) =
+            reserves::withdraw(e, user_shares, 1_000_0000000, &reserves_state).unwrap();
 
-        assert_eq!(remaining, 0);
+        assert_eq!(user_shares - burned, 0);
         assert_eq!(b_remove, 8_000_0000000);
         assert_eq!(d_remove, 7_000_0000000);
         assert_eq!(updated.total_shares, 0);
@@ -624,17 +618,15 @@ fn test_withdraw_full() {
 fn test_withdraw_partial() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
-
+        let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
-        storage::set_vault_shares(e, &user, 1_000_0000000);
 
         // Withdraw half equity (500)
-        let (remaining, b_remove, d_remove, updated) =
-            reserves::withdraw(e, &user, 500_0000000, &reserves_state).unwrap();
+        let (burned, b_remove, d_remove, updated) =
+            reserves::withdraw(e, user_shares, 500_0000000, &reserves_state).unwrap();
 
-        assert_eq!(remaining, 500_0000000);
+        assert_eq!(user_shares - burned, 500_0000000);
         assert_eq!(b_remove, 4_000_0000000); // half of 8000
         assert_eq!(d_remove, 3_500_0000000); // half of 7000
         assert_eq!(updated.total_shares, 500_0000000);
@@ -645,14 +637,12 @@ fn test_withdraw_partial() {
 fn test_withdraw_insufficient_balance() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
-
+        let user_shares = 500_0000000_i128; // only has 500
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
-        storage::set_vault_shares(e, &user, 500_0000000); // only has 500
 
-        // Try to withdraw more than equity
-        let result = reserves::withdraw(e, &user, 600_0000000, &reserves_state);
+        // Try to withdraw more than the user's shares cover
+        let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -690,11 +680,10 @@ fn test_harvest_increases_share_value() {
 fn test_deposit_zero_b_tokens_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
         let reserves_state = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, reserves_state.clone());
 
-        let result = reserves::deposit(e, &user, 0, 0, &reserves_state);
+        let result = reserves::deposit(e, 0, 0, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -703,12 +692,11 @@ fn test_deposit_zero_b_tokens_fails() {
 fn test_deposit_negative_equity_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let user = Address::generate(e);
         let reserves_state = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // More debt than supply → negative equity
-        let result = reserves::deposit(e, &user, 1_000_0000000, 2_000_0000000, &reserves_state);
+        let result = reserves::deposit(e, 1_000_0000000, 2_000_0000000, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -717,19 +705,16 @@ fn test_deposit_negative_equity_fails() {
 fn test_multi_user_proportional() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        let alice = Address::generate(e);
-        let bob = Address::generate(e);
-
         let init = make_reserves(0, 0, 0);
         storage::set_strategy_reserves(e, init.clone());
 
         // Alice deposits first: equity = 1000
-        let (alice_shares, after_alice) =
-            reserves::deposit(e, &alice, 8_000_0000000, 7_000_0000000, &init).unwrap();
+        let (alice_shares, _, after_alice) =
+            reserves::deposit(e, 8_000_0000000, 7_000_0000000, &init).unwrap();
 
         // Bob deposits: equity = 2000 (double Alice)
-        let (bob_shares, after_bob) =
-            reserves::deposit(e, &bob, 16_000_0000000, 14_000_0000000, &after_alice).unwrap();
+        let (bob_shares, _, after_bob) =
+            reserves::deposit(e, 16_000_0000000, 14_000_0000000, &after_alice).unwrap();
 
         // Bob should have ~2x Alice's shares
         let alice_actual = alice_shares; // minus lockup

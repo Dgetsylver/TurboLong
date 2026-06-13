@@ -12,7 +12,6 @@
 mod blend_pool;
 mod constants;
 mod leverage;
-mod receipt;
 mod reserves;
 mod soroswap;
 mod storage;
@@ -29,10 +28,21 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env, IntoVal, String,
-    Symbol, Val, Vec,
+    contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
+    IntoVal, String, Symbol, Val, Vec,
 };
 use storage::{extend_instance_ttl, Config};
+
+/// Cross-contract client for the SEP-41 vault-share token (the per-user share
+/// ledger). The strategy is the token's minter, so `mint`/`burn_by_minter`
+/// auth is satisfied automatically when the strategy is the direct caller.
+#[contractclient(name = "ShareTokenClient")]
+pub trait ShareTokenInterface {
+    fn mint(e: Env, to: Address, amount: i128);
+    fn burn_by_minter(e: Env, from: Address, amount: i128);
+    fn balance(e: Env, id: Address) -> i128;
+    fn total_supply(e: Env) -> i128;
+}
 
 fn check_positive_amount(amount: i128) -> Result<(), StrategyError> {
     if amount <= 0 {
@@ -181,11 +191,21 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // pool processes supply+borrow atomically, netting means only `amount` leaves
         let (b_delta, d_delta) = blend_pool::submit_leverage_loop(&e, amount, &config)?;
 
-        // Account for the deposit: mint shares proportional to equity added
-        let (vault_shares, updated_reserves) =
-            reserves::deposit(&e, &from, b_delta, d_delta, &reserves)?;
+        // Account for the deposit: compute the shares to mint.
+        let (vault_minted, lockup, updated_reserves) =
+            reserves::deposit(&e, b_delta, d_delta, &reserves)?;
 
-        let underlying_balance = shares_to_underlying(vault_shares, &updated_reserves)?;
+        // Mint share tokens to the depositor. On the first deposit, mint the
+        // inflation-lockup portion to the strategy's own (inert) address so the
+        // token's total_supply stays equal to total_shares.
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        token.mint(&from, &vault_minted);
+        if lockup > 0 {
+            token.mint(&e.current_contract_address(), &lockup);
+        }
+
+        let user_shares = token.balance(&from);
+        let underlying_balance = shares_to_underlying(user_shares, &updated_reserves)?;
 
         event::emit_deposit(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
@@ -265,13 +285,23 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
 
-        // Calculate proportional b/d tokens to unwind
-        let (remaining_shares, b_to_remove, d_to_remove, updated_reserves) =
-            reserves::withdraw(&e, &from, amount, &reserves)?;
+        // Read the caller's share balance from the token (the per-user ledger).
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        let user_shares = token.balance(&from);
+
+        // Calculate shares to burn + proportional b/d tokens to unwind.
+        let (shares_to_burn, b_to_remove, d_to_remove, updated_reserves) =
+            reserves::withdraw(&e, user_shares, amount, &reserves)?;
+
+        // Burn the caller's shares (minter burn — from already authorized above).
+        token.burn_by_minter(&from, &shares_to_burn);
 
         // Execute unwind on the pool — net equity flows to `to`
         blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
 
+        let remaining_shares = user_shares
+            .checked_sub(shares_to_burn)
+            .ok_or(StrategyError::UnderflowOverflow)?;
         let underlying_balance = shares_to_underlying(remaining_shares, &updated_reserves)?;
 
         event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
@@ -285,14 +315,15 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     fn balance(e: Env, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
 
-        let vault_shares = storage::get_vault_shares(&e, &from);
-        if vault_shares <= 0 {
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        let user_shares = token.balance(&from);
+        if user_shares <= 0 {
             return Ok(0);
         }
 
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
-        shares_to_underlying(vault_shares, &reserves)
+        shares_to_underlying(user_shares, &reserves)
     }
 }
 
@@ -454,5 +485,44 @@ impl BlendLeverageStrategy {
     /// The admin authorized to upgrade the contract and set the share token.
     pub fn admin(e: Env) -> Address {
         storage::get_admin(&e)
+    }
+
+    /// Set the SEP-41 vault-share token (admin-gated, one-time wiring).
+    ///
+    /// The token must already be deployed with this strategy as its minter.
+    /// Required before the first deposit. On a fresh deploy the token is the
+    /// per-user ledger from day one; for an upgraded legacy deployment, call
+    /// `migrate_position` per holder afterwards.
+    pub fn set_share_token(e: Env, token: Address) -> Result<(), StrategyError> {
+        storage::get_admin(&e).require_auth();
+        storage::set_share_token(&e, &token);
+        extend_instance_ttl(&e);
+        Ok(())
+    }
+
+    /// The configured share token, or an error if not yet set.
+    pub fn share_token(e: Env) -> Result<Address, StrategyError> {
+        if storage::has_share_token(&e) {
+            Ok(storage::get_share_token(&e))
+        } else {
+            Err(StrategyError::NotAuthorized)
+        }
+    }
+
+    /// Migrate a legacy `VaultPos` holder onto the share token: mint their
+    /// shares into the token and zero the legacy entry. Permissionless and
+    /// idempotent (it only moves a holder's own shares into their token
+    /// balance — no theft possible). Used once after upgrading a deployment
+    /// that predates the token; fresh deploys never need it.
+    pub fn migrate_position(e: Env, holder: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        let legacy = storage::get_vault_shares(&e, &holder);
+        if legacy <= 0 {
+            return Ok(0);
+        }
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        token.mint(&holder, &legacy);
+        storage::set_vault_shares(&e, &holder, 0);
+        Ok(legacy)
     }
 }

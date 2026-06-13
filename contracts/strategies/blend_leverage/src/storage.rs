@@ -23,6 +23,9 @@ pub enum DataKey {
     Admin,
     /// Monotonic contract version, bumped on each upgrade.
     Version,
+    /// The SEP-41 vault-share token contract — the canonical per-user share
+    /// ledger. The strategy is its minter (mints on deposit, burns on withdraw).
+    ShareToken,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -163,6 +166,23 @@ pub fn set_version(e: &Env, version: u32) {
 
 pub fn get_version(e: &Env) -> u32 {
     e.storage().instance().get(&DataKey::Version).unwrap_or(1)
+}
+
+// ── Share token ──────────────────────────────────────────────────────────────
+
+pub fn set_share_token(e: &Env, token: &Address) {
+    e.storage().instance().set(&DataKey::ShareToken, token);
+}
+
+pub fn get_share_token(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&DataKey::ShareToken)
+        .expect("share token not set")
+}
+
+pub fn has_share_token(e: &Env) -> bool {
+    e.storage().instance().has(&DataKey::ShareToken)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

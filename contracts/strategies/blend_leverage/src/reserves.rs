@@ -7,7 +7,7 @@ use crate::{
 
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
-use soroban_sdk::{panic_with_error, Address, Env};
+use soroban_sdk::{panic_with_error, Env};
 
 // ── Reserve management ───────────────────────────────────────────────────────
 
@@ -32,13 +32,19 @@ pub fn get_strategy_reserves_updated(e: &Env, config: &Config) -> LeverageReserv
 /// 2. Convert equity to shares proportionally
 /// 3. Apply inflation attack protection for first depositor
 /// 4. Update totals
+///
+/// Returns `(vault_minted_shares, lockup_shares, updated_reserves)`.
+///
+/// The per-user ledger is the SEP-41 share token, not strategy storage, so this
+/// no longer writes `VaultPos`: the caller (`lib.rs::deposit`) mints
+/// `vault_minted_shares` to the depositor and, on the first deposit, mints
+/// `lockup_shares` to a lock address so `token.total_supply == total_shares`.
 pub fn deposit(
     e: &Env,
-    from: &Address,
     b_tokens_delta: i128,
     d_tokens_delta: i128,
     reserves: &LeverageReserves,
-) -> Result<(i128, LeverageReserves), StrategyError> {
+) -> Result<(i128, i128, LeverageReserves), StrategyError> {
     let mut reserves = reserves.clone();
 
     if b_tokens_delta <= 0 {
@@ -66,19 +72,23 @@ pub fn deposit(
         panic_with_error!(e, StrategyError::InvalidSharesMinted);
     }
 
-    // Inflation attack protection: first depositor lockup
-    let vault_minted_shares = if reserves.total_shares == 0 {
+    // Inflation attack protection: first depositor lockup. The lockup portion is
+    // minted to a lock address by the caller (never to the depositor).
+    let (vault_minted_shares, lockup_shares) = if reserves.total_shares == 0 {
         if new_shares <= FIRST_DEPOSIT_LOCKUP {
             panic_with_error!(e, StrategyError::InvalidSharesMinted);
         }
-        new_shares
-            .checked_sub(FIRST_DEPOSIT_LOCKUP)
-            .ok_or(StrategyError::UnderflowOverflow)?
+        (
+            new_shares
+                .checked_sub(FIRST_DEPOSIT_LOCKUP)
+                .ok_or(StrategyError::UnderflowOverflow)?,
+            FIRST_DEPOSIT_LOCKUP,
+        )
     } else {
-        new_shares
+        (new_shares, 0)
     };
 
-    // Update totals
+    // Update totals (total_shares includes the lockup, matching token supply).
     reserves.total_shares = reserves
         .total_shares
         .checked_add(new_shares)
@@ -95,13 +105,7 @@ pub fn deposit(
     // Persist
     storage::set_strategy_reserves(e, reserves.clone());
 
-    let old_shares = storage::get_vault_shares(e, from);
-    let new_vault_shares = old_shares
-        .checked_add(vault_minted_shares)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    storage::set_vault_shares(e, from, new_vault_shares);
-
-    Ok((new_vault_shares, reserves))
+    Ok((vault_minted_shares, lockup_shares, reserves))
 }
 
 // ── Withdraw accounting ──────────────────────────────────────────────────────
@@ -113,17 +117,20 @@ pub fn deposit(
 /// 2. Calculate proportional b/d tokens
 /// 3. Update totals
 ///
-/// Returns (remaining_shares, b_tokens_to_remove, d_tokens_to_remove, updated_reserves)
+/// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove, updated_reserves)`.
+///
+/// `user_shares` is the caller's current token balance (read by `lib.rs` from
+/// the share token, not from strategy storage). This no longer writes
+/// `VaultPos`: the caller burns `shares_to_burn` from the token.
 pub fn withdraw(
     e: &Env,
-    from: &Address,
+    user_shares: i128,
     amount: i128, // underlying amount requested
     reserves: &LeverageReserves,
 ) -> Result<(i128, i128, i128, LeverageReserves), StrategyError> {
     let mut reserves = reserves.clone();
 
-    let vault_shares = storage::get_vault_shares(e, from);
-    if vault_shares <= 0 {
+    if user_shares <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
 
@@ -137,7 +144,7 @@ pub fn withdraw(
         .fixed_mul_ceil(reserves.total_shares, total_equity)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    if shares_to_burn > vault_shares {
+    if shares_to_burn > user_shares {
         return Err(StrategyError::InsufficientBalance);
     }
 
@@ -164,13 +171,14 @@ pub fn withdraw(
         .ok_or(StrategyError::UnderflowOverflow)?;
 
     // Persist
-    let remaining = vault_shares
-        .checked_sub(shares_to_burn)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    storage::set_vault_shares(e, from, remaining);
     storage::set_strategy_reserves(e, reserves.clone());
 
-    Ok((remaining, b_tokens_to_remove, d_tokens_to_remove, reserves))
+    Ok((
+        shares_to_burn,
+        b_tokens_to_remove,
+        d_tokens_to_remove,
+        reserves,
+    ))
 }
 
 // ── Harvest accounting ───────────────────────────────────────────────────────

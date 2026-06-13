@@ -20,7 +20,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, BytesN as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, BytesN, Env, String, Vec,
+    vec, Address, BytesN, Env, IntoVal, String, Val, Vec,
 };
 
 use crate::constants::{
@@ -439,12 +439,12 @@ fn test_deposit_withdraw_full_cycle() {
         };
         storage::set_strategy_reserves(&e, init_reserves.clone());
 
-        let (vault_shares, updated) =
-            reserves::deposit(&e, &user, b_tokens, d_tokens, &init_reserves).unwrap();
+        let (vault_minted, _lockup, updated) =
+            reserves::deposit(&e, b_tokens, d_tokens, &init_reserves).unwrap();
 
-        assert!(vault_shares > 0, "Should have shares");
+        assert!(vault_minted > 0, "Should have shares");
 
-        let balance = shares_to_underlying(vault_shares, &updated).unwrap();
+        let balance = shares_to_underlying(vault_minted, &updated).unwrap();
         assert!(
             balance > deposit_amount * 95 / 100,
             "Balance {} should be close to deposit {}",
@@ -452,10 +452,10 @@ fn test_deposit_withdraw_full_cycle() {
             deposit_amount
         );
 
-        // === WITHDRAW ===
-        let (remaining, b_remove, d_remove, _) =
-            reserves::withdraw(&e, &user, balance, &updated).unwrap();
-        assert_eq!(remaining, 0, "All shares should be burned");
+        // === WITHDRAW === (user_shares read from the token in production)
+        let (burned, b_remove, d_remove, _) =
+            reserves::withdraw(&e, vault_minted, balance, &updated).unwrap();
+        assert_eq!(vault_minted - burned, 0, "All shares should be burned");
 
         // Verify b/d amounts are proportional
         assert!(b_remove > 0 && d_remove > 0, "Should remove b and d tokens");
@@ -496,8 +496,8 @@ fn test_two_users_proportional() {
     seed_pool_liquidity(&e, &pool_addr, &token, 200_000_0000000);
 
     let strategy = e.register(TestStrategyContract, ());
-    let alice = Address::generate(&e);
-    let bob = Address::generate(&e);
+    let _alice = Address::generate(&e);
+    let _bob = Address::generate(&e);
     let token_admin = StellarAssetClient::new(&e, &token);
 
     e.cost_estimate().budget().reset_unlimited();
@@ -553,8 +553,8 @@ fn test_two_users_proportional() {
         };
         storage::set_strategy_reserves(&e, init.clone());
 
-        let (alice_shares, after_alice) = reserves::deposit(&e, &alice, b1, d1, &init).unwrap();
-        let (bob_shares, after_bob) = reserves::deposit(&e, &bob, b2, d2, &after_alice).unwrap();
+        let (alice_shares, _, after_alice) = reserves::deposit(&e, b1, d1, &init).unwrap();
+        let (bob_shares, _, after_bob) = reserves::deposit(&e, b2, d2, &after_alice).unwrap();
 
         let alice_val = shares_to_underlying(alice_shares, &after_bob).unwrap();
         let bob_val = shares_to_underlying(bob_shares, &after_bob).unwrap();
@@ -723,4 +723,131 @@ fn test_deleverage_step_by_step() {
         post_eq,
         diff
     );
+}
+
+// ── Share-token wiring (D2 integration) ──────────────────────────────────────
+
+#[contracttype]
+enum MockKey {
+    Bal(Address),
+    Supply,
+}
+
+/// Minimal stand-in for the SEP-41 vault-share token, used to verify the
+/// strategy's cross-contract mint/burn/balance calls. The real token is tested
+/// in its own crate (contracts/tokens/vault_share).
+#[contract]
+pub struct MockShareToken;
+
+#[contractimpl]
+impl MockShareToken {
+    pub fn mint(e: Env, to: Address, amount: i128) {
+        let b: i128 = e
+            .storage()
+            .persistent()
+            .get(&MockKey::Bal(to.clone()))
+            .unwrap_or(0);
+        e.storage()
+            .persistent()
+            .set(&MockKey::Bal(to), &(b + amount));
+        let s: i128 = e.storage().instance().get(&MockKey::Supply).unwrap_or(0);
+        e.storage().instance().set(&MockKey::Supply, &(s + amount));
+    }
+
+    pub fn burn_by_minter(e: Env, from: Address, amount: i128) {
+        let b: i128 = e
+            .storage()
+            .persistent()
+            .get(&MockKey::Bal(from.clone()))
+            .unwrap_or(0);
+        e.storage()
+            .persistent()
+            .set(&MockKey::Bal(from), &(b - amount));
+        let s: i128 = e.storage().instance().get(&MockKey::Supply).unwrap_or(0);
+        e.storage().instance().set(&MockKey::Supply, &(s - amount));
+    }
+
+    pub fn balance(e: Env, id: Address) -> i128 {
+        e.storage().persistent().get(&MockKey::Bal(id)).unwrap_or(0)
+    }
+
+    pub fn total_supply(e: Env) -> i128 {
+        e.storage().instance().get(&MockKey::Supply).unwrap_or(0)
+    }
+}
+
+/// Register the real strategy via its constructor against the Blend fixture.
+fn register_real_strategy(
+    e: &Env,
+    pool_addr: &Address,
+    asset: &Address,
+    blnd: &Address,
+) -> Address {
+    let router = Address::generate(e);
+    let keeper = Address::generate(e);
+    let admin = Address::generate(e);
+    let init_args: Vec<Val> = vec![
+        e,
+        pool_addr.into_val(e),
+        blnd.into_val(e),
+        router.into_val(e),
+        1_0000000_i128.into_val(e), // reward_threshold
+        keeper.into_val(e),
+        9_000_000_i128.into_val(e),  // c_factor 0.90
+        3u32.into_val(e),            // target_loops
+        10_500_000_i128.into_val(e), // min_hf 1.05
+        11_500_000_i128.into_val(e), // orange_hf 1.15
+        admin.into_val(e),
+    ];
+    e.register(crate::BlendLeverageStrategy, (asset.clone(), init_args))
+}
+
+#[test]
+fn test_share_token_wiring_set_migrate_balance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let mock_token = e.register(MockShareToken, ());
+
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // set_share_token + getter.
+    sclient.set_share_token(&mock_token);
+    assert_eq!(sclient.share_token(), mock_token);
+
+    // Seed a legacy VaultPos holder + reserves, then migrate onto the token.
+    let holder = Address::generate(&e);
+    e.as_contract(&strategy, || {
+        storage::set_vault_shares(&e, &holder, 500_0000000);
+        storage::set_strategy_reserves(
+            &e,
+            LeverageReserves {
+                total_shares: 1_000_0000000,
+                total_b_tokens: 8_000_0000000,
+                total_d_tokens: 7_000_0000000,
+                b_rate: SCALAR_12,
+                d_rate: SCALAR_12,
+            },
+        );
+    });
+
+    let migrated = sclient.migrate_position(&holder);
+    assert_eq!(migrated, 500_0000000, "migrated legacy shares");
+
+    // Token now holds the holder's shares; legacy entry zeroed.
+    let mock = MockShareTokenClient::new(&e, &mock_token);
+    assert_eq!(mock.balance(&holder), 500_0000000, "token credited");
+    e.as_contract(&strategy, || {
+        assert_eq!(storage::get_vault_shares(&e, &holder), 0, "legacy zeroed");
+    });
+
+    // migrate is idempotent (no double-mint).
+    assert_eq!(sclient.migrate_position(&holder), 0);
+    assert_eq!(mock.balance(&holder), 500_0000000);
+
+    // balance() reads shares from the token and converts to underlying.
+    let bal = sclient.balance(&holder);
+    assert!(bal > 0, "balance via token should be positive, got {}", bal);
 }
