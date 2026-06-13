@@ -899,3 +899,81 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         );
     });
 }
+
+// ── Partial-unwind degenerate cases & HF-restoration parity (T2.2) ────────────
+
+#[test]
+fn test_partial_unwind_target_at_or_below_cfactor_errors() {
+    let c = 9_000_000_i128; // 0.90
+                            // Very unhealthy position so HF is below both targets and we
+                            // reach the denom check. b=7000, d=9000 → HF = 7000*0.9/9000 = 0.70.
+    let b = 7_000_0000000_i128;
+    let d = 9_000_0000000_i128;
+    // target == c_factor → denom 0 → error.
+    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, c).is_err());
+    // target < c_factor → denom < 0 → error.
+    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, c - 1_000_000).is_err());
+}
+
+#[test]
+fn test_partial_unwind_restores_hf_to_target() {
+    let c = 9_000_000_i128; // 0.90
+    let target = 11_500_000_i128; // 1.15 (orange_hf)
+
+    // A spread of unhealthy positions (rates = 1.0 so value == tokens, letting us
+    // model the unwind as "withdraw `repay` collateral, repay `repay` debt").
+    let cases = [
+        (10_000_0000000_i128, 8_500_0000000_i128),
+        (10_000_0000000_i128, 8_000_0000000_i128),
+        (5_000_0000000_i128, 4_200_0000000_i128),
+        (20_000_0000000_i128, 16_500_0000000_i128),
+    ];
+
+    for (b, d) in cases {
+        let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+        assert!(hf0 < target, "fixture must be unhealthy: hf={}", hf0);
+
+        let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+        assert!(loops >= 1, "should unwind at least one loop");
+        assert!(repay > 0 && repay < d, "repay in range: {}", repay);
+
+        // Model the exact unwind: withdraw `repay` collateral, repay `repay` debt.
+        let new_hf = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+
+        // Restored to at least target …
+        assert!(
+            new_hf >= target,
+            "HF not restored for ({}, {}): {} < {}",
+            b,
+            d,
+            new_hf,
+            target
+        );
+        // … and not wildly over-unwound (within ~1% above target).
+        assert!(
+            new_hf <= target + target / 100,
+            "over-unwound for ({}, {}): {}",
+            b,
+            d,
+            new_hf
+        );
+    }
+}
+
+#[test]
+fn test_partial_unwind_with_accrued_rates_is_sane() {
+    // Debt grew faster than supply (b_rate 1.05, d_rate 1.10) — HF degraded.
+    let c = 9_000_000_i128;
+    let target = 11_500_000_i128;
+    let b_rate = SCALAR_12 * 105 / 100;
+    let d_rate = SCALAR_12 * 110 / 100;
+    let b = 10_000_0000000_i128;
+    let d = 8_000_0000000_i128;
+
+    let hf0 = compute_health_factor(b, d, b_rate, d_rate, c).unwrap();
+    if hf0 < target {
+        let (repay, loops) = compute_partial_unwind(b, d, b_rate, d_rate, c, target).unwrap();
+        assert!((1..=20).contains(&loops), "loops in [1,20]: {}", loops);
+        assert!(repay > 0, "positive repay: {}", repay);
+    }
+}
