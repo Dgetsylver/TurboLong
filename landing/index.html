@@ -5,153 +5,326 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Turbolong — Leveraged DeFi on Stellar</title>
   <meta name="description" content="Turbolong lets you open leveraged DeFi positions on Stellar's Blend Protocol. Multi-protocol leverage, vault, and swap — all in one place." />
+
+  <!-- Open Graph / social -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Turbolong — Leveraged DeFi on Stellar" />
+  <meta property="og:description" content="Open leveraged long positions on Blend pools in one click. No perps, no funding rates — just recursive lending loops, with your liquidation risk shown at every step." />
+  <meta property="og:image" content="scf-thumbnail.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="landing">
+  <!-- Nav -->
+  <div class="nav-outer" id="navOuter">
+    <div class="wrap">
+      <nav class="nav">
+        <div class="brand">
+          <img src="logo.svg" alt="Turbolong" />
+          <span class="name">Turbo<span class="accent">long</span></span>
+        </div>
+        <div class="nav-links">
+          <a href="#how" class="nav-link">How it works</a>
+          <a href="#compare" class="nav-link">Compare</a>
+          <a href="#features" class="nav-link">Features</a>
+          <a href="#risk" class="nav-link">Risk</a>
+        </div>
+        <div class="nav-right">
+          <a href="https://app.turbolong.com" class="btn btn-primary btn-sm">Launch App</a>
+        </div>
+      </nav>
+    </div>
+  </div>
 
-    <!-- Nav -->
-    <nav class="nav">
-      <div class="nav-brand">
-        <svg class="nav-logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="b" x1="20" y1="6" x2="40" y2="58" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="#5EEDB8"/>
-              <stop offset="100%" stop-color="#2DE8A3"/>
-            </linearGradient>
-          </defs>
-          <circle cx="32" cy="32" r="30" fill="#0B0E14" stroke="#2DE8A3" stroke-width="2" opacity="0.4"/>
-          <polygon points="38,8 22,34 31,34 27,56 43,28 34,28" fill="url(#b)"/>
-        </svg>
-        <span class="nav-name">Turbo<span class="accent">long</span></span>
-      </div>
-      <div class="nav-links">
-        <a href="#how" class="nav-link">How It Works</a>
-        <a href="#features" class="nav-link">Features</a>
-      </div>
-      <a href="https://app.turbolong.com" class="btn btn-primary">Launch App</a>
-    </nav>
-
+  <div class="wrap">
     <!-- Hero -->
     <section class="hero">
       <div class="hero-glow"></div>
-      <h1>Leverage trading on Stellar. Simplified.</h1>
-      <p class="hero-sub">Open leveraged long positions on Blend Protocol pools with a single click. No perps, no funding rates &mdash; just recursive lending loops.</p>
-      <div class="hero-cta">
-        <a href="https://app.turbolong.com" class="btn btn-primary btn-lg">Launch App</a>
-        <a href="https://app.turbolong.com#demo" class="btn btn-ghost btn-lg">View Demo</a>
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="dot"></span>Live on Stellar · Blend Protocol</span>
+        <h1>Leverage trading on Stellar, <span class="grad">made legible.</span></h1>
+        <p class="hero-sub">Open leveraged long positions on Blend pools in one click. No perps, no funding rates — just recursive lending loops, with your liquidation risk shown at every step.</p>
+        <div class="hero-cta">
+          <a href="https://app.turbolong.com" class="btn btn-primary btn-lg">Launch App</a>
+          <a href="#how" class="btn btn-ghost btn-lg">See how it works</a>
+        </div>
+        <div class="hero-trust">
+          <span>Works with</span>
+          <div class="wallet-chips">
+            <span class="wchip">Freighter</span>
+            <span class="wchip">Lobstr</span>
+            <span class="wchip">xBull</span>
+            <span class="wchip">Hana</span>
+            <span class="wchip">Albedo</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live product card -->
+      <div class="demo-card reveal">
+        <div class="dc-head">
+          <span class="dc-title">Open Position <span style="color:var(--tl-text-3);font-weight:500;font-size:.8rem">· YieldBlox</span></span>
+          <span class="dc-badge">● Live preview</span>
+        </div>
+        <div class="dc-tabs">
+          <span class="dc-tab on">USDC</span>
+          <span class="dc-tab">XLM</span>
+          <span class="dc-tab">EURC</span>
+        </div>
+        <div class="dc-field">
+          <span class="lab">Deposit</span>
+          <span class="amt">1,000 <span style="color:var(--tl-text-3)">USDC</span></span>
+        </div>
+        <div class="dc-row">
+          <span class="lab" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:var(--tl-text-3);font-weight:600">Leverage</span>
+          <span class="dc-lev" id="dcLev">5.0×</span>
+        </div>
+        <div class="dc-track"><div class="dc-fill" id="dcFill" style="width:40%"></div><div class="dc-thumb" id="dcThumb" style="left:40%"></div></div>
+        <div class="dc-zones" id="dcZones">
+          <span data-z="0">Conserv.</span><span data-z="1" class="on">Moderate</span><span data-z="2">Aggressive</span><span data-z="3">Degen</span><span data-z="4">Maxi</span>
+        </div>
+        <div class="dc-preview">
+          <div class="dc-pv"><span class="k">Total collateral</span><span class="v" id="dcColl">$5,000</span></div>
+          <div class="dc-pv"><span class="k">Total borrowed</span><span class="v" id="dcBorr">$4,000</span></div>
+          <div class="dc-hf-wrap">
+            <div class="dc-pv"><span class="k">Current pool APY</span><span class="v" id="dcCur" style="color:var(--tl-text-2)">+6.8%</span></div>
+            <div class="dc-pv"><span class="k" style="color:var(--tl-text)">Projected net APY</span><span class="v" id="dcApy" style="font-size:1rem;color:var(--tl-success)">+28.4%</span></div>
+          </div>
+        </div>
+        <div class="dc-preview" style="margin-bottom:16px">
+          <div class="dc-hf-top">
+            <span class="dc-hf-lab">Health Factor</span>
+            <span class="dc-hf-val" id="dcHfVal" style="color:var(--tl-warning)">1.42 · Caution</span>
+          </div>
+          <div class="dc-hf-track"><div class="dc-hf-grad"></div><div class="dc-hf-mark" id="dcHfMark" style="left:42%;background:var(--tl-warning);box-shadow:0 0 8px var(--tl-warning)"></div></div>
+        </div>
+        <a href="https://app.turbolong.com" class="btn btn-primary dc-cta">Confirm &amp; Open</a>
       </div>
     </section>
 
     <!-- Stats -->
-    <section class="stats-strip">
-      <div class="stat">
-        <span class="stat-value">3</span>
-        <span class="stat-label">Pools</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value">8+</span>
-        <span class="stat-label">Assets</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value">12.9&times;</span>
-        <span class="stat-label">Max Leverage</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value">&lt;5s</span>
-        <span class="stat-label">Finality</span>
+    <section>
+      <div class="stats reveal">
+        <div class="stat"><span class="stat-value">3</span><span class="stat-label">Blend Pools</span></div>
+        <div class="stat"><span class="stat-value">8+</span><span class="stat-label">Assets</span></div>
+        <div class="stat"><span class="stat-value">12.9×</span><span class="stat-label">Max Leverage</span></div>
+        <div class="stat"><span class="stat-value">&lt;5s</span><span class="stat-label">Finality</span></div>
       </div>
     </section>
 
-    <!-- How It Works -->
-    <section class="how-section" id="how">
-      <h2>How It Works</h2>
-      <div class="how-steps">
-        <div class="how-step">
-          <div class="how-step-num">1</div>
-          <h3>Connect Wallet</h3>
-          <p>Use Freighter, Lobstr, xBull, or any Stellar wallet to connect in seconds.</p>
+    <!-- Compare teaser -->
+    <section class="compare" id="compare">
+      <div class="sec-head reveal">
+        <div class="sec-kicker">Compare · no wallet needed</div>
+        <h2>See the best leveraged yield, live</h2>
+        <p>Every Blend pool and asset, ranked by leveraged net APY with live Aquarius swap rates. Browse before you connect.</p>
+      </div>
+      <div class="ctable reveal">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Pool / Asset</th><th>Base APY</th><th>Max Lev</th><th>Aqua Rate</th><th>Leveraged APY</th></tr>
+          </thead>
+          <tbody>
+            <tr class="best">
+              <td class="dim">1</td>
+              <td><span class="pa"><span class="sym">USDC</span><span class="pool">YieldBlox</span><span class="best-tag">Best Rate</span></span></td>
+              <td class="dim">6.4%</td><td>12.9×</td><td class="dim">0.999</td><td class="pos">+34.2%</td>
+            </tr>
+            <tr>
+              <td class="dim">2</td>
+              <td><span class="pa"><span class="sym">USDC</span><span class="pool">Etherfuse</span></span></td>
+              <td class="dim">5.8%</td><td>10.0×</td><td class="dim">0.998</td><td class="pos">+28.9%</td>
+            </tr>
+            <tr>
+              <td class="dim">3</td>
+              <td><span class="pa"><span class="sym">XLM</span><span class="pool">Fixed</span></span></td>
+              <td class="dim">4.1%</td><td>8.0×</td><td class="dim">0.118</td><td class="pos">+21.7%</td>
+            </tr>
+            <tr>
+              <td class="dim">4</td>
+              <td><span class="pa"><span class="sym">EURC</span><span class="pool">YieldBlox</span></span></td>
+              <td class="dim">5.2%</td><td>7.5×</td><td class="dim">1.082</td><td class="pos">+19.4%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="compare-foot reveal"><a href="https://app.turbolong.com#compare" class="btn btn-ghost btn-sm">Open the full Compare table →</a></div>
+    </section>
+
+    <!-- How it works / loop -->
+    <section class="loop" id="how">
+      <div class="sec-head reveal">
+        <div class="sec-kicker">How it works</div>
+        <h2>One deposit. One transaction. One loop.</h2>
+        <p>Turbolong stacks exposure by recursively supplying and borrowing — all settled atomically on Soroban.</p>
+      </div>
+      <div class="loop-grid">
+        <div class="loop-step reveal">
+          <div class="loop-num"><span class="ring">1</span>Supply</div>
+          <h3>Deposit collateral</h3>
+          <p>Connect a Stellar wallet and supply your asset into a Blend pool as collateral.</p>
         </div>
-        <div class="how-step">
-          <div class="how-step-num">2</div>
-          <h3>Choose Asset &amp; Leverage</h3>
-          <p>Select a Blend pool and asset, then set your leverage multiplier with a slider.</p>
+        <div class="loop-step reveal">
+          <div class="loop-num"><span class="ring">2</span>Borrow</div>
+          <h3>Borrow against it</h3>
+          <p>Borrow the same asset against your collateral, up to the pool's collateral factor.</p>
         </div>
-        <div class="how-step">
-          <div class="how-step-num">3</div>
-          <h3>One-Click Position</h3>
-          <p>Turbolong executes the recursive lending loop atomically. Approve and submit.</p>
+        <div class="loop-step reveal">
+          <div class="loop-num"><span class="ring">∞</span>Repeat</div>
+          <h3>Loop, atomically</h3>
+          <p>Re-supply and borrow again to your chosen leverage — bundled into a single signed transaction.</p>
         </div>
       </div>
+      <p class="loop-atomic reveal">Every loop is <b>atomic</b> — it fully executes or fully reverts. No partial-execution risk, no funding rates.</p>
     </section>
 
     <!-- Features -->
-    <section class="features-section" id="features">
-      <h2>Features</h2>
-      <div class="features">
-        <div class="feature">
-          <div class="feature-icon">&#9889;</div>
-          <h3>Atomic Leverage Loops</h3>
-          <p>Recursive supply/borrow in a single transaction. No partial execution risk.</p>
+    <section class="features" id="features">
+      <div class="sec-head reveal">
+        <div class="sec-kicker">Built for power users</div>
+        <h2>Everything you need to run leverage</h2>
+      </div>
+      <div class="feat-grid">
+        <div class="feat reveal"><div class="feat-icon">⚡</div><h3>Atomic leverage loops</h3><p>Recursive supply/borrow in a single transaction. No partial execution risk.</p></div>
+        <div class="feat reveal"><div class="feat-icon">📊</div><h3>Real-time health</h3><p>Health Factor, liquidation countdown and borrow headroom, live from on-chain data.</p></div>
+        <div class="feat reveal"><div class="feat-icon">💰</div><h3>BLND rewards</h3><p>Claim and auto-convert BLND emissions to compound your position.</p></div>
+        <div class="feat reveal"><div class="feat-icon">🏦</div><h3>Vault strategy</h3><p>Set-and-forget leveraged USDC vault with permissionless auto-rebalancing.</p></div>
+        <div class="feat reveal"><div class="feat-icon">🌐</div><h3>APY &amp; health alerts</h3><p>Email or push alerts when net APY turns negative or your Health Factor drops.</p></div>
+        <div class="feat reveal"><div class="feat-icon">⇄</div><h3>Best-rate swaps</h3><p>Token swaps routed via Stellar Broker + Aquarius for best execution.</p></div>
+      </div>
+    </section>
+
+    <!-- Risk as a feature -->
+    <section class="risk" id="risk">
+      <div class="sec-head reveal">
+        <div class="sec-kicker">Risk, never buried</div>
+        <h2>Leverage is dangerous. We make it readable.</h2>
+        <p>Most of the product is about showing you exactly how close you are to liquidation — before and after you open.</p>
+      </div>
+      <div class="risk-panel reveal">
+        <div class="risk-copy">
+          <h2>Your Health Factor, front and center</h2>
+          <p>The Health Factor measures how safe a position is. Below <span class="tl-mono" style="color:var(--tl-text)">1.0</span>, you're liquidated and lose collateral. Turbolong shows it live as you set leverage, with a color-coded risk band and a days-to-liquidation estimate.</p>
+          <p class="note">⚠ Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software — use at your own risk.</p>
         </div>
-        <div class="feature">
-          <div class="feature-icon">&#128202;</div>
-          <h3>Real-Time Health Monitoring</h3>
-          <p>Health factor, liquidation countdown, and borrow headroom updated live from on-chain data.</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">&#128176;</div>
-          <h3>BLND Rewards</h3>
-          <p>Claim and auto-convert BLND emissions to compound your position.</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">&#127974;</div>
-          <h3>Vault Strategy</h3>
-          <p>Set-and-forget leveraged USDC vault with permissionless rebalancing via DeFindex.</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">&#127760;</div>
-          <h3>Multi-Pool Support</h3>
-          <p>Trade across Etherfuse, Fixed, and YieldBlox pools on Blend Protocol.</p>
-        </div>
-        <div class="feature">
-          <div class="feature-icon">&#8644;</div>
-          <h3>Built on Stellar</h3>
-          <p>Fast finality, low fees, and battle-tested Soroban smart contracts.</p>
+        <div class="risk-visual">
+          <div class="rv-row">
+            <div class="rv-top"><span class="rv-lab">Health Factor</span><span class="rv-val" style="color:var(--tl-success)">1.84</span></div>
+            <div class="rv-track"><div class="dc-hf-grad" style="opacity:.22"></div><div class="dc-hf-mark" style="left:68%;background:var(--tl-success);box-shadow:0 0 8px var(--tl-success)"></div></div>
+          </div>
+          <div class="rv-seg">
+            <span class="on" style="color:var(--tl-success);border-color:var(--tl-success-border);background:rgba(45,232,163,.08)">Safe</span>
+            <span>Caution</span>
+            <span>High</span>
+            <span>Near liq.</span>
+          </div>
+          <div class="rv-row" style="margin-top:6px">
+            <div class="dc-pv"><span class="k" style="font-size:.82rem;color:var(--tl-text-2)">Days to liquidation</span><span class="v tl-mono" style="font-size:.9rem">~ 142 days</span></div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Risk Disclosure -->
-    <section class="risk-section">
-      <div class="risk-banner">
-        <strong>Risk Disclosure:</strong> Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software &mdash; use at your own risk.
+    <!-- Final CTA -->
+    <section class="final">
+      <div class="final-card reveal">
+        <h2>Start leveraging on Stellar</h2>
+        <p>Connect your wallet and open your first position in minutes — or browse Compare first, no wallet needed.</p>
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+          <a href="https://app.turbolong.com" class="btn btn-primary btn-lg">Launch App</a>
+          <a href="#compare" class="btn btn-ghost btn-lg">Browse Compare</a>
+        </div>
       </div>
     </section>
+  </div>
 
-    <!-- CTA -->
-    <section class="cta-section">
-      <h2>Start leveraging on Stellar</h2>
-      <p>Connect your Stellar wallet and open your first position in minutes.</p>
-      <a href="https://app.turbolong.com" class="btn btn-primary btn-lg">Launch App</a>
-    </section>
-
-    <!-- Footer -->
-    <footer class="footer">
-      <div class="footer-links">
-        <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
-        <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
-        <a href="https://stellar.expert" target="_blank" rel="noopener">Stellar Expert</a>
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <img src="logo.svg" alt="" />
+          <span class="name">Turbo<span class="accent">long</span></span>
+        </div>
+        <div class="footer-links">
+          <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
+          <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://stellar.expert" target="_blank" rel="noopener">Stellar Expert</a>
+          <a href="bug-bounty.html">Bug Bounty</a>
+        </div>
       </div>
       <p class="footer-disclaimer">Turbolong is an experimental DeFi tool. Leveraged positions carry significant financial risk, including the complete loss of deposited funds. Use at your own risk. Not available in jurisdictions where cryptocurrency is prohibited.</p>
-      <p class="footer-copy">&copy; 2026 Turbolong</p>
-    </footer>
+      <p class="footer-copy">© 2026 Turbolong</p>
+    </div>
+  </footer>
 
-  </div>
+  <script>
+    document.documentElement.classList.add('js');
+    document.body.classList.add('js');
+
+    // Nav border on scroll
+    const navOuter = document.getElementById('navOuter');
+    const onScroll = () => navOuter.classList.toggle('scrolled', window.scrollY > 8);
+    window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+
+    // Reveal on scroll
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+    // Animated hero product demo — cycle leverage, react HF + APY
+    (function () {
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduce) return;
+      const levEl = document.getElementById('dcLev');
+      const fill = document.getElementById('dcFill');
+      const thumb = document.getElementById('dcThumb');
+      const coll = document.getElementById('dcColl');
+      const borr = document.getElementById('dcBorr');
+      const apy = document.getElementById('dcApy');
+      const cur = document.getElementById('dcCur');
+      const hfVal = document.getElementById('dcHfVal');
+      const hfMark = document.getElementById('dcHfMark');
+      const zones = [...document.querySelectorAll('#dcZones span')];
+      const MIN = 1, MAX = 12.9, DEP = 1000, SUP = 6.4, BOR = 9.1;
+      const targets = [3.0, 5.0, 7.5, 4.0, 9.5, 2.5, 6.0];
+      let i = 0;
+
+      function zoneIdx(l) { return l <= 2 ? 0 : l <= 4 ? 1 : l <= 7 ? 2 : l <= 10 ? 3 : 4; }
+      function hfColor(hf) { return hf < 1.2 ? 'var(--tl-danger)' : hf < 1.8 ? 'var(--tl-warning)' : 'var(--tl-success)'; }
+      function hfLabel(hf) { return hf < 1.2 ? 'Near liq.' : hf < 1.5 ? 'High risk' : hf < 1.8 ? 'Caution' : 'Safe'; }
+      const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+
+      function apply(l) {
+        const pct = ((l - MIN) / (MAX - MIN)) * 100;
+        const collat = DEP * l, borrow = collat - DEP;
+        const netApy = SUP * l - BOR * (l - 1);
+        const hf = Math.max(1.03, 3.4 - l * 0.22);
+        const zi = zoneIdx(l);
+        const zc = ['var(--tl-success)','var(--tl-primary)','var(--tl-warning)','var(--tl-danger)','#FF4D6A'][zi];
+        levEl.textContent = l.toFixed(1) + '×'; levEl.style.color = zc;
+        fill.style.width = pct + '%'; fill.style.background = zc;
+        thumb.style.left = pct + '%'; thumb.style.background = zc; thumb.style.boxShadow = '0 0 0 4px ' + zc + '40';
+        coll.textContent = money(collat); borr.textContent = money(borrow);
+        apy.textContent = (netApy >= 0 ? '+' : '') + netApy.toFixed(1) + '%';
+        apy.style.color = netApy >= 0 ? 'var(--tl-success)' : 'var(--tl-danger)';
+        if (cur) cur.textContent = (netApy >= 0 ? '+' : '') + (netApy + 0.4).toFixed(1) + '%';
+        const hpos = Math.max(4, Math.min(96, ((hf - 1) / (3 - 1)) * 100));
+        hfVal.textContent = hf.toFixed(2) + ' · ' + hfLabel(hf); hfVal.style.color = hfColor(hf);
+        hfMark.style.left = hpos + '%'; hfMark.style.background = hfColor(hf); hfMark.style.boxShadow = '0 0 8px ' + hfColor(hf);
+        zones.forEach((z, idx) => z.classList.toggle('on', idx === zi));
+      }
+      apply(targets[0]);
+      setInterval(() => { i = (i + 1) % targets.length; apply(targets[i]); }, 2600);
+    })();
+  </script>
+
   <!-- Cloudflare Web Analytics (free) — replace token after enabling in CF dashboard -->
   <!-- <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "YOUR_CF_ANALYTICS_TOKEN"}'></script> -->
 </body>
