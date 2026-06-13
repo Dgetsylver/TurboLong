@@ -541,14 +541,17 @@
                 <h2>Position</h2>
               </div>
 
-              <!-- Hero metrics -->
+              <!-- Hero: pool ACCOUNT (one Account Health for the whole pool) -->
               <div id="metrics-hero" class="metrics-hero hidden">
-                <div class="metric-hero">
-                  <span class="metric-hero-label">Health Factor</span>
+                <div class="metric-hero metric-hero-account">
+                  <span class="metric-hero-label" id="hero-hf-label" data-i18n="pos.accountHealth">Account Health</span>
                   <span class="metric-hero-value" id="hero-hf">—</span>
+                  <div class="hf-bar-wrap" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Account health"><div class="hf-bar" id="hf-bar"></div></div>
+                  <div class="hf-gauge-container" id="hero-hf-gauge"></div>
+                  <div class="metric-hero-liq" id="hero-liq-days"></div>
                 </div>
                 <div class="metric-hero">
-                  <span class="metric-hero-label">Leverage</span>
+                  <span class="metric-hero-label" data-i18n="pos.effLeverage">Effective leverage</span>
                   <span class="metric-hero-value" id="hero-leverage">—</span>
                 </div>
                 <div class="metric-hero">
@@ -579,47 +582,31 @@
                 <div id="hf-pos-warning" class="hf-pos-warning hidden"></div>
                 <p id="cross-asset-note" class="cross-asset-note hidden"></p>
 
-                <!-- Position data as table rows -->
-                <div class="position-grid">
-                  <div class="position-metric">
-                    <span class="metric-label">Collateral</span>
-                    <span class="metric-value mono" id="pos-collateral">—</span>
-                  </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Debt</span>
-                    <span class="metric-value mono" id="pos-debt">—</span>
-                  </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Net equity</span>
+                <!-- Account aggregates -->
+                <div class="pool-account-aggregates">
+                  <div class="pool-agg-item">
+                    <span class="metric-label">Equity</span>
                     <span class="metric-value mono" id="pos-equity">—</span>
                   </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Leverage</span>
-                    <span class="metric-value mono" id="pos-leverage">—</span>
+                </div>
+
+                <!-- Always-visible per-asset breakdown of THIS pool account -->
+                <div class="pool-breakdown-section">
+                  <h3 class="pool-breakdown-title" data-i18n="pool.whatsInside">What's in this pool</h3>
+                  <div class="pool-breakdown-wrap">
+                    <table class="pool-breakdown" id="pool-breakdown">
+                      <thead>
+                        <tr>
+                          <th class="pb-asset" data-i18n="pool.colAsset">Asset</th>
+                          <th data-i18n="pool.colSupplied">Supplied</th>
+                          <th data-i18n="pool.colBorrowed">Borrowed</th>
+                          <th class="pb-role" data-i18n="pool.colRole">Role</th>
+                        </tr>
+                      </thead>
+                      <tbody id="pool-breakdown-body"></tbody>
+                    </table>
                   </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Loop HF <span class="tooltip" data-tip="Health factor of this single-asset loop. Your account is liquidated on the pool-wide Account Health, shown separately.">?</span></span>
-                    <span class="metric-value" id="pos-hf">—</span>
-                    <div class="hf-bar-wrap" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Health factor"><div class="hf-bar" id="hf-bar"></div></div>
-                    <div class="hf-gauge-container"></div>
-                  </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Pool HF <span class="tooltip" data-tip="Health Factor across ALL your positions in this pool, weighted by oracle price.">?</span></span>
-                    <span class="metric-value" id="pos-pool-hf">—</span>
-                  </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Net APY <span class="tooltip" id="pos-net-apr-tip" data-tip="">?</span></span>
-                    <span class="metric-value" id="pos-net-apr">—</span>
-                  </div>
-                  <div class="position-metric">
-                    <span class="metric-label">Borrow headroom <span class="tooltip" data-tip="How much more USD you could borrow before Health Factor hits 1.0 (liquidation).">?</span></span>
-                    <span class="metric-value mono" id="pos-headroom">—</span>
-                  </div>
-                  <div class="position-metric position-metric-full">
-                    <span class="metric-label">Days until liquidation <span class="tooltip" data-tip="Estimated days before HF drops to 1.0, based on the interest rate spread (borrow - supply).">?</span></span>
-                    <span class="metric-value" id="pos-liq-days">—</span>
-                    <div class="liq-days-note" id="pos-liq-note"></div>
-                  </div>
+                  <p class="pool-account-note" id="pool-account-note" data-i18n="pool.accountNote">One health factor liquidates this whole pool. Rows are a breakdown, not separate positions.</p>
                 </div>
 
                 <div class="position-actions">

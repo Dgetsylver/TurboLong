@@ -60,6 +60,9 @@ import {
   getDefaultBlndPrice,
   setBlndPriceAssumption,
   withBlndPriceAssumption,
+  aggregatePoolAccount,
+  type PoolAccountSummary,
+  type PoolAccountRole,
   type NetworkMode,
   type AssetInfo,
   type PoolDef,
@@ -1364,6 +1367,105 @@ function isCrossAssetAccount(): boolean {
   return sided && coll && debt; // debt backed by collateral in a different asset
 }
 
+// ── Pool ACCOUNT panel (#297) ─────────────────────────────────────────────────
+//
+// Blend cross-margins ALL positions in a pool into ONE account with ONE
+// liquidation HF. This renders the pool-account view: one Account Health (poolHF),
+// aggregate totals (Equity, Net APY, Effective leverage), the always-visible
+// per-asset breakdown TABLE, and the days-to-liquidation line — all off
+// aggregatePoolAccount(). It drives #metrics-hero + the #pool-breakdown table and
+// is called on the same triggers as renderPosition().
+function poolRoleLabel(role: PoolAccountRole, leverage: number): string {
+  if (role === "loop") return `${t("pool.role.loop")} · ${fmt(leverage, 1)}×`;
+  if (role === "borrow") return t("pool.role.borrow");
+  return t("pool.role.collateral");
+}
+
+function renderPoolAccount() {
+  const heroEl = $("metrics-hero");
+  if (positions.byAsset.size === 0) {
+    heroEl.classList.add("hidden");
+    return;
+  }
+  heroEl.classList.remove("hidden");
+
+  const sum = aggregatePoolAccount([...positions.byAsset.values()], reserves);
+  const { poolHF, equityUsd, netApy, effLeverage, liqDays, rows } = sum;
+
+  // Hero: Account Health (pool-wide HF) ───────────────────────────────────────
+  const heroHf = $("hero-hf");
+  heroHf.textContent = Number.isFinite(poolHF) ? fmt(poolHF, 3) : "∞";
+  heroHf.className = `metric-hero-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
+
+  // HF bar (now in the hero) ───────────────────────────────────────────────────
+  const barPct = Math.min(100, Math.max(0, (poolHF - 1) / 0.3 * 100));
+  const bar = $("hf-bar");
+  bar.style.width      = `${barPct}%`;
+  bar.style.background = poolHF > 1.1 ? "var(--success)" : poolHF > 1.03 ? "var(--warning)" : "var(--danger)";
+  const barWrap = bar.parentElement!;
+  barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
+  barWrap.setAttribute(
+    "aria-valuetext",
+    `Account health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZoneWord(poolHF)}`,
+  );
+
+  // Account-health gauge (#7) — visual mirror of the bar, off poolHF.
+  $("hero-hf-gauge").innerHTML = renderHFGauge(poolHF);
+
+  // Days-to-liquidation line under the hero HF ─────────────────────────────────
+  const liqLine = $("hero-liq-days");
+  if (liqDays === null) {
+    liqLine.textContent = "";
+    liqLine.className = "metric-hero-liq";
+  } else if (!Number.isFinite(liqDays)) {
+    liqLine.textContent = t("dashboard.liqNever");
+    liqLine.className = "metric-hero-liq hf-ok";
+  } else if (liqDays > 3650) {
+    liqLine.textContent = t("dashboard.over10y");
+    liqLine.className = "metric-hero-liq hf-ok";
+  } else {
+    const roundDays = Math.round(liqDays);
+    liqLine.className = `metric-hero-liq ${liqDays < 30 ? "hf-bad" : liqDays < 90 ? "hf-warn" : "hf-ok"}`;
+    // Short runways (≤1y) get the countdown ring (#18); longer ones stay text.
+    if (liqDays <= 365) {
+      liqLine.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(liqDays)} <span>${t("dashboard.liqRunway", { n: roundDays })}</span></span>`;
+    } else {
+      liqLine.textContent = t("dashboard.liqRunway", { n: roundDays });
+    }
+  }
+
+  // Effective leverage + Net APY (account aggregates) ──────────────────────────
+  $("hero-leverage").textContent = `${fmt(effLeverage, 2)}×`;
+  const heroApyEl = $("hero-net-apy");
+  heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
+  heroApyEl.className = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
+  const heroTip = $("hero-net-apy-tip");
+  if (heroTip) heroTip.setAttribute("data-tip", t("pool.apyTip"));
+
+  // Equity total (USD) ─────────────────────────────────────────────────────────
+  $("pos-equity").textContent = `$${fmt(equityUsd, 2)}`;
+
+  // Breakdown table — one row per asset held in this pool ──────────────────────
+  const tbody = $("pool-breakdown-body");
+  tbody.innerHTML = "";
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const suppliedTxt = row.supplied > 0 ? `${fmt(row.supplied, 2)} ${row.symbol}` : "—";
+    const borrowedTxt = row.borrowed > 0 ? `${fmt(row.borrowed, 2)} ${row.symbol}` : "—";
+    const roleClass = row.role === "loop" ? "pb-badge-loop" : row.role === "borrow" ? "pb-badge-borrow" : "pb-badge-collateral";
+    tr.innerHTML = `
+      <td class="pb-asset"><span class="pb-sym">${row.symbol}</span></td>
+      <td class="pb-num">${suppliedTxt}</td>
+      <td class="pb-num">${borrowedTxt}</td>
+      <td class="pb-role"><span class="pb-badge ${roleClass}">${poolRoleLabel(row.role, row.leverage)}</span></td>`;
+    tbody.appendChild(tr);
+  }
+
+  // i18n-translate the static labels in this section (title, headers, note).
+  applyTranslations(heroEl);
+  applyTranslations($("position-data"));
+}
+
 // ── Portfolio summary (#8) ───────────────────────────────────────────────────
 
 function renderPortfolioSummary() {
@@ -1438,87 +1540,29 @@ function renderPosition() {
     return;
   }
 
-  // Clear position skeletons (#3)
-  ["pos-collateral","pos-debt","pos-equity","pos-leverage","pos-hf","pos-pool-hf","pos-net-apr","pos-headroom","pos-liq-days"]
-    .forEach(clearSkeleton);
+  // Clear the equity skeleton (#3) \u2014 the account view is rendered by
+  // renderPoolAccount(); the breakdown table replaces the old per-asset tiles.
+  clearSkeleton("pos-equity");
 
   $("no-position").classList.add("hidden");
   $("position-data").classList.remove("hidden");
   $("metrics-hero").classList.remove("hidden");
   ($("close-btn") as HTMLButtonElement).disabled = false;
   ($("resupply-btn") as HTMLButtonElement).disabled = false;
-  // Show Adjust mode
+  // Show Adjust mode (asset-scoped action panel)
   setActionCardMode("adjust", pos);
 
-  $("pos-collateral").textContent = `${fmt(pos.collateral, 4)} ${pos.asset.symbol}`;
-  $("pos-debt").textContent       = `${fmt(pos.debt, 4)} ${pos.asset.symbol}`;
+  // Account view: one Account Health (poolHF), aggregate totals (Equity / Net APY
+  // / Effective leverage), the always-visible breakdown table, days-to-liq, HF
+  // bar. For a single self-contained loop poolHF == this loop's hf, so a
+  // one-position account reads identically in spirit (one "Loop" row, account
+  // health = loop health). (#297)
+  renderPoolAccount();
 
-  // Equity with PnL (#15)
-  const pnl = getPnlEntry(selectedAsset.id, selectedPool.id);
-  if (pnl) {
-    const unrealizedPnl = pos.equity - pnl.deposit;
-    const pnlPct = pnl.deposit > 0 ? (unrealizedPnl / pnl.deposit * 100) : 0;
-    const pnlColor = unrealizedPnl >= 0 ? "hf-ok" : "hf-bad";
-    $("pos-equity").innerHTML = `${fmt(pos.equity, 4)} ${pos.asset.symbol} <span class="${pnlColor}" style="font-size:11px">(${unrealizedPnl >= 0 ? "+" : ""}${fmt(unrealizedPnl, 4)} / ${unrealizedPnl >= 0 ? "+" : ""}${fmt(pnlPct, 1)}%)</span>`;
-  } else {
-    $("pos-equity").textContent     = `${fmt(pos.equity, 4)} ${pos.asset.symbol}`;
-  }
-
-  // Animated leverage (#11)
-  animateNumber($("pos-leverage"), pos.leverage, 200, n => `${fmt(n, 2)}\u00D7`);
-
-  // Pool-wide health factor \u2014 Blend liquidates on the ACCOUNT-level (pool-wide)
-  // HF, not per-asset. Drive all the liquidation-relevant UI (hero, bar, gauge,
-  // warning, days-to-liq) off poolHF so a cross-collateralized account is not
-  // shown as "liquidation imminent" on a single-sided row. For a normal single
-  // self-contained loop, computePoolHF() === pos.hf, so the display is identical. (#294)
-  const hf     = pos.hf;
+  // Account-level (pool-wide) HF drives the liquidation warning banner. The
+  // hero, HF bar, days-to-liq and breakdown table are all rendered by
+  // renderPoolAccount() above. (#294 / #297)
   const poolHF = computePoolHF();
-  const sided  = isSingleSided(pos);
-
-  // Hero metrics \u2014 account-level HF
-  const heroHf = $("hero-hf");
-  heroHf.textContent = Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E";
-  heroHf.className = `metric-hero-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
-  $("hero-leverage").textContent = `${fmt(pos.leverage, 2)}\u00D7`;
-
-  // Per-asset (loop) health factor with icon (#22). For single-sided positions the
-  // per-asset HF is misleading (0 or \u221E) \u2014 show a neutral cross-collat tag. (#294)
-  const hfEl = $("pos-hf");
-  if (sided) {
-    hfEl.textContent = t("pos.crossCollat");
-    hfEl.className   = "metric-value";
-    const crossTip = "This asset is part of a cross-collateralized account; liquidation is based on your Account Health.";
-    hfEl.setAttribute("aria-label", crossTip);
-    hfEl.setAttribute("title", crossTip);
-  } else {
-    const hfIcon = hf > 1.1 ? "\u2713" : hf > 1.03 ? "\u26A0" : "\u2717";
-    const hfDec = expertMode ? 5 : 3;
-    hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
-    hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
-    // Text zone word so risk isn't colour/icon-only (#9)
-    hfEl.setAttribute("aria-label", `Loop health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZoneWord(hf)}`);
-    hfEl.removeAttribute("title");
-  }
-
-  // HF bar \u2014 driven off the account-level (pool-wide) HF (#294)
-  const barPct = Math.min(100, Math.max(0, (poolHF - 1) / 0.3 * 100));
-  const bar = $("hf-bar");
-  bar.style.width      = `${barPct}%`;
-  bar.style.background = poolHF > 1.1 ? "var(--success)" : poolHF > 1.03 ? "var(--warning)" : "var(--danger)";
-
-  // ARIA on HF bar (#8) — role="meter" with live valuetext incl. zone word
-  const hfZone = hfZoneWord(poolHF);
-  const barWrap = $("hf-bar").parentElement!;
-  barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
-  barWrap.setAttribute(
-    "aria-valuetext",
-    `Account health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZone}`,
-  );
-
-  // HF Gauge (#7)
-  const gaugeEl = document.querySelector(".hf-gauge-container") as HTMLElement;
-  if (gaugeEl) gaugeEl.innerHTML = renderHFGauge(poolHF);
 
   // HF warning banner (#2) — keyed off the account-level HF, only below 1.01 (#294)
   const warnEl = $("hf-pos-warning");
@@ -1542,78 +1586,6 @@ function renderPosition() {
     crossNote.classList.remove("hidden");
   } else {
     crossNote.classList.add("hidden");
-  }
-
-  // Pool-wide health factor with icon (#22)
-  const poolHFEl = $("pos-pool-hf");
-  const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
-  poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
-  poolHFEl.className   = `metric-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
-  // Text zone word so risk isn't colour/icon-only (#9)
-  poolHFEl.setAttribute("aria-label", `Pool health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZoneWord(poolHF)}`);
-
-  // Borrow headroom
-  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
-  const headroomEl = $("pos-headroom");
-  if (rs && rs.priceUsd > 0) {
-    const effectiveCollateral = pos.collateral * rs.cFactor;
-    const effectiveDebt       = pos.debt / rs.lFactor;
-    const headroom  = Math.max(0, effectiveCollateral - effectiveDebt) * rs.priceUsd;
-    headroomEl.textContent = `$${fmt(headroom, 2)}`;
-    headroomEl.className   = `metric-value mono ${headroom < 5 ? "hf-bad" : headroom < 20 ? "hf-warn" : ""}`;
-  } else {
-    headroomEl.textContent = "\u2014";
-    headroomEl.className   = "metric-value mono";
-  }
-
-  // Net APY with icon (#22)
-  const netAprEl = $("pos-net-apr");
-  const heroApyEl = $("hero-net-apy");
-  if (rs && pos.leverage > 0) {
-    const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
-    const netApy = aprToApy(posNetApr);
-    const apyIcon = netApy > 0 ? "\u2713" : "\u2717";
-    netAprEl.textContent = `${apyIcon} ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
-    netAprEl.className   = `metric-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
-    // Hero APY
-    heroApyEl.textContent = `${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%`;
-    heroApyEl.className   = `metric-hero-value ${netApy > 0 ? "hf-ok" : "hf-bad"}`;
-    // Tooltips with actual APR
-    const aprTip = `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(posNetApr, 2)}%`;
-    const posTip = $("pos-net-apr-tip");
-    if (posTip) posTip.setAttribute("data-tip", aprTip);
-    const heroTip = $("hero-net-apy-tip");
-    if (heroTip) heroTip.setAttribute("data-tip", aprTip);
-  } else {
-    netAprEl.textContent = "\u2014";
-    netAprEl.className   = "metric-value";
-    heroApyEl.textContent = "\u2014";
-    heroApyEl.className   = "metric-hero-value";
-  }
-
-  // Days until liquidation with ring (#18)
-  const liqDaysEl  = $("pos-liq-days");
-  const liqNoteEl  = $("pos-liq-note");
-  if (rs && pos.leverage > 0 && Number.isFinite(poolHF) && poolHF > 1) {
-    const spreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
-    if (spreadPct <= 0) {
-      liqDaysEl.textContent = t("dashboard.liqNever");
-      liqDaysEl.className   = "metric-value hf-ok";
-      liqNoteEl.textContent = "";
-    } else {
-      const daysLeft = Math.log(poolHF) / (spreadPct / 100) * 365;
-      if (daysLeft <= 365) {
-        liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>${t("dashboard.daysApprox", { n: Math.round(daysLeft) })}</span></span>`;
-      } else {
-        liqDaysEl.textContent = daysLeft > 3650 ? t("dashboard.over10y") : t("dashboard.daysApprox", { n: Math.round(daysLeft) });
-      }
-      liqDaysEl.className   = `metric-value ${daysLeft < 30 ? "hf-bad" : daysLeft < 90 ? "hf-warn" : "hf-ok"}`;
-      liqNoteEl.textContent = t("dashboard.interestSpread", { pct: fmt(aprToApy(spreadPct), 2) });
-    }
-  } else {
-    liqDaysEl.textContent = "\u2014";
-    liqDaysEl.className   = "metric-value";
-    liqNoteEl.textContent = "";
   }
 
   // Compound row: show swap estimate if there's pending BLND
@@ -2008,7 +1980,7 @@ async function loadAll() {
   // Show skeletons (#3)
   const skeletonIds = ["stat-cfactor","stat-max-lev","stat-liquidity","stat-util","stat-price",
     "supply-interest-apr","supply-blnd-apr","supply-net-apr","borrow-interest-apr","borrow-blnd-apr","borrow-net-cost",
-    "pos-collateral","pos-debt","pos-equity","pos-leverage","pos-hf","pos-pool-hf","pos-net-apr","pos-headroom","pos-liq-days"];
+    "pos-equity"];
   skeletonIds.forEach(setSkeleton);
 
   try {

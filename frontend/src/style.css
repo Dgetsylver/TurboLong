@@ -560,6 +560,66 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 /* #294 — cross-collateralized account explainer */
 .cross-asset-note { font-size: 12px; color: var(--text-2); background: var(--surface2); border-radius: var(--r-sm); padding: 8px 12px; margin-top: 8px; }
 
+/* ── #297 — pool ACCOUNT panel ─────────────────────────────────────────────── */
+
+/* Account-health hero cell: HF value + bar + gauge + days-to-liq line */
+.metric-hero-account { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.metric-hero-account .hf-bar-wrap { width: 100%; margin-top: 7px; }
+.metric-hero-account .hf-gauge-container { margin-top: 2px; }
+.metric-hero-liq { font-size: 12px; font-weight: 600; color: var(--text-2); margin-top: 2px; }
+.metric-hero-liq .liq-countdown-wrap { justify-content: center; }
+
+/* Account aggregates row (Equity etc.) */
+.pool-account-aggregates {
+  display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;
+}
+.pool-agg-item {
+  flex: 1 1 140px; background: var(--metric-bg); border: 1px solid var(--border);
+  border-radius: var(--r-xs); padding: 10px 12px;
+}
+
+/* Always-visible per-asset breakdown table */
+.pool-breakdown-section { margin-bottom: 16px; }
+.pool-breakdown-title {
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-3); margin: 0 0 8px;
+}
+.pool-breakdown-wrap {
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface); overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.pool-breakdown { width: 100%; border-collapse: collapse; }
+.pool-breakdown thead th {
+  text-align: right; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-3); padding: 10px 14px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.pool-breakdown th.pb-asset, .pool-breakdown th.pb-role { text-align: left; }
+.pool-breakdown tbody td {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  font-size: 14px; text-align: right; vertical-align: middle; font-family: var(--mono);
+}
+.pool-breakdown tbody tr:last-child td { border-bottom: none; }
+.pool-breakdown tbody tr:hover { background: var(--tab-hover-bg); }
+.pool-breakdown .pb-asset { text-align: left; }
+.pool-breakdown .pb-num { font-family: var(--mono); }
+.pool-breakdown .pb-sym { font-weight: 700; }
+.pool-breakdown .pb-role { text-align: left; font-family: inherit; }
+
+/* Role badges */
+.pb-badge {
+  display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  padding: 2px 8px; border-radius: 99px; white-space: nowrap;
+}
+.pb-badge-loop { background: var(--primary-glow); color: var(--primary); }
+.pb-badge-borrow { background: var(--warning-bg); color: var(--warning); }
+.pb-badge-collateral { background: var(--surface2); color: var(--text-2); }
+
+/* Account note */
+.pool-account-note {
+  font-size: 12px; color: var(--text-3); margin: 8px 2px 0; line-height: 1.5;
+}
+
 /* Liquidation countdown ring */
 .liq-ring-pulse { animation: liq-pulse 1.5s ease-in-out infinite; }
 @keyframes liq-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
