@@ -88,3 +88,35 @@ The admin can replace the contract code, so treat it like a protocol key:
 hold it in a hardware signer or multisig, never in source or CI. Rotating the
 admin is not yet an entrypoint; if needed, add a `set_admin(new)` guarded by the
 current admin in a future version (and ship it via this same upgrade flow).
+
+## Share-token wiring & tokenization (D2)
+
+The per-user share ledger is the standalone SEP-41 token
+(`contracts/tokens/vault_share`), not strategy storage. The strategy is the
+token's **minter** (mints on deposit, burns on withdraw) and reads balances
+from it.
+
+### Deploy sequence (fresh deploy — e.g. each mainnet vault)
+1. Deploy the strategy (`scripts/deploy_strategy.ts`); note its address `S`.
+2. Deploy the token with `minter = S`, `admin = <admin>`, `decimals = 7`,
+   `name/symbol` (e.g. `blvSHARE`).
+3. `S.set_share_token(<token>)` (admin-signed) — **required before the first
+   deposit**; `deposit` traps if the token isn't set.
+4. From here the token is canonical: `deposit` mints to the user (and the
+   one-time inflation lockup to `S`'s own inert address, keeping
+   `token.total_supply == total_shares`); `withdraw` burns; `balance` reads the
+   token.
+
+Fresh deploys need no migration — there are no legacy `VaultPos` holders.
+
+### Tokenizing an upgraded legacy deployment (e.g. the testnet vault)
+If a deployment predates the token (shares in `VaultPos`):
+1. Upgrade the strategy WASM (above) and `set_share_token`.
+2. For each known holder, call `migrate_position(holder)` — permissionless,
+   idempotent; mints their `VaultPos` shares into the token and zeroes the
+   legacy entry. (No theft possible: it only moves a holder's own shares.)
+3. Reconcile the lockup: after all holders are migrated,
+   `token.total_supply()` will be `total_shares - FIRST_DEPOSIT_LOCKUP`. Mint
+   the remaining lockup to the strategy's own address so supply matches
+   `total_shares` (or accept the constant lockup gap and document it).
+4. Verify: `Σ token.balance(holder) + lockup == reserves.total_shares`.
