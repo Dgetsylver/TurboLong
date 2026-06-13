@@ -742,6 +742,115 @@ export async function fetchUserPositions(
   return { byAsset };
 }
 
+// ── Pool-account aggregation (#297) ────────────────────────────────────────────
+//
+// Blend cross-margins ALL your positions in a pool into ONE account with ONE
+// liquidation health factor. aggregatePoolAccount blends every `byAsset` position
+// into a single PoolAccountSummary: one account-wide HF (identical math to
+// main.ts computePoolHF), USD aggregates, an equity-weighted net APY, an effective
+// leverage, a days-to-liquidation estimate, and a per-asset breakdown for display
+// (the rows are a BREAKDOWN, not separate positions — they share one HF).
+
+export type PoolAccountRole = "loop" | "borrow" | "collateral";
+
+export interface PoolAccountRow {
+  symbol:   string;
+  supplied: number;   // full tokens supplied (collateral) in this asset, 0 if none
+  borrowed: number;   // full tokens borrowed (debt) in this asset, 0 if none
+  role:     PoolAccountRole;
+  leverage: number;   // only meaningful for "loop" rows; 1 otherwise
+}
+
+export interface PoolAccountSummary {
+  poolHF:        number;  // account-wide HF (Infinity when no debt)
+  equityUsd:     number;
+  netApy:        number;  // %, equity-weighted across rows, compounded
+  effLeverage:   number;  // collateral value / equity value (>=1)
+  liqDays:       number | null;  // est. days to liquidation; null when not applicable, Infinity when never
+  collateralUsd: number;
+  debtUsd:       number;
+  rows:          PoolAccountRow[];
+}
+
+// Mirror of main.ts `aprToApy` — kept local so the aggregator is self-contained.
+const aprToApyLocal = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+
+export function aggregatePoolAccount(
+  positions: AssetPosition[],
+  reserves: ReserveStats[],
+): PoolAccountSummary {
+  let equityUsd          = 0;
+  let collateralUsd      = 0;
+  let debtUsd            = 0;
+  // Pool-wide HF: identical math to computePoolHF() in main.ts.
+  let weightedCollateral = 0;   // Σ collateral * cFactor * priceUsd
+  let weightedDebt       = 0;   // Σ (debt / lFactor) * priceUsd
+  // Equity-weighted net APR accumulation.
+  let weightedAprSum     = 0;   // Σ posNetApr * (equity * priceUsd)
+  // Dominant-debt asset's spread feeds the pool-wide days-to-liquidation estimate.
+  let dominantDebtUsd    = 0;
+  let dominantSpreadPct  = 0;
+  const rows: PoolAccountRow[] = [];
+
+  for (const pos of positions) {
+    const rs = reserves.find(r => r.asset.id === pos.asset.id);
+    if (!rs) continue; // skip positions with no matching reserve (no price)
+    const priceUsd = rs.priceUsd;
+
+    equityUsd     += pos.equity     * priceUsd;
+    collateralUsd += pos.collateral * priceUsd;
+    debtUsd       += pos.debt       * priceUsd;
+
+    weightedCollateral += pos.collateral * rs.cFactor * priceUsd;
+    weightedDebt       += (pos.debt / rs.lFactor) * priceUsd;
+
+    // Per-row net APR mirrors renderPosition / overview:
+    //   netSupplyApr*lev - netBorrowCost*(lev-1)
+    const posNetApr = rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1);
+    weightedAprSum += posNetApr * (pos.equity * priceUsd);
+
+    // Track the asset carrying the most debt (USD) for the liq-runway spread.
+    const posDebtUsd = pos.debt * priceUsd;
+    if (posDebtUsd > dominantDebtUsd) {
+      dominantDebtUsd   = posDebtUsd;
+      dominantSpreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
+    }
+
+    const role: PoolAccountRole =
+      pos.collateral > 0 && pos.debt > 0 ? "loop"
+        : pos.debt > 0 ? "borrow"
+          : "collateral";
+
+    rows.push({
+      symbol:   pos.asset.symbol,
+      supplied: pos.collateral,
+      borrowed: pos.debt,
+      role,
+      leverage: role === "loop" ? pos.leverage : 1,
+    });
+  }
+
+  const poolHF      = weightedDebt > 0 ? weightedCollateral / weightedDebt : Number.POSITIVE_INFINITY;
+  const effLeverage = equityUsd > 0 ? collateralUsd / equityUsd : 1;
+  const netApy      = equityUsd > 0 ? aprToApyLocal(weightedAprSum / equityUsd) : 0;
+
+  // Days to liquidation — same formula renderPosition uses today, but fed poolHF
+  // and the dominant-debt asset's interest spread:
+  //   daysLeft = ln(poolHF) / (spreadPct/100) * 365
+  // null when there's no debt / no spread to derive a runway from; Infinity when
+  // the spread is non-positive (debt cheaper than supply → never liquidates on rate).
+  let liqDays: number | null = null;
+  if (Number.isFinite(poolHF) && poolHF > 1 && debtUsd > 0) {
+    if (dominantSpreadPct <= 0) {
+      liqDays = Number.POSITIVE_INFINITY;
+    } else {
+      liqDays = Math.log(poolHF) / (dominantSpreadPct / 100) * 365;
+    }
+  }
+
+  return { poolHF, equityUsd, netApy, effLeverage, liqDays, collateralUsd, debtUsd, rows };
+}
+
 export async function fetchAssetBalance(userAddress: string, assetId: string): Promise<number> {
   const token = new Contract(assetId);
   const raw   = await simulate(
