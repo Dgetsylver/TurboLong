@@ -577,6 +577,7 @@
 
               <div id="position-data" class="hidden">
                 <div id="hf-pos-warning" class="hf-pos-warning hidden"></div>
+                <p id="cross-asset-note" class="cross-asset-note hidden"></p>
 
                 <!-- Position data as table rows -->
                 <div class="position-grid">
@@ -597,7 +598,7 @@
                     <span class="metric-value mono" id="pos-leverage">—</span>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Asset HF <span class="tooltip" data-tip="Health Factor for this asset only. HF = (collateral x c_factor) / (debt / l_factor). Below 1.0 = liquidatable.">?</span></span>
+                    <span class="metric-label">Loop HF <span class="tooltip" data-tip="Health factor of this single-asset loop. Your account is liquidated on the pool-wide Account Health, shown separately.">?</span></span>
                     <span class="metric-value" id="pos-hf">—</span>
                     <div class="hf-bar-wrap" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Health factor"><div class="hf-bar" id="hf-bar"></div></div>
                     <div class="hf-gauge-container"></div>
