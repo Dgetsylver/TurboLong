@@ -135,6 +135,11 @@ const en: Dict = {
   "status.svc.aquarius": "Aquarius AMM API",
   "status.allGood": "All systems operational",
   "status.someIssues": "Some services are degraded",
+  // remove funds (proportional partial close)
+  "action.removeFunds": "Remove Funds",
+  "removeFunds.disclaimer": "Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.",
+  "removeFunds.inPosition": "In position",
+  "removeFunds.useClose": "Use Close to exit fully.",
   // P4 — disclaimer modal
   "disclaimer.title": "Important Disclaimer",
   "disclaimer.body1": "This is an experimental project. Using leveraged positions on DeFi protocols carries significant financial risk, including the complete loss of your deposited funds.",
@@ -440,6 +445,10 @@ const es: Dict = {
   "status.svc.aquarius": "API del AMM Aquarius",
   "status.allGood": "Todos los sistemas operativos",
   "status.someIssues": "Algunos servicios están degradados",
+  "action.removeFunds": "Retirar fondos",
+  "removeFunds.disclaimer": "Retira parte de tu capital y deshace la posición de forma proporcional — tu apalancamiento y factor de salud no cambian.",
+  "removeFunds.inPosition": "En posición",
+  "removeFunds.useClose": "Usa Cerrar para salir por completo.",
   // P4 — disclaimer modal
   "disclaimer.title": "Aviso importante",
   "disclaimer.body1": "Este es un proyecto experimental. Usar posiciones apalancadas en protocolos DeFi conlleva un riesgo financiero significativo, incluida la pérdida total de los fondos que deposites.",
@@ -745,6 +754,10 @@ const pt: Dict = {
   "status.svc.aquarius": "API do AMM Aquarius",
   "status.allGood": "Todos os sistemas operacionais",
   "status.someIssues": "Alguns serviços estão degradados",
+  "action.removeFunds": "Remover fundos",
+  "removeFunds.disclaimer": "Saca parte do seu principal e desfaz a posição proporcionalmente — sua alavancagem e fator de saúde permanecem iguais.",
+  "removeFunds.inPosition": "Na posição",
+  "removeFunds.useClose": "Use Fechar para sair completamente.",
   // P4 — disclaimer modal
   "disclaimer.title": "Aviso importante",
   "disclaimer.body1": "Este é um projeto experimental. Usar posições alavancadas em protocolos DeFi acarreta risco financeiro significativo, incluindo a perda total dos fundos depositados.",

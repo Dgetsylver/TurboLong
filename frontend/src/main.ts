@@ -45,6 +45,7 @@ import {
   buildClaimXdr,
   buildIncreaseLeverageXdr,
   buildDecreaseLeverageXdr,
+  buildRemoveFundsXdr,
   buildResupplyXdr,
   buildSwapBlndXdr,
   estimateBlndSwap,
@@ -1591,7 +1592,7 @@ async function updateCompoundEstimate() {
 
 // ── Open / Adjust mode switching ──────────────────────────────────────────
 
-let actionMode: "open" | "adjust" | "add-funds" = "open";
+let actionMode: "open" | "adjust" | "add-funds" | "remove-funds" = "open";
 
 function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
   // When switching to adjust, default to the "adjust leverage" sub-tab
@@ -1603,12 +1604,15 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
   $("open-deposit-group").classList.toggle("hidden", isAdjust);
   $("adjust-current").classList.toggle("hidden", !isAdjust);
   $("add-funds-group").classList.add("hidden");
+  $("remove-funds-group").classList.add("hidden");
   $("open-btn").classList.toggle("hidden", isAdjust);
   $("adjust-btn").classList.toggle("hidden", !isAdjust);
   $("add-funds-btn").classList.add("hidden");
+  $("remove-funds-btn").classList.add("hidden");
   $("open-disclaimer").classList.toggle("hidden", isAdjust);
   $("adjust-disclaimer").classList.toggle("hidden", !isAdjust);
   $("add-funds-disclaimer").classList.add("hidden");
+  $("remove-funds-disclaimer").classList.add("hidden");
 
   // Reset adjust sub-tabs to "Adjust Leverage"
   document.querySelectorAll<HTMLButtonElement>(".adjust-tab").forEach(t => {
@@ -1632,25 +1636,43 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
   updatePreview();
 }
 
-function switchAdjustSubTab(sub: "leverage" | "add-funds") {
+function switchAdjustSubTab(sub: "leverage" | "add-funds" | "remove-funds") {
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
-  actionMode = sub === "leverage" ? "adjust" : "add-funds";
+  actionMode = sub === "leverage" ? "adjust" : sub;
 
   document.querySelectorAll<HTMLButtonElement>(".adjust-tab").forEach(t => {
     t.classList.toggle("active", t.dataset.adjust === sub);
   });
 
-  const isAddFunds = sub === "add-funds";
-  $("adjust-current").classList.toggle("hidden", isAddFunds);
+  const isAddFunds    = sub === "add-funds";
+  const isRemoveFunds = sub === "remove-funds";
+  // The leverage slider/preview block is shared by leverage + add-funds; for
+  // remove-funds the leverage is fixed (proportional unwind) so we hide it.
+  $("adjust-current").classList.toggle("hidden", isAddFunds || isRemoveFunds);
   $("add-funds-group").classList.toggle("hidden", !isAddFunds);
-  $("adjust-btn").classList.toggle("hidden", isAddFunds);
+  $("remove-funds-group").classList.toggle("hidden", !isRemoveFunds);
+  $("adjust-btn").classList.toggle("hidden", isAddFunds || isRemoveFunds);
   $("add-funds-btn").classList.toggle("hidden", !isAddFunds);
-  $("adjust-disclaimer").classList.toggle("hidden", isAddFunds);
+  $("remove-funds-btn").classList.toggle("hidden", !isRemoveFunds);
+  $("adjust-disclaimer").classList.toggle("hidden", isAddFunds || isRemoveFunds);
   $("add-funds-disclaimer").classList.toggle("hidden", !isAddFunds);
+  $("remove-funds-disclaimer").classList.toggle("hidden", !isRemoveFunds);
 
-  if (isAddFunds) {
+  if (isRemoveFunds) {
+    $("action-card-title").textContent = t("action.removeFunds");
+    $("remove-funds-symbol").textContent = selectedAsset.symbol;
+    // Lock the leverage slider to the current position leverage (it stays
+    // constant through the proportional unwind) so the shared preview is right.
+    const slider = $("leverage-slider") as HTMLInputElement;
+    const numIn  = $("leverage-input")  as HTMLInputElement;
+    const curLev = Math.round(pos.leverage * 10) / 10;
+    slider.value = String(curLev);
+    numIn.value  = curLev.toFixed(1);
+    ($("remove-funds-input") as HTMLInputElement).value = "";
+    refreshRemoveFundsBalance();
+  } else if (isAddFunds) {
     $("action-card-title").textContent = t("action.addFunds");
     $("leverage-label").innerHTML = 'Leverage <span class="tooltip" data-tip="Leverage for the new deposit. This deposit is added on top of your existing position.">?</span>';
     // Default leverage to current position leverage
@@ -1714,17 +1736,24 @@ function updatePreview() {
   const pos     = positions.byAsset.get(selectedAsset.id);
   let projectedNetApy = Number.NaN; // captured for the negative-APY warning (P2)
 
-  // In adjust mode, use equity as the base; in add-funds mode, use the add-funds input; in open mode, use initial deposit
+  // In adjust mode, use equity as the base; in add-funds mode, use the add-funds
+  // input; in remove-funds mode, use the post-unwind equity (equity − remove);
+  // in open mode, use initial deposit.
+  const removeAmt = actionMode === "remove-funds"
+    ? (Number.parseFloat(($("remove-funds-input") as HTMLInputElement).value) || 0)
+    : 0;
   const equity  = (actionMode === "adjust" && pos) ? pos.equity
     : actionMode === "add-funds" ? (Number.parseFloat(($("add-funds-input") as HTMLInputElement).value) || 0)
+    : (actionMode === "remove-funds" && pos) ? Math.max(0, pos.equity - removeAmt)
     : (Number.parseFloat(($("initial-input") as HTMLInputElement).value) || 0);
   const supply  = equity * lev;
   const borrow  = equity * (lev - 1);
 
-  // When adjusting an existing position, its supply/borrow are already in the
-  // pool totals. Pass the net delta so projectRates doesn't double-count.
-  const oldSupply = (actionMode === "adjust" && pos) ? pos.collateral : 0;
-  const oldBorrow = (actionMode === "adjust" && pos) ? pos.debt : 0;
+  // When adjusting or removing funds on an existing position, its supply/borrow
+  // are already in the pool totals. Pass the net delta so projectRates doesn't
+  // double-count.
+  const oldSupply = ((actionMode === "adjust" || actionMode === "remove-funds") && pos) ? pos.collateral : 0;
+  const oldBorrow = ((actionMode === "adjust" || actionMode === "remove-funds") && pos) ? pos.debt : 0;
 
   $("prev-lev").textContent         = `${lev.toFixed(2)}\u00D7`;
   $("prev-supply").textContent      = `${fmt(supply, 2)} ${selectedAsset.symbol}`;
@@ -1883,6 +1912,21 @@ function updatePreview() {
     ($("add-funds-btn") as HTMLButtonElement).textContent = addAmt > 0
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
       : "Add Funds";
+  }
+
+  // Remove Funds button: proportional partial close at constant leverage.
+  // The whole equity must stay in via Close, so amounts \u2265 equity are blocked.
+  if (actionMode === "remove-funds" && pos) {
+    const removeBtn = $("remove-funds-btn") as HTMLButtonElement;
+    const tooMuch = removeAmt >= pos.equity;
+    removeBtn.disabled = removeAmt <= 0 || tooMuch || selectedPool.status !== 1;
+    if (tooMuch) {
+      removeBtn.textContent = t("removeFunds.useClose");
+    } else if (removeAmt > 0) {
+      removeBtn.textContent = `Remove ${fmt(removeAmt, 2)} ${selectedAsset.symbol}`;
+    } else {
+      removeBtn.textContent = t("action.removeFunds");
+    }
   }
 
   refreshFeeEstimates();
@@ -2319,6 +2363,53 @@ async function addFundsToPosition() {
     }
   } finally {
     setLoading($("add-funds-btn") as HTMLButtonElement, false);
+  }
+}
+
+/**
+ * Remove funds: proportional partial close at constant leverage. Withdraws part
+ * of the user's principal, repaying debt and withdrawing collateral by the same
+ * fraction so leverage and HF are unchanged. submit_with_allowance nets the
+ * transfers, so the wallet receives ~the requested amount and no approve step is
+ * needed (net flow is pool → user).
+ */
+async function removeFundsFromPosition() {
+  if (!userAddress) return;
+  if (demoMode) { toast("Demo mode — connect a real wallet to transact", "info"); return; }
+  if (selectedPool.status !== 1) { toast("Pool is frozen — cannot remove funds", "error"); return; }
+  const pos = positions.byAsset.get(selectedAsset.id);
+  if (!pos) return;
+
+  const amount = Number.parseFloat(($("remove-funds-input") as HTMLInputElement).value);
+  if (Number.isNaN(amount) || amount <= 0) { toast("Enter a valid amount", "error"); return; }
+  if (amount >= pos.equity) { toast(t("removeFunds.useClose"), "error"); return; }
+
+  setLoading($("remove-funds-btn") as HTMLButtonElement, true);
+  showTxStepper(["Remove Funds"]);
+  try {
+    const xdr = await buildRemoveFundsXdr(selectedPool, userAddress, pos, amount);
+    const h = await signAndSubmit(xdr, `Remove ${fmt(amount, 2)} ${selectedAsset.symbol}`, 0);
+    recordPositionEvent("rebalance", h, pos.hf);
+    hideTxStepper();
+    // Reduce the tracked PnL deposit by the withdrawn principal.
+    const existingPnl = getPnlEntry(selectedAsset.id, selectedPool.id);
+    if (existingPnl) {
+      savePnlEntry(selectedAsset.id, selectedPool.id, Math.max(0, existingPnl.deposit - amount));
+    }
+    ($("remove-funds-input") as HTMLInputElement).value = "";
+    await loadAll();
+  } catch (e: any) {
+    markStepperError(1);
+    const msg: string = e?.message ?? "Remove funds failed";
+    if (msg.includes("#1205") || msg.includes("InvalidHf")) {
+      toast("Health factor too low — try a smaller amount.", "error");
+    } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
+      toast("Pool utilization limit reached — not enough liquidity to withdraw.", "error");
+    } else {
+      toast(msg.slice(0, 200), "error");
+    }
+  } finally {
+    setLoading($("remove-funds-btn") as HTMLButtonElement, false);
   }
 }
 
@@ -3331,11 +3422,12 @@ $("compound-btn").addEventListener("click",   claimAndConvert);
 $("resupply-btn").addEventListener("click",   resupply);
 $("adjust-btn").addEventListener("click",    adjustLeverage);
 $("add-funds-btn").addEventListener("click", addFundsToPosition);
+$("remove-funds-btn").addEventListener("click", removeFundsFromPosition);
 
-// Adjust sub-tabs (Adjust Leverage / Add Funds)
+// Adjust sub-tabs (Adjust Leverage / Add Funds / Remove Funds)
 document.querySelectorAll<HTMLButtonElement>(".adjust-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    switchAdjustSubTab(btn.dataset.adjust as "leverage" | "add-funds");
+    switchAdjustSubTab(btn.dataset.adjust as "leverage" | "add-funds" | "remove-funds");
   });
 });
 
@@ -3359,6 +3451,25 @@ async function refreshAddFundsBalance() {
     const bal = await fetchAssetBalance(userAddress, selectedAsset.id);
     $("add-funds-balance").textContent = `${fmt(bal, 4)} ${selectedAsset.symbol}`;
   } catch { /* ignore */ }
+}
+
+// Remove Funds input events
+($("remove-funds-input") as HTMLInputElement).addEventListener("input", updatePreview);
+$("remove-funds-max").addEventListener("click", () => {
+  const pos = positions.byAsset.get(selectedAsset.id);
+  if (!pos || pos.equity <= 0) return;
+  // Leave a tiny dust floor so the amount stays strictly below equity and never
+  // trips the "use Close to exit fully" guard in buildRemoveFundsXdr.
+  const max = Math.max(0, pos.equity - 0.0001);
+  ($("remove-funds-input") as HTMLInputElement).value = String(Math.floor(max * 1e7) / 1e7);
+  updatePreview();
+});
+
+function refreshRemoveFundsBalance() {
+  const pos = positions.byAsset.get(selectedAsset.id);
+  $("remove-funds-balance").textContent = pos
+    ? `${fmt(pos.equity, 4)} ${selectedAsset.symbol}`
+    : `— ${selectedAsset.symbol}`;
 }
 
 let _leverageDebounce: ReturnType<typeof setTimeout> | null = null;

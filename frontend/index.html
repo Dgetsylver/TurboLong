@@ -405,6 +405,7 @@
               <div id="adjust-tabs" class="adjust-tabs hidden">
                 <button class="adjust-tab active" data-adjust="leverage">Adjust Leverage</button>
                 <button class="adjust-tab" data-adjust="add-funds">Add Funds</button>
+                <button class="adjust-tab" data-adjust="remove-funds" data-i18n="action.removeFunds">Remove Funds</button>
               </div>
 
               <!-- Adjust mode: current leverage indicator -->
@@ -422,6 +423,17 @@
                   <span class="input-suffix" id="add-funds-symbol">—</span>
                 </div>
                 <span class="balance-hint">Wallet: <span id="add-funds-balance">—</span></span>
+              </div>
+
+              <!-- Remove funds mode (proportional partial close) -->
+              <div id="remove-funds-group" class="form-group hidden">
+                <label data-i18n="action.removeFunds">Remove Funds</label>
+                <div class="input-wrap">
+                  <input type="number" id="remove-funds-input" class="input mono" placeholder="100" min="0" step="any" />
+                  <button id="remove-funds-max" class="btn btn-ghost btn-sm input-max-btn" data-i18n="common.max">Max</button>
+                  <span class="input-suffix" id="remove-funds-symbol">—</span>
+                </div>
+                <span class="balance-hint"><span data-i18n="removeFunds.inPosition">In position</span>: <span id="remove-funds-balance">—</span></span>
               </div>
 
               <div class="form-group">
@@ -515,10 +527,12 @@
               <button id="open-btn" class="btn btn-primary btn-lg">Open Position</button>
               <button id="adjust-btn" class="btn btn-primary btn-lg hidden">Adjust Leverage</button>
               <button id="add-funds-btn" class="btn btn-primary btn-lg hidden">Add Funds</button>
+              <button id="remove-funds-btn" class="btn btn-secondary btn-lg hidden" data-i18n="action.removeFunds">Remove Funds</button>
               <p class="fee-hint mono" id="open-fee-estimate" aria-live="polite">Est. network fee: --</p>
               <p class="disclaimer" id="open-disclaimer">Two transactions: (1) token approve, (2) <code>submit_with_allowance</code>.</p>
               <p class="disclaimer hidden" id="adjust-disclaimer">Adjusts leverage by borrowing more (increase) or withdrawing &amp; repaying (decrease).</p>
               <p class="disclaimer hidden" id="add-funds-disclaimer">Deposits additional funds into your existing position at the selected leverage.</p>
+              <p class="disclaimer hidden" id="remove-funds-disclaimer" data-i18n="removeFunds.disclaimer">Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.</p>
             </section>
 
             <!-- Position + Market Data (right, wide) -->

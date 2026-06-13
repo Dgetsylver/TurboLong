@@ -1247,6 +1247,100 @@ export async function buildDecreaseLeverageXdr(
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
 }
 
+// ── Remove funds (proportional partial close at constant leverage) ────────
+
+/** Result of unwinding a fraction of a leveraged position. */
+export interface RemoveFundsAmounts {
+  f:           number; // fraction of the position unwound (0 < f < 1)
+  repay:       number; // debt repaid (full tokens)
+  withdraw:    number; // collateral withdrawn (full tokens)
+  netToUser:   number; // tokens sent to wallet = withdraw − repay = f × equity
+  newLeverage: number; // leverage after unwind (unchanged — proportional)
+  newHf:       number; // health factor after unwind (unchanged — proportional)
+}
+
+/**
+ * Pure math for a proportional partial unwind at CONSTANT leverage.
+ *
+ * Removing `removeUnderlying` of principal scales the whole position by (1−f)
+ * where f = removeUnderlying / equity. Because collateral and debt shrink by
+ * the same fraction, leverage (collateral/equity) and health factor are both
+ * unchanged. The pool nets the transfers: withdraw − repay = f × (collateral −
+ * debt) = f × equity = removeUnderlying flows to the user's wallet.
+ */
+export function removeFundsAmounts(pos: AssetPosition, removeUnderlying: number): RemoveFundsAmounts {
+  if (pos.equity <= 0) throw new Error("No equity in position");
+  if (removeUnderlying <= 0) throw new Error("Amount must be positive");
+  if (removeUnderlying >= pos.equity) throw new Error("Remove the full equity via Close instead");
+
+  const f        = removeUnderlying / pos.equity; // 0 < f < 1
+  const repay    = f * pos.debt;
+  const withdraw = f * pos.collateral;
+  return {
+    f,
+    repay,
+    withdraw,
+    netToUser:   withdraw - repay,
+    newLeverage: pos.leverage, // (1−f)·collateral / (1−f)·equity = collateral/equity
+    newHf:       pos.hf,       // same ratio of effective collateral to debt
+  };
+}
+
+/**
+ * Build a REPAY + WITHDRAW transaction that removes part of the user's
+ * principal while keeping the position open at the SAME leverage and health
+ * factor — a proportional partial close.
+ *
+ * The position is scaled to (1−f) where f = removeUnderlying / equity:
+ * collateral and debt both shrink by f, so collateral/equity (leverage) and the
+ * effective-collateral/debt ratio (HF) are unchanged. submit_with_allowance
+ * NETS the transfers, so the wallet receives withdraw − repay = f × equity ≈
+ * removeUnderlying.
+ *
+ * REPAY MUST PRECEDE WITHDRAW so the health factor only ever rises (debt down
+ * first) then returns to its starting value (collateral down) — it never dips
+ * mid-submit. The simulation gate enforces the pool's HF check, so any drift
+ * that would breach HF fails here rather than on-chain.
+ *
+ * Result: same leverage, same HF, position scaled to (1−f), user receives
+ * ~removeUnderlying.
+ */
+export async function buildRemoveFundsXdr(
+  pool: PoolDef,
+  userAddress: string,
+  pos: AssetPosition,
+  removeUnderlying: number,
+): Promise<string> {
+  const { repay, withdraw } = removeFundsAmounts(pos, removeUnderlying);
+
+  const repayStroops    = BigInt(Math.round(repay * 1e7));
+  const withdrawStroops = BigInt(Math.round(withdraw * 1e7));
+
+  // REPAY first (HF rises) then WITHDRAW (HF returns) so it never dips.
+  // Skip REPAY when the position carries no debt (pure collateral withdraw).
+  const reqItems: xdr.ScVal[] = [];
+  if (pos.debt > 0) {
+    reqItems.push(buildRequest(pos.asset.id, repayStroops, REPAY));
+  }
+  reqItems.push(buildRequest(pos.asset.id, withdrawStroops, WITHDRAW_COLLATERAL));
+  const requests = buildRequestsVec(reqItems);
+
+  const poolContract = new Contract(pool.id);
+  const addrScVal    = new Address(userAddress).toScVal();
+  const acc          = await server.getAccount(userAddress);
+  const tx = new TransactionBuilder(acc, {
+    fee: (BigInt(BASE_FEE) * 10n).toString(),
+    networkPassphrase: _cfg.passphrase,
+  })
+    .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
+    .setTimeout(60).build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim))
+    throw new Error(`Remove funds simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
+  return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
+}
+
 // ── Resupply (add collateral to existing position) ───────────────────────
 
 /**
