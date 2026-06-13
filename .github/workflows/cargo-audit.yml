@@ -1,0 +1,45 @@
+name: Cargo Audit
+
+# Scans both Rust crates (root simulator + the Soroban strategy contract) for
+# RustSec advisories. Runs on Cargo manifest/lock changes and weekly on a cron
+# so newly published advisories are caught even without a code change.
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/cargo-audit.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/cargo-audit.yml"
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - "."
+          - "contracts/strategies/blend_leverage"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit ${{ matrix.crate }}
+        working-directory: ${{ matrix.crate }}
+        # Ignored advisories (if any) are tracked in audit.toml next to each
+        # crate; an empty/missing audit.toml means "fail on any advisory".
+        run: cargo audit
