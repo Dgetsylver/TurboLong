@@ -54,7 +54,7 @@
       <div class="top-nav-right" id="wallet-area">
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
-          <button id="expert-toggle" class="settings-dropdown-item"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
+          <button id="expert-toggle" class="settings-dropdown-item" data-tip="Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only." data-tip-i18n="settings.expertTip"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item"><span data-i18n="settings.theme">Theme</span> <span class="settings-badge">&#9790;</span></button>
           <button id="shortcuts-help-btn" class="settings-dropdown-item"><span data-i18n="settings.shortcuts">Keyboard Shortcuts</span> <span class="settings-badge">?</span></button>
           <button id="alerts-menu-btn" class="settings-dropdown-item"><span data-i18n="settings.alerts">Set up alerts</span> <span class="settings-badge">&#128276;</span></button>
@@ -123,7 +123,7 @@
         </nav>
       </div>
       <div class="sidebar-bottom">
-        <button id="mobile-expert-toggle" class="sidebar-btn expert-toggle" data-tip="Expert mode: lower minimum HF to 1.005">Expert</button>
+        <button id="mobile-expert-toggle" class="sidebar-btn expert-toggle" data-tip="Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only." data-tip-i18n="settings.expertTip">Expert</button>
         <button id="mobile-theme-toggle" class="sidebar-btn theme-toggle" data-tip="Toggle light/dark mode">&#9790;</button>
       </div>
     </aside>
@@ -439,6 +439,32 @@
                   <span class="slider-zone zone-maxi-degen hidden" id="zone-maxi-degen" data-zone="maxi-degen">Maxi Degen</span>
                 </div>
                 <p class="hf-warning hidden" id="non-borrowable-notice"></p>
+
+                <!-- Live HF risk band (P2 — always visible while previewing) -->
+                <div id="risk-band" class="risk-band">
+                  <div class="risk-band-head">
+                    <span class="risk-band-label" data-i18n="risk.bandLabel">Risk level</span>
+                    <span class="risk-band-status" id="risk-band-status">—</span>
+                  </div>
+                  <div class="risk-band-track">
+                    <span class="risk-seg risk-seg-safe" data-zone="safe" data-i18n="risk.safe">Safe</span>
+                    <span class="risk-seg risk-seg-caution" data-zone="caution" data-i18n="risk.caution">Caution</span>
+                    <span class="risk-seg risk-seg-high" data-zone="high" data-i18n="risk.high">High risk</span>
+                    <span class="risk-seg risk-seg-nearLiq" data-zone="nearLiq" data-i18n="risk.nearLiq">Near liquidation</span>
+                  </div>
+                </div>
+
+                <!-- Inline open-position warnings (P2) -->
+                <p class="hf-warning hidden" id="neg-apy-warning" data-i18n="warn.negApy">&#9888; Projected net APY is negative at this leverage — you'd pay more in borrow cost than you earn.</p>
+                <p class="hf-warning hidden" id="frozen-pool-warning" data-i18n="warn.frozenPool">&#9888; This pool is frozen. New positions can't be opened, and exiting may be hard — avoid adding exposure here.</p>
+                <p class="hf-warning hidden" id="high-util-warning" data-i18n="warn.highUtil">&#9888; Pool utilization is very high. Liquidity is tight, so exiting may be hard and forced-liquidation risk rises.</p>
+
+                <!-- Inline jargon explainer (P2) -->
+                <details class="learn-box">
+                  <summary data-i18n="learn.title">How leverage works / key terms</summary>
+                  <p data-i18n="learn.body">Leverage looping repeatedly supplies your asset as collateral and borrows against it, stacking exposure on a single deposit. Health Factor (HF) measures how safe the position is: when HF falls below 1.0 your position is liquidated and you lose collateral. The collateral factor (c_factor) caps how much you can borrow per unit of collateral — a higher c_factor allows more leverage. Adverse price moves or rising borrow rates lower your HF over time, pushing you toward liquidation.</p>
+                </details>
+
                 <div id="apy-chart" class="apy-chart"></div>
                 <div class="leverage-preview">
                   <div class="preview-row">
@@ -463,7 +489,7 @@
                     <span>Projected APY after deposit <span class="tooltip" id="prev-net-tip" data-tip="">?</span></span><strong id="prev-net-apr" class="prev-net-apr">—</strong>
                   </div>
                   <div class="preview-row">
-                    <span>Days to liquidation</span><strong id="prev-liq-days">—</strong>
+                    <span>Days to liquidation <span class="tooltip" data-tip="Estimated days before HF drops to 1.0 at current rates, based on the interest spread (borrow − supply). Indicative only — adverse price moves or rate drift can liquidate you much sooner.">?</span></span><strong id="prev-liq-days">—</strong>
                   </div>
                 </div>
                 <!-- Return calculator (#36) -->
@@ -938,6 +964,55 @@
               </tbody>
             </table>
             <p class="alert-hint">Shortcuts are disabled when a text field is focused.</p>
+          </div>
+        </div>
+
+        <!-- Generic confirmation modal (P2 — reusable, e.g. Expert Mode enable) -->
+        <div id="confirm-modal-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+          <div class="alert-modal">
+            <h3 id="confirm-modal-title">Confirm</h3>
+            <p class="alert-modal-desc" id="confirm-modal-body"></p>
+            <div class="confirm-actions">
+              <button id="confirm-modal-cancel" class="btn btn-secondary btn-lg" data-i18n="common.cancel">Cancel</button>
+              <button id="confirm-modal-ok" class="btn btn-primary btn-lg" data-i18n="common.confirm">Confirm</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pre-submit position review modal (P2) -->
+        <div id="confirm-position-overlay" class="alert-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-position-title">
+          <div class="alert-modal">
+            <button id="confirm-position-close" class="alert-modal-close">&times;</button>
+            <h3 id="confirm-position-title" data-i18n="confirm.title">Review your position</h3>
+            <div class="leverage-preview confirm-summary">
+              <div class="preview-row">
+                <span data-i18n="confirm.leverage">Leverage</span><strong id="cp-lev">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.deposit">Deposit</span><strong id="cp-deposit">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.totalCollateral">Total collateral</span><strong id="cp-collateral">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.totalBorrowed">Total borrowed</span><strong id="cp-borrowed">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.hf">Initial Health Factor</span><strong id="cp-hf">—</strong>
+              </div>
+              <div class="preview-row">
+                <span data-i18n="confirm.netApy">Est. net APY</span><strong id="cp-apy">—</strong>
+              </div>
+            </div>
+            <p class="hf-warning confirm-liq-warn" id="cp-liq-warn" data-i18n="confirm.liqWarn">&#9888; If your collateral value drops enough, your position is liquidated and you lose collateral.</p>
+            <label class="disclaimer-check confirm-check">
+              <input type="checkbox" id="cp-understand" />
+              <span data-i18n="confirm.understand">I understand the liquidation risk</span>
+            </label>
+            <div class="confirm-actions">
+              <button id="cp-cancel" class="btn btn-secondary btn-lg" data-i18n="common.cancel">Cancel</button>
+              <button id="cp-confirm" class="btn btn-primary btn-lg" data-i18n="confirm.open" disabled>Confirm &amp; Open</button>
+            </div>
           </div>
         </div>
 
