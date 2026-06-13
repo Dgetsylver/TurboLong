@@ -28,6 +28,9 @@ pub enum DataKey {
     ShareToken,
     /// Ledger sequence of the last keeper rebalance (for rate-limiting).
     LastRebalance,
+    /// Keeper-controlled account allowed to pull claimed BLND for an off-chain
+    /// (Stellar Broker) swap during the split harvest flow.
+    SwapAccount,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -198,6 +201,23 @@ pub fn get_last_rebalance(e: &Env) -> u32 {
         .instance()
         .get(&DataKey::LastRebalance)
         .unwrap_or(0)
+}
+
+// ── Swap account (off-chain Broker harvest path) ─────────────────────────────
+
+pub fn set_swap_account(e: &Env, account: &Address) {
+    e.storage().instance().set(&DataKey::SwapAccount, account);
+}
+
+pub fn get_swap_account(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&DataKey::SwapAccount)
+        .expect("swap account not set")
+}
+
+pub fn has_swap_account(e: &Env) -> bool {
+    e.storage().instance().has(&DataKey::SwapAccount)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────
