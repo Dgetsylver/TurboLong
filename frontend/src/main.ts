@@ -2623,10 +2623,18 @@ function renderCompareTable(): void {
   }).join("");
 }
 
+/** Trend column header reflects the selected window, so the 7D/30D/1Y toggle
+ *  gives visible feedback (it scopes the trend sparkline, not the live columns). */
+function updateTrendHeader(): void {
+  const el = document.getElementById("ct-trend-header");
+  if (el) el.textContent = `${t("compare.col.trend")} · ${compareWindowDays >= 365 ? "1y" : `${compareWindowDays}d`}`;
+}
+
 async function renderCompareView(): Promise<void> {
   const token = ++compareToken;
   compareLoading = true;
   compareRows = [];
+  updateTrendHeader();
   renderCompareTable();
 
   const usdc   = usdcAssetId();
@@ -2644,6 +2652,10 @@ async function renderCompareView(): Promise<void> {
     }
     if (token !== compareToken) return; // superseded by a newer render
     for (const rs of reserves) {
+      // Compare ranks LEVERAGED yield. Skip reserves that can't be used as
+      // collateral (c_factor = 0, e.g. EURC on YieldBlox) — they can't be
+      // looped, and their raw emissions-inflated APY would mis-rank the table.
+      if (rs.cFactor <= 0) continue;
       const { safeLev, levApy } = compareLevApy(rs);
       compareRows.push({
         poolName: pool.name, poolId: pool.id, asset: rs.asset, rs,
