@@ -44,7 +44,7 @@ import {
   submitSignedXdr,
   submitClassicXdr,
   getMissingTrustlines,
-  prependTrustlineOps,
+  buildTrustlineXdr,
   hfForLeverage,
   maxLeverageFor,
   getBlndPriceAssumption,
@@ -718,6 +718,25 @@ async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number):
   });
   toast(`Submitting "${label}"\u2026`, "info");
   const hash = await submitSignedXdr(signedTxXdr);
+  if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
+  toast(`"${label}" confirmed!`, "success", hash);
+  addTxToHistory(label, hash, "success");
+  return hash;
+}
+
+/**
+ * Sign and submit a classic (non-Soroban) transaction via Horizon.
+ * Used for changeTrust setup, which cannot be bundled into a Soroban tx.
+ */
+async function signAndSubmitClassic(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
+  if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
+  toast(`Sign "${label}" in your wallet\u2026`, "info");
+  const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdrStr, {
+    networkPassphrase: getNetworkPassphrase(),
+    address: userAddress!,
+  });
+  toast(`Submitting "${label}"\u2026`, "info");
+  const hash = await submitClassicXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
   toast(`"${label}" confirmed!`, "success", hash);
   addTxToHistory(label, hash, "success");
@@ -1783,24 +1802,43 @@ async function openPosition() {
     return;
   }
 
+  // A Soroban transaction must contain exactly one operation, so missing
+  // trustlines are set up in a SEPARATE classic changeTrust tx submitted before
+  // the leverage-loop deposit. Steps shift accordingly.
   const hasMissingTrustlines = trustlineResult.missing.length > 0;
-  const submitLabel = hasMissingTrustlines
-    ? `Open ${liveAsset.symbol} leverage (+ trustlines)`
-    : `Open ${liveAsset.symbol} leverage`;
-  showTxStepper(["Approve", hasMissingTrustlines ? "Setup Trustlines + Submit" : "Submit"]);
+  const steps = hasMissingTrustlines ? ["Trustlines", "Approve", "Submit"] : ["Approve", "Submit"];
+  const trustStep = 0;
+  const approveStep = hasMissingTrustlines ? 1 : 0;
+  const submitStep = hasMissingTrustlines ? 2 : 1;
+  let activeStep = 0;
+  showTxStepper(steps);
 
   try {
+    if (hasMissingTrustlines) {
+      activeStep = trustStep;
+      const trustXdr = await buildTrustlineXdr(trustlineResult.missing, userAddress);
+      if (trustXdr) {
+        await signAndSubmitClassic(
+          trustXdr,
+          `Add ${trustlineResult.missing.length} trustline(s)`,
+          trustStep,
+        );
+      }
+    }
+
+    activeStep = approveStep;
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
-    await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const rawSubmitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    const bundledXdr = await prependTrustlineOps(rawSubmitXdr, trustlineResult.missing, userAddress);
-    const openHash = await signAndSubmit(bundledXdr, submitLabel, 1);
+    await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, approveStep);
+
+    activeStep = submitStep;
+    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const openHash = await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, submitStep);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
     recordPositionEvent("open", openHash, hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1));
     await loadAll();
   } catch (e: any) {
-    markStepperError(2);
+    markStepperError(activeStep);
     const msg: string = e?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
       toast("Health factor too low \u2014 reduce leverage.", "error");
