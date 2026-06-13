@@ -36,6 +36,9 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import { fileURLToPath } from "url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const RPC_URL = process.env.RPC_URL ?? "https://mainnet.sorobanrpc.com";
 const PASSPHRASE = Networks.PUBLIC;
@@ -82,8 +85,8 @@ const ASSETS: AssetCfg[] = [
   { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
 ];
 
-const STRATEGY_WASM = path.resolve(__dirname, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
-const TOKEN_WASM = path.resolve(__dirname, "../contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm");
+const STRATEGY_WASM = path.resolve(here, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
+const TOKEN_WASM = path.resolve(here, "../contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm");
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -198,7 +201,7 @@ async function main() {
     out[a.symbol] = { strategy, token };
   }
 
-  const file = path.resolve(__dirname, "../deployed-vaults.mainnet.json");
+  const file = path.resolve(here, "../deployed-vaults.mainnet.json");
   fs.writeFileSync(file, JSON.stringify(out, null, 2));
   console.log(`\nDeployed vaults written to ${file}`);
   console.log("Next: wire frontend/src/defindex.ts MAINNET_VAULTS, verify deposit→loop→withdraw on Stellar Expert, get DeFindex co-sign.");
