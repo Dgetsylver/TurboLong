@@ -57,6 +57,8 @@
           <button id="expert-toggle" class="settings-dropdown-item"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
           <button id="theme-toggle" class="settings-dropdown-item"><span data-i18n="settings.theme">Theme</span> <span class="settings-badge">&#9790;</span></button>
           <button id="shortcuts-help-btn" class="settings-dropdown-item"><span data-i18n="settings.shortcuts">Keyboard Shortcuts</span> <span class="settings-badge">?</span></button>
+          <button id="alerts-menu-btn" class="settings-dropdown-item"><span data-i18n="settings.alerts">Set up alerts</span> <span class="settings-badge">&#128276;</span></button>
+          <button id="tour-btn" class="settings-dropdown-item"><span data-i18n="settings.tour">Take the tour</span></button>
           <button id="lang-toggle" class="settings-dropdown-item"><span data-i18n="settings.language">Language</span> <span class="settings-badge" id="lang-badge">EN</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
@@ -241,6 +243,7 @@
             <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
             <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
             <a href="https://stellar.expert" target="_blank" rel="noopener">Stellar Expert</a>
+            <a href="./status.html" target="_blank" rel="noopener" data-i18n="nav.status">Status</a>
           </div>
         </div>
 
@@ -338,7 +341,7 @@
                     <span class="apr-val apr-blnd" id="supply-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net supply APY <span class="tooltip" id="supply-net-tip" data-tip="">?</span><span class="rate-trend-slot" id="supply-net-trend"></span></span>
                     <span class="apr-val" id="supply-net-apr">—</span>
                   </div>
                 </div>
@@ -353,7 +356,7 @@
                     <span class="apr-val apr-blnd" id="borrow-blnd-apr">—</span>
                   </div>
                   <div class="apr-row apr-net-row">
-                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span></span>
+                    <span class="apr-key">Net borrow cost <span class="tooltip" id="borrow-net-tip" data-tip="">?</span><span class="rate-trend-slot" id="borrow-net-trend"></span></span>
                     <span class="apr-val" id="borrow-net-cost">—</span>
                   </div>
                 </div>
@@ -636,6 +639,9 @@
                 <span>Rate</span><strong id="swap-rate" class="mono">—</strong>
               </div>
               <div class="preview-row">
+                <span data-i18n="swap.route">Route</span><strong id="swap-route">—</strong>
+              </div>
+              <div class="preview-row">
                 <span>Direct trade</span><strong id="swap-direct" class="mono">—</strong>
               </div>
               <div class="preview-row">
@@ -748,6 +754,7 @@
                 <span class="vault-rebalance-hint" id="vault-rebalance-hint">HF is healthy</span>
                 <span class="fee-hint mono" id="vault-rebalance-fee-estimate" aria-live="polite">Max network fee: --</span>
               </div>
+              <p class="keeper-note"><span class="keeper-note-icon" aria-hidden="true">&#128737;</span><span data-i18n="vault.keeperNote">Auto-rebalance keeper — monitors health factor and partially unwinds the loop when HF drops below the minimum, protecting all depositors. Applies to Vault positions only.</span></p>
             </div>
 
             <!-- HF visual bar -->
@@ -902,6 +909,13 @@
                 <option value="8">8x</option>
                 <option value="10">10x</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label class="alert-hf-label">
+                <input type="checkbox" id="alert-hf-enable" />
+                <span data-i18n="alert.hfLabel">Also notify when Health Factor falls below</span>
+              </label>
+              <input type="number" id="alert-hf-threshold" class="input mono" value="1.10" min="1" step="0.01" />
             </div>
             <button id="alert-subscribe-btn" class="btn btn-primary btn-lg">Subscribe with email</button>
             <p class="alert-or">or</p>
