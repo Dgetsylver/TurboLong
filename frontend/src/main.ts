@@ -228,7 +228,7 @@ async function switchNetwork(net: NetworkMode) {
 
   // Update UI
   const btn = $("network-toggle");
-  btn.textContent = net === "testnet" ? "Testnet" : "Mainnet";
+  btn.textContent = net === "testnet" ? t("net.testnet") : t("net.mainnet");
   btn.classList.toggle("testnet-active", net === "testnet");
   $("testnet-banner").classList.toggle("hidden", net !== "testnet");
   ($("fund-testnet-btn") as HTMLButtonElement).disabled = false;
@@ -264,8 +264,8 @@ async function switchNetwork(net: NetworkMode) {
   updatePreview();
 
   // Prompt user to switch wallet network
-  const label = net === "testnet" ? "Testnet" : "Mainnet (Public)";
-  toast(`Switched to ${label}. Please also switch your wallet to ${label} before connecting.`, "info");
+  const label = net === "testnet" ? t("net.testnet") : t("net.mainnetPublic");
+  toast(t("toast.switchedNetwork", { label }), "info");
 }
 
 /** Check that the connected wallet's network matches the app's selected network. */
@@ -274,8 +274,8 @@ async function verifyWalletNetwork(): Promise<boolean> {
     const walletNet = await StellarWalletsKit.getNetwork();
     const expectedPassphrase = getNetworkPassphrase();
     if (walletNet.networkPassphrase !== expectedPassphrase) {
-      const expected = getActiveNetwork() === "testnet" ? "Testnet" : "Mainnet";
-      toast(`Network mismatch: your wallet is on a different network. Please switch your wallet to ${expected}.`, "error");
+      const expected = getActiveNetwork() === "testnet" ? t("net.testnet") : t("net.mainnet");
+      toast(t("toast.networkMismatch", { expected }), "error");
       return false;
     }
     return true;
@@ -293,21 +293,21 @@ async function fundTestnetWallet() {
   if (!userAddress || getActiveNetwork() !== "testnet") return;
   const btn = $("fund-testnet-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Funding...";
+  btn.textContent = t("toast.funding");
 
   try {
     // Step 1: Friendbot — fund with 10,000 XLM
-    toast("Requesting testnet XLM from Friendbot...", "info");
+    toast(t("toast.friendbotRequest"), "info");
     const fbRes = await fetch(`https://friendbot.stellar.org?addr=${userAddress}`);
     if (!fbRes.ok) {
       // Any friendbot failure is non-fatal — account likely already exists
-      toast("Account already exists on testnet, skipping Friendbot", "info");
+      toast(t("toast.friendbotExists"), "info");
     } else {
-      toast("Received testnet XLM from Friendbot!", "success");
+      toast(t("toast.friendbotReceived"), "success");
     }
 
     // Step 2: Open USDC trustline + swap XLM → USDC via path payment
-    toast("Opening USDC trustline and acquiring USDC...", "info");
+    toast(t("toast.openingTrustline"), "info");
     const usdcAsset = new Asset("USDC", TESTNET_USDC_ISSUER);
 
     const horizonServer = new Horizon.Server(getHorizonUrl());
@@ -352,7 +352,7 @@ async function fundTestnetWallet() {
       throw new Error("Transaction failed");
     }
 
-    toast("Testnet wallet funded! USDC trustline opened and tokens acquired.", "success");
+    toast(t("toast.fundSuccess"), "success");
     // Reload current view data
     if (activeView === "leverage") await loadAll();
     else if (activeView === "vault") await refreshVaultView();
@@ -360,13 +360,13 @@ async function fundTestnetWallet() {
     const msg = e?.message ?? String(e);
     // If path payment fails (no liquidity), still report trustline success
     if (msg.includes("PATH_PAYMENT") || msg.includes("path")) {
-      toast("USDC trustline opened but no DEX liquidity to swap. You may need to acquire USDC manually.", "info");
+      toast(t("toast.fundNoLiquidity"), "info");
     } else {
-      toast(`Fund failed: ${msg.slice(0, 150)}`, "error");
+      toast(t("toast.fundFailed", { msg: msg.slice(0, 150) }), "error");
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = "Fund Wallet";
+    btn.textContent = t("testnet.fund");
   }
 }
 
@@ -482,13 +482,13 @@ function updateFreshnessDisplay() {
   if (!lastRefreshTime) return;
   const secs = Math.round((Date.now() - lastRefreshTime) / 1000);
   const el = $("data-freshness");
-  if (secs < 5) { el.textContent = "Just now"; }
-  else if (secs < 60) { el.textContent = `${secs}s ago`; }
-  else { el.textContent = `${Math.floor(secs / 60)}m ago`; }
+  if (secs < 5) { el.textContent = t("time.justNow"); }
+  else if (secs < 60) { el.textContent = t("time.secondsAgo", { n: secs }); }
+  else { el.textContent = t("time.minutesAgo", { n: Math.floor(secs / 60) }); }
   const stale = secs > 60;
   el.classList.toggle("stale", stale);
   // Convey staleness textually, not by colour alone (#9)
-  el.setAttribute("title", `Data last updated ${el.textContent}${stale ? " — stale" : ""}`);
+  el.setAttribute("title", `${t("time.lastUpdated", { ago: el.textContent ?? "" })}${stale ? ` — ${t("time.stale")}` : ""}`);
 }
 
 function startFreshnessTimer() {
@@ -574,7 +574,7 @@ function renderTxHistory() {
   $("tx-history").style.display = "";
   list.innerHTML = history.map(tx => {
     const ago = Math.round((Date.now() - tx.time) / 60000);
-    const timeStr = ago < 1 ? "just now" : ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+    const timeStr = ago < 1 ? t("time.justNow") : ago < 60 ? t("time.minutesAgo", { n: ago }) : t("time.hoursAgo", { n: Math.round(ago / 60) });
     return `<div class="tx-history-item">
       <span class="tx-history-status-${tx.status === "success" ? "ok" : "err"}">${tx.status === "success" ? "\u2713" : "\u2717"}</span>
       <span class="tx-history-label">${tx.label}</span>
@@ -803,17 +803,17 @@ function renderTrendArrow(
 
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
-  toast(`Sign "${label}" in your wallet\u2026`, "info");
+  toast(t("toast.signInWallet", { label }), "info");
   const { signedTxXdr } = txSeam
     ? await txSeam.signTransaction(xdrStr)
     : await StellarWalletsKit.signTransaction(xdrStr, {
         networkPassphrase: getNetworkPassphrase(),
         address: userAddress!,
       });
-  toast(`Submitting "${label}"\u2026`, "info");
+  toast(t("toast.submitting", { label }), "info");
   const hash = txSeam ? await txSeam.submitSoroban(signedTxXdr) : await submitSignedXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
-  toast(`"${label}" confirmed!`, "success", hash);
+  toast(t("toast.confirmed", { label }), "success", hash);
   addTxToHistory(label, hash, "success");
   return hash;
 }
@@ -824,17 +824,17 @@ async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number):
  */
 async function signAndSubmitClassic(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
-  toast(`Sign "${label}" in your wallet\u2026`, "info");
+  toast(t("toast.signInWallet", { label }), "info");
   const { signedTxXdr } = txSeam
     ? await txSeam.signTransaction(xdrStr)
     : await StellarWalletsKit.signTransaction(xdrStr, {
         networkPassphrase: getNetworkPassphrase(),
         address: userAddress!,
       });
-  toast(`Submitting "${label}"\u2026`, "info");
+  toast(t("toast.submitting", { label }), "info");
   const hash = txSeam ? await txSeam.submitClassic(signedTxXdr) : await submitClassicXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
-  toast(`"${label}" confirmed!`, "success", hash);
+  toast(t("toast.confirmed", { label }), "success", hash);
   addTxToHistory(label, hash, "success");
   return hash;
 }
@@ -1529,18 +1529,18 @@ function renderPosition() {
   if (rs && pos.leverage > 0 && Number.isFinite(pos.hf) && pos.hf > 1) {
     const spreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
     if (spreadPct <= 0) {
-      liqDaysEl.textContent = "Never (supply rate \u2265 borrow rate)";
+      liqDaysEl.textContent = t("dashboard.liqNever");
       liqDaysEl.className   = "metric-value hf-ok";
       liqNoteEl.textContent = "";
     } else {
       const daysLeft = Math.log(pos.hf) / (spreadPct / 100) * 365;
       if (daysLeft <= 365) {
-        liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>~${Math.round(daysLeft)} days</span></span>`;
+        liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>${t("dashboard.daysApprox", { n: Math.round(daysLeft) })}</span></span>`;
       } else {
-        liqDaysEl.textContent = daysLeft > 3650 ? ">10 years" : `~${Math.round(daysLeft)} days`;
+        liqDaysEl.textContent = daysLeft > 3650 ? t("dashboard.over10y") : t("dashboard.daysApprox", { n: Math.round(daysLeft) });
       }
       liqDaysEl.className   = `metric-value ${daysLeft < 30 ? "hf-bad" : daysLeft < 90 ? "hf-warn" : "hf-ok"}`;
-      liqNoteEl.textContent = `Interest spread: ${fmt(aprToApy(spreadPct), 2)}%/yr (borrow \u2212 supply). Claim & convert BLND to extend runway.`;
+      liqNoteEl.textContent = t("dashboard.interestSpread", { pct: fmt(aprToApy(spreadPct), 2) });
     }
   } else {
     liqDaysEl.textContent = "\u2014";
@@ -1596,7 +1596,7 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
   actionMode = mode === "adjust" ? "adjust" : "open";
   const isAdjust = mode === "adjust";
 
-  $("action-card-title").textContent = isAdjust ? "Adjust Position" : "Open Position";
+  $("action-card-title").textContent = isAdjust ? t("action.adjustPosition") : t("action.openPosition");
   $("adjust-tabs").classList.toggle("hidden", !isAdjust);
   $("open-deposit-group").classList.toggle("hidden", isAdjust);
   $("adjust-current").classList.toggle("hidden", !isAdjust);
@@ -1615,7 +1615,7 @@ function setActionCardMode(mode: "open" | "adjust", pos?: AssetPosition) {
 
   if (isAdjust && pos) {
     $("adjust-current-lev").textContent = `${fmt(pos.leverage, 2)}\u00D7`;
-    $("leverage-label").textContent = "Target leverage";
+    $("leverage-label").textContent = t("action.targetLeverage");
     $("add-funds-symbol").textContent = pos.asset.symbol;
     // Set slider to current leverage
     const slider = $("leverage-slider") as HTMLInputElement;
@@ -1649,7 +1649,7 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
   $("add-funds-disclaimer").classList.toggle("hidden", !isAddFunds);
 
   if (isAddFunds) {
-    $("action-card-title").textContent = "Add Funds";
+    $("action-card-title").textContent = t("action.addFunds");
     $("leverage-label").innerHTML = 'Leverage <span class="tooltip" data-tip="Leverage for the new deposit. This deposit is added on top of your existing position.">?</span>';
     // Default leverage to current position leverage
     const slider = $("leverage-slider") as HTMLInputElement;
@@ -1666,8 +1666,8 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
     }
     initTooltips();
   } else {
-    $("action-card-title").textContent = "Adjust Position";
-    $("leverage-label").textContent = "Target leverage";
+    $("action-card-title").textContent = t("action.adjustPosition");
+    $("leverage-label").textContent = t("action.targetLeverage");
     const slider = $("leverage-slider") as HTMLInputElement;
     const numIn  = $("leverage-input")  as HTMLInputElement;
     const curLev = Math.round(pos.leverage * 10) / 10;
@@ -1766,11 +1766,11 @@ function updatePreview() {
     const spreadPct = proj.interestBorrowApr - proj.interestSupplyApr;
     const prevLiqEl = $("prev-liq-days");
     if (spreadPct <= 0) {
-      prevLiqEl.textContent = "Never";
+      prevLiqEl.textContent = t("dashboard.never");
       prevLiqEl.className   = "hf-ok";
     } else if (Number.isFinite(hf) && hf > 1) {
       const days = Math.log(hf) / (spreadPct / 100) * 365;
-      prevLiqEl.textContent = days > 3650 ? ">10 years" : `~${Math.round(days)} days`;
+      prevLiqEl.textContent = days > 3650 ? t("dashboard.over10y") : t("dashboard.daysApprox", { n: Math.round(days) });
       prevLiqEl.className   = days < 30 ? "hf-bad" : days < 90 ? "hf-warn" : "hf-ok";
     } else {
       prevLiqEl.textContent = "\u2014";
@@ -1922,7 +1922,7 @@ async function loadAll() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("Failed to load pool data:", e);
-    toast(`Load failed: ${msg.slice(0, 120)}`, "error");
+    toast(t("toast.loadFailed", { msg: msg.slice(0, 120) }), "error");
   } finally {
     _loadInProgress = false;
   }
@@ -2002,23 +2002,23 @@ $("confirm-position-overlay").addEventListener("click", (e) => {
 
 async function openPosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
-  if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot open new positions", "error"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
+  if (selectedPool.status !== 1) { toast(t("toast.poolFrozenOpen"), "error"); return; }
   const initial  = Number.parseFloat(($("initial-input") as HTMLInputElement).value);
   const leverage = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (Number.isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
+  if (Number.isNaN(initial) || initial <= 0) { toast(t("toast.enterValidAmount"), "error"); return; }
 
   // Use live cFactor from reserves so intermediate borrow steps don't exceed pool limits
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
-  if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) { toast("HF too low \u2014 reduce leverage", "error"); return; }
+  if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) { toast(t("toast.hfTooLow"), "error"); return; }
 
   const totalBorrow   = initial * (leverage - 1);
   const firstBorrow   = Math.min(initial * liveAsset.cFactor, totalBorrow);
   const poolAvailAfterDeposit = (rs?.available ?? 0) + initial * (rs ? rs.asset.maxUtil : 0.95);
   if (rs && firstBorrow > poolAvailAfterDeposit) {
-    toast(`First borrow step (${fmt(firstBorrow, 0)}) exceeds pool available after deposit (${fmt(poolAvailAfterDeposit, 0)} ${rs.asset.symbol}). Reduce leverage.`, "error");
+    toast(t("toast.firstBorrowExceeds", { first: fmt(firstBorrow, 0), avail: fmt(poolAvailAfterDeposit, 0), sym: rs.asset.symbol }), "error");
     return;
   }
 
@@ -2038,7 +2038,7 @@ async function openPosition() {
       ? await txSeam.getMissingTrustlines(new Asset("USDC", TESTNET_USDC_ISSUER))
       : await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
   } catch (e: any) {
-    toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
+    toast(t("toast.trustlineCheckFailed", { msg: (e?.message ?? String(e)).slice(0, 150) }), "error");
     setLoading($("open-btn") as HTMLButtonElement, false);
     return;
   }
@@ -2046,8 +2046,7 @@ async function openPosition() {
   const STELLAR_TRUSTLINE_LIMIT = 1000;
   if (trustlineResult.currentCount + trustlineResult.missing.length > STELLAR_TRUSTLINE_LIMIT) {
     toast(
-      `Adding ${trustlineResult.missing.length} trustline(s) would exceed the Stellar limit of 1,000. ` +
-      `You currently have ${trustlineResult.currentCount}. Remove unused trustlines before depositing.`,
+      t("toast.trustlineLimit", { n: trustlineResult.missing.length, current: trustlineResult.currentCount }),
       "error",
     );
     setLoading($("open-btn") as HTMLButtonElement, false);
@@ -2097,11 +2096,11 @@ async function openPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(activeStep);
-    const msg: string = e?.message ?? "Transaction failed";
+    const msg: string = e?.message ?? t("toast.txFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low \u2014 reduce leverage.", "error");
+      toast(t("toast.hfTooLowErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached \u2014 not enough liquidity for this borrow. Reduce leverage or deposit.", "error");
+      toast(t("toast.utilLimitBorrow"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2112,7 +2111,7 @@ async function openPosition() {
 
 async function closePosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
   setLoading($("close-btn") as HTMLButtonElement, true);
@@ -2131,7 +2130,7 @@ async function closePosition() {
     // 2) Withdraw remaining collateral (now debt-free, smaller supply impact)
     if ((msg.includes("#1207") || msg.includes("InvalidUtilRate")) && pos.dTokens > 0n) {
       try {
-        toast("Pool utilization high \u2014 closing in two steps\u2026", "info");
+        toast(t("toast.closeTwoSteps"), "info");
         showTxStepper(["Repay Debt", "Withdraw Collateral"]);
         // Step 1: deleverage \u2014 repay all debt using collateral
         const repayXdr = await buildRepayXdr(selectedPool, userAddress, pos);
@@ -2145,10 +2144,10 @@ async function closePosition() {
         await loadAll();
         return;
       } catch (e2: any) {
-        const msg2: string = e2?.message ?? "Transaction failed";
+        const msg2: string = e2?.message ?? t("toast.txFailed");
         markStepperError(2);
         if (msg2.includes("#1207") || msg2.includes("InvalidUtilRate")) {
-          toast("Pool utilization too high to withdraw all collateral. Debt was repaid \u2014 try withdrawing later when liquidity improves.", "error");
+          toast(t("toast.utilWithdrawAll"), "error");
         } else {
           toast(msg2.slice(0, 200), "error");
         }
@@ -2158,9 +2157,9 @@ async function closePosition() {
     }
     markStepperError(1);
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization too high \u2014 not enough liquidity to close. Try again later.", "error");
+      toast(t("toast.utilCloseTooHigh"), "error");
     } else {
-      toast(msg.slice(0, 200) || "Transaction failed", "error");
+      toast(msg.slice(0, 200) || t("toast.txFailed"), "error");
     }
   } finally {
     setLoading($("close-btn") as HTMLButtonElement, false);
@@ -2169,7 +2168,7 @@ async function closePosition() {
 
 async function repayDebt() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos || pos.dTokens === 0n) return;
   setLoading($("repay-btn") as HTMLButtonElement, true);
@@ -2181,7 +2180,7 @@ async function repayDebt() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    toast(e?.message ?? "Transaction failed", "error");
+    toast(e?.message ?? t("toast.txFailed"), "error");
   } finally {
     setLoading($("repay-btn") as HTMLButtonElement, false);
   }
@@ -2198,14 +2197,14 @@ async function maxDeposit() {
 
 async function claimBlnd() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   // Collect all token IDs for ALL positions in this pool
   const tokenIds: number[] = [];
   for (const pos of positions.byAsset.values()) {
     if (pos.bTokens > 0n) tokenIds.push(pos.asset.supplyTokenId);
     if (pos.dTokens > 0n) tokenIds.push(pos.asset.borrowTokenId);
   }
-  if (tokenIds.length === 0) { toast("No positions to claim from", "error"); return; }
+  if (tokenIds.length === 0) { toast(t("toast.noPositionsClaim"), "error"); return; }
 
   setLoading($("claim-btn") as HTMLButtonElement, true);
   showTxStepper(["Claim BLND"]);
@@ -2217,7 +2216,7 @@ async function claimBlnd() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    toast(e?.message ?? "Transaction failed", "error");
+    toast(e?.message ?? t("toast.txFailed"), "error");
   } finally {
     setLoading($("claim-btn") as HTMLButtonElement, false);
   }
@@ -2226,19 +2225,19 @@ async function claimBlnd() {
 /** Adjust leverage on an existing position (increase or decrease). */
 async function adjustLeverage() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const targetLev = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
   const curLev = pos.leverage;
-  if (Math.abs(targetLev - curLev) < 0.05) { toast("Target leverage is same as current", "error"); return; }
+  if (Math.abs(targetLev - curLev) < 0.05) { toast(t("toast.targetSameAsCurrent"), "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
   if (hfForLeverage(targetLev, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) {
-    toast("HF too low at target leverage \u2014 reduce target", "error");
+    toast(t("toast.hfTooLowTarget"), "error");
     return;
   }
 
@@ -2259,11 +2258,11 @@ async function adjustLeverage() {
     await loadAll();
   } catch (e: any) {
     markStepperError(1);
-    const msg: string = e?.message ?? "Adjust leverage failed";
+    const msg: string = e?.message ?? t("toast.adjustFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low — reduce target leverage.", "error");
+      toast(t("toast.hfTooLowTargetErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached — not enough liquidity. Reduce target leverage.", "error");
+      toast(t("toast.utilLimitTarget"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2275,20 +2274,20 @@ async function adjustLeverage() {
 /** Add funds: deposit additional capital into an existing position at a chosen leverage. */
 async function addFundsToPosition() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
-  if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot add funds", "error"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
+  if (selectedPool.status !== 1) { toast(t("toast.poolFrozenAddFunds"), "error"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const additional = Number.parseFloat(($("add-funds-input") as HTMLInputElement).value);
   const leverage   = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (Number.isNaN(additional) || additional <= 0) { toast("Enter a valid amount", "error"); return; }
+  if (Number.isNaN(additional) || additional <= 0) { toast(t("toast.enterValidAmount"), "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
 
   if (hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1) < minHF()) {
-    toast("HF too low \u2014 reduce leverage", "error"); return;
+    toast(t("toast.hfTooLow"), "error"); return;
   }
 
   const additionalStroops = BigInt(Math.round(additional * 1e7));
@@ -2308,11 +2307,11 @@ async function addFundsToPosition() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    const msg: string = e?.message ?? "Transaction failed";
+    const msg: string = e?.message ?? t("toast.txFailed");
     if (msg.includes("#1205") || msg.includes("InvalidHf")) {
-      toast("Health factor too low \u2014 reduce leverage.", "error");
+      toast(t("toast.hfTooLowErr"), "error");
     } else if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) {
-      toast("Pool utilization limit reached \u2014 not enough liquidity. Reduce leverage or deposit.", "error");
+      toast(t("toast.utilLimitAddFunds"), "error");
     } else {
       toast(msg.slice(0, 200), "error");
     }
@@ -2324,12 +2323,12 @@ async function addFundsToPosition() {
 /** Resupply: deposit entire wallet balance of the position asset as extra collateral. */
 async function resupply() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
   const bal = await fetchAssetBalance(userAddress, selectedAsset.id);
-  if (bal <= 0) { toast(`No ${selectedAsset.symbol} in wallet to resupply`, "error"); return; }
+  if (bal <= 0) { toast(t("toast.noAssetResupply", { sym: selectedAsset.symbol }), "error"); return; }
 
   const amountStroops = BigInt(Math.round(bal * 1e7));
   setLoading($("resupply-btn") as HTMLButtonElement, true);
@@ -2344,7 +2343,7 @@ async function resupply() {
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    toast(e?.message ?? "Resupply failed", "error");
+    toast(e?.message ?? t("toast.resupplyFailed"), "error");
   } finally {
     setLoading($("resupply-btn") as HTMLButtonElement, false);
   }
@@ -2353,7 +2352,7 @@ async function resupply() {
 /** Claim BLND from pool, then swap to the selected asset via Stellar DEX path payment. */
 async function claimAndConvert() {
   if (!userAddress) return;
-  if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
+  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
@@ -2363,7 +2362,7 @@ async function claimAndConvert() {
     if (p.bTokens > 0n) tokenIds.push(p.asset.supplyTokenId);
     if (p.dTokens > 0n) tokenIds.push(p.asset.borrowTokenId);
   }
-  if (tokenIds.length === 0) { toast("No positions to claim from", "error"); return; }
+  if (tokenIds.length === 0) { toast(t("toast.noPositionsClaim"), "error"); return; }
 
   setLoading($("compound-btn") as HTMLButtonElement, true);
   showTxStepper(["Claim BLND", "Swap"]);
@@ -2375,11 +2374,11 @@ async function claimAndConvert() {
 
     // Check actual BLND balance after claim
     const blndBalance = await fetchAssetBalance(userAddress, getBlndId());
-    if (blndBalance <= 0) { toast("No BLND to convert", "error"); hideTxStepper(1000); await loadAll(); return; }
+    if (blndBalance <= 0) { toast(t("toast.noBlndConvert"), "error"); hideTxStepper(1000); await loadAll(); return; }
 
     // Step 2: Swap BLND -> position asset via DEX path payment (classic tx)
     updateTxStep(1, "active");
-    toast(`Swapping ${fmt(blndBalance, 2)} BLND \u2192 ${selectedAsset.symbol}\u2026`, "info");
+    toast(t("toast.swappingBlnd", { amt: fmt(blndBalance, 2), sym: selectedAsset.symbol }), "info");
     const { xdr: swapXdr, estimate } = await buildSwapBlndXdr(
       userAddress,
       blndBalance,
@@ -2387,22 +2386,22 @@ async function claimAndConvert() {
       swapSlippage,
     );
     // Sign via wallet kit
-    toast(`Sign swap in your wallet\u2026`, "info");
+    toast(t("toast.signSwap"), "info");
     const { signedTxXdr } = await StellarWalletsKit.signTransaction(swapXdr, {
       networkPassphrase: getNetworkPassphrase(),
       address: userAddress!,
     });
-    toast(`Submitting swap\u2026`, "info");
+    toast(t("toast.submittingSwap"), "info");
     const swapHash = await submitClassicXdr(signedTxXdr);
     updateTxStep(1, "done");
-    toast(`Converted ${fmt(blndBalance, 2)} BLND \u2192 ~${estimate} ${selectedAsset.symbol}`, "success");
+    toast(t("toast.convertedBlnd", { amt: fmt(blndBalance, 2), est: estimate, sym: selectedAsset.symbol }), "success");
     addTxToHistory(`Swap BLND \u2192 ${selectedAsset.symbol}`, swapHash, "success");
     hideTxStepper();
 
     await loadAll();
   } catch (e: any) {
     markStepperError(2);
-    toast(e?.message ?? "Claim & Convert failed", "error");
+    toast(e?.message ?? t("toast.claimConvertFailed"), "error");
   } finally {
     setLoading($("compound-btn") as HTMLButtonElement, false);
   }
@@ -2449,7 +2448,7 @@ async function connect() {
     if (txSeam) seedE2EState();
     else await loadAll();
   } catch (e: any) {
-    if (e?.message !== "User closed the modal") toast("Failed to connect wallet", "error");
+    if (e?.message !== "User closed the modal") toast(t("toast.connectFailed"), "error");
   }
 }
 
@@ -2483,9 +2482,9 @@ async function switchWallet() {
     reserves  = [];
     positions = { byAsset: new Map() };
     await loadAll();
-    toast("Switched wallet", "success");
+    toast(t("toast.switchedWallet"), "success");
   } catch (e: any) {
-    if (e?.message !== "User closed the modal") toast("Failed to switch wallet", "error");
+    if (e?.message !== "User closed the modal") toast(t("toast.switchFailed"), "error");
   }
 }
 
@@ -2908,19 +2907,19 @@ function updateSwapBtn() {
   const samePair = sellAsset === buyAsset;
 
   if (!userAddress) {
-    btn.textContent = "Connect Wallet";
+    btn.textContent = t("nav.connect");
     btn.disabled = true;
   } else if (samePair) {
-    btn.textContent = "Select different assets";
+    btn.textContent = t("swap.selectDifferent");
     btn.disabled = true;
   } else if (!hasAmount) {
-    btn.textContent = "Enter amount";
+    btn.textContent = t("swap.enterAmount");
     btn.disabled = true;
   } else if (_lastQuote && _lastQuote.status === "success") {
-    btn.textContent = "Swap (coming soon)";
+    btn.textContent = t("swap.comingSoon");
     btn.disabled = true; // Execution will be enabled in a future update
   } else {
-    btn.textContent = "Get Quote";
+    btn.textContent = t("swap.getQuote");
     btn.disabled = true;
   }
 }
@@ -3060,13 +3059,13 @@ function applyExpertState() {
   // Update settings dropdown badge
   const btn = $("expert-toggle");
   const badge = btn.querySelector(".settings-badge");
-  if (badge) badge.textContent = expertMode ? "On" : "Off";
+  if (badge) badge.textContent = expertMode ? t("common.on") : t("common.off");
   btn.classList.toggle("expert-active", expertMode);
   // Update mobile sidebar toggle
   const mobileBtn = document.getElementById("mobile-expert-toggle");
   if (mobileBtn) {
     mobileBtn.classList.toggle("expert-active", expertMode);
-    mobileBtn.textContent = expertMode ? "Expert ON" : "Expert";
+    mobileBtn.textContent = expertMode ? t("expert.mobileOn") : t("expert.mobileOff");
   }
   renderSelectedAsset();
   updatePreview();
@@ -3404,7 +3403,7 @@ $("demo-btn").addEventListener("click", () => {
   $("asset-balance").textContent = "10,000.0000 " + selectedAsset.symbol;
   $("pos-blnd").textContent = "125.3400 BLND";
   renderSelectedAsset();
-  toast("Demo mode \u2014 explore the UI without a wallet", "info");
+  toast(t("toast.demoExplore"), "info");
 });
 
 // Init preview with defaults
@@ -3662,12 +3661,12 @@ async function refreshVaultView() {
     linkEl.textContent = vault.vaultId.slice(0, 8) + "..." + vault.vaultId.slice(-4);
     linkEl.href = expertUrl("contract", vault.vaultId);
   } else {
-    linkEl.textContent = "Not deployed";
+    linkEl.textContent = t("common.notDeployed");
     linkEl.href = "#";
   }
 
   if (!vaultReady) {
-    $("vault-tvl").textContent = "Not deployed";
+    $("vault-tvl").textContent = t("common.notDeployed");
     $("vault-share-price").textContent = "--";
     $("vault-apy").textContent = "--";
     $("vault-leverage").textContent = "--";
@@ -3767,10 +3766,10 @@ async function refreshVaultView() {
     rebalBtn.disabled = !connected || !needsRebalance;
     const hintEl = $("vault-rebalance-hint");
     if (needsRebalance) {
-      hintEl.textContent = "HF below minimum — rebalance available";
+      hintEl.textContent = t("vault.hfBelowMin");
       hintEl.className = "vault-rebalance-hint hf-bad";
     } else {
-      hintEl.textContent = "HF is healthy";
+      hintEl.textContent = t("vault.hfHealthy");
       hintEl.className = "vault-rebalance-hint hf-ok";
     }
   }
@@ -3923,7 +3922,7 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     selectedPool = getKnownPools()[0];
     assets = getPoolAssets(selectedPool);
     selectedAsset = assets[0];
-    $("network-toggle").textContent = "Testnet";
+    $("network-toggle").textContent = t("net.testnet");
     $("network-toggle").classList.add("testnet-active");
     $("testnet-banner").classList.remove("hidden");
   }
@@ -4051,7 +4050,7 @@ $("alert-modal-overlay").addEventListener("click", (e) => {
 $("alert-subscribe-btn").addEventListener("click", async () => {
   const email = ($("alert-email") as HTMLInputElement).value.trim();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    toast("Please enter a valid email address.", "error");
+    toast(t("toast.invalidEmail"), "error");
     return;
   }
 
@@ -4060,7 +4059,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   const hfThreshold = Number(($("alert-hf-threshold") as HTMLInputElement).value);
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Subscribing...";
+  btn.textContent = t("alert.subscribing");
 
   try {
     const res = await fetch(`${ALERTS_WORKER_URL}/subscribe`, {
@@ -4078,39 +4077,39 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
     const data = await res.json() as any;
 
     if (data.ok) {
-      toast("Check your email to verify your alert subscription.", "success");
+      toast(t("toast.checkEmail"), "success");
       closeModal($("alert-modal-overlay"));
       ($("alert-email") as HTMLInputElement).value = "";
     } else {
-      toast(data.error || "Subscription failed.", "error");
+      toast(data.error || t("toast.subscriptionFailed"), "error");
     }
   } catch (e: any) {
-    toast(`Subscription failed: ${e.message?.slice(0, 100)}`, "error");
+    toast(t("toast.subscriptionFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Subscribe with email";
+    btn.textContent = t("alert.subscribe");
   }
 });
 
 $("alert-push-btn").addEventListener("click", async () => {
   if (!userAddress || demoMode) {
-    toast("Connect your wallet to enable push alerts.", "info");
+    toast(t("toast.connectForPush"), "info");
     return;
   }
   if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-    toast("Push notifications are not supported in this browser.", "error");
+    toast(t("toast.pushUnsupported"), "error");
     return;
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
   const btn = $("alert-push-btn") as HTMLButtonElement;
   btn.disabled = true;
-  btn.textContent = "Enabling...";
+  btn.textContent = t("alert.enabling");
 
   try {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
-      toast("Notification permission denied.", "error");
+      toast(t("toast.permissionDenied"), "error");
       return;
     }
 
@@ -4118,7 +4117,7 @@ $("alert-push-btn").addEventListener("click", async () => {
     const keyRes = await fetch(`${ALERTS_WORKER_URL}/vapid-public-key`);
     const keyData = await keyRes.json() as { ok?: boolean; publicKey?: string; error?: string };
     if (!keyData.ok || !keyData.publicKey) {
-      toast(keyData.error || "Push is not configured on the server.", "error");
+      toast(keyData.error || t("toast.pushNotConfigured"), "error");
       return;
     }
 
@@ -4144,16 +4143,16 @@ $("alert-push-btn").addEventListener("click", async () => {
 
     const data = await res.json() as { ok?: boolean; error?: string };
     if (data.ok) {
-      toast("Push alerts enabled for this position.", "success");
+      toast(t("toast.pushEnabled"), "success");
       closeModal($("alert-modal-overlay"));
     } else {
-      toast(data.error || "Push subscription failed.", "error");
+      toast(data.error || t("toast.pushSubFailed"), "error");
     }
   } catch (e: any) {
-    toast(`Push subscription failed: ${e.message?.slice(0, 100)}`, "error");
+    toast(t("toast.pushSubFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Enable push notifications";
+    btn.textContent = t("alert.push");
   }
 });
 
@@ -4182,9 +4181,14 @@ function updateLangBadge(): void {
 // Re-render dynamic views that build strings in JS after a language change.
 function refreshDynamicLangStrings(): void {
   updateLangBadge();
+  // Imperatively-set chrome labels that don't carry data-i18n.
+  applyExpertState(); // expert On/Off badge + mobile label
+  const netBtn = document.getElementById("network-toggle");
+  if (netBtn) netBtn.textContent = getActiveNetwork() === "testnet" ? t("net.testnet") : t("net.mainnet");
+  updateSwapBtn(); // swap CTA label (Connect / Get Quote / …)
   if (activeView === "compare") renderCompareView();
-  if (activeView === "vault") renderAquariusTradeCard(getActiveVault());
-  if (activeView === "leverage") updatePreview(); // P2 — risk band status text
+  if (activeView === "vault") { renderAquariusTradeCard(getActiveVault()); refreshVaultView().catch(() => {}); }
+  if (activeView === "leverage") updatePreview(); // P2 — risk band status text + action card refreshed via render
   renderPoolFooter();
 }
 
