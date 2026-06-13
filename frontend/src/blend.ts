@@ -632,6 +632,17 @@ export interface ProjectedRates {
  * @param addBorrow Additional tokens borrowed (user's deposit × (leverage − 1))
  */
 export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: number): ProjectedRates {
+  if (!rs.rateConfig) {
+    return {
+      interestSupplyApr: rs.interestSupplyApr,
+      interestBorrowApr: rs.interestBorrowApr,
+      blndSupplyApr: rs.blndSupplyApr,
+      blndBorrowApr: rs.blndBorrowApr,
+      netSupplyApr: rs.netSupplyApr,
+      netBorrowCost: rs.netBorrowCost,
+    };
+  }
+
   const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
   const FIXED_95PCT = 9_500_000;
 

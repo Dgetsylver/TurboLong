@@ -1049,6 +1049,63 @@ function renderLiqCountdownRing(days: number, maxDays = 365): string {
 
 // ── APY Chart (#14) ──────────────────────────────────────────────────────────
 
+function renderApySourcesChart(proj: ReturnType<typeof projectRates>, lev: number, displayedApy: number): string {
+  const rawComponents = [
+    { label: "Supply interest", apr: proj.interestSupplyApr * lev, color: "#2DE8A3" },
+    { label: "BLND supply emissions", apr: proj.blndSupplyApr * lev, color: "#45A3FF" },
+    { label: "BLND borrow emissions", apr: proj.blndBorrowApr * (lev - 1), color: "#B988FF" },
+    { label: "Borrow cost", apr: -proj.interestBorrowApr * (lev - 1), color: "#FF4D6A" },
+  ];
+  const netApr = rawComponents.reduce((sum, item) => sum + item.apr, 0);
+  const scale = Math.abs(netApr) > 1e-9 ? displayedApy / netApr : 0;
+  const components = rawComponents.map(item => ({
+    label: item.label,
+    apy: item.apr * scale,
+    color: item.color,
+  }));
+  const subtotal = components.reduce((sum, item) => sum + item.apy, 0);
+  components.push({
+    label: "Estimated fees",
+    apy: displayedApy - subtotal,
+    color: "#8A93A6",
+  });
+
+  const signedSum = components.reduce((sum, item) => sum + item.apy, 0);
+  const totalMagnitude = components.reduce((sum, item) => sum + Math.abs(item.apy), 0);
+  let offset = 25;
+  const slices = totalMagnitude > 0
+    ? components.map(item => {
+      const length = Math.abs(item.apy) / totalMagnitude * 100;
+      const circle = `<circle cx="50" cy="50" r="15.915" fill="none" stroke="${item.color}" stroke-width="9" stroke-dasharray="${length.toFixed(4)} ${(100 - length).toFixed(4)}" stroke-dashoffset="${offset.toFixed(4)}"/>`;
+      offset -= length;
+      return circle;
+    }).join("")
+    : `<circle cx="50" cy="50" r="15.915" fill="none" stroke="var(--border)" stroke-width="9"/>`;
+
+  const rows = components.map(item => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <span style="display:flex;align-items:center;gap:6px;color:var(--text-2);"><i style="width:8px;height:8px;border-radius:50%;background:${item.color};display:inline-block;"></i>${item.label}</span>
+        <strong style="font-family:var(--mono);color:${item.apy < 0 ? "var(--danger)" : "var(--text)"};">${item.apy >= 0 ? "+" : ""}${fmt(item.apy, 2)}%</strong>
+      </div>`).join("");
+
+  return `
+    <div data-apy-sources-sum="${signedSum}" data-apy-sources-displayed="${displayedApy}" style="margin:8px 0 10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r-xs);background:var(--metric-bg);">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <svg viewBox="0 0 100 100" role="img" aria-label="APY source decomposition" style="width:104px;height:104px;flex:0 0 104px;transform:rotate(-90deg);">
+          ${slices}
+        </svg>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;">
+            <span style="font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--text-3);font-weight:700;">APY sources</span>
+            <strong style="font-family:var(--mono);color:${displayedApy < 0 ? "var(--danger)" : "var(--success)"};">${displayedApy >= 0 ? "+" : ""}${fmt(displayedApy, 2)}%</strong>
+          </div>
+          <div style="display:grid;gap:4px;font-size:11px;">${rows}</div>
+          <p style="margin:6px 0 0;color:var(--text-3);font-size:10px;line-height:1.35;">Signed contributions sum to the displayed net APY. Slice sizes use absolute contribution magnitude.</p>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity: number, oldSupply = 0, oldBorrow = 0) {
   const container = $("apy-chart");
   if (!rs) { container.innerHTML = ""; return; }
@@ -1085,7 +1142,7 @@ function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity
     <text x="${padL - 2}" y="${padT + 8}" text-anchor="end" class="apy-chart-label">${fmt(maxApy, 0)}%</text>
     <text x="${padL - 2}" y="${H - padB + 2}" text-anchor="end" class="apy-chart-label">${fmt(minApy, 0)}%</text>
     <text x="${labelX}" y="${labelY}" text-anchor="middle" class="apy-chart-label apy-chart-cur">${fmt(curApy, 2)}%</text>
-  </svg>`;
+  </svg>${renderApySourcesChart(curProj, currentLev, curApy)}`;
 }
 
 // ── APY history chart (B4) ────────────────────────────────────────────────────
