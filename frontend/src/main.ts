@@ -255,6 +255,7 @@ async function switchNetwork(net: NetworkMode) {
   buildPoolTabs();
   buildAssetTabs();
   renderPoolFooter();
+  updateHeaderHfBadge();
   updatePreview();
 
   // Prompt user to switch wallet network
@@ -454,6 +455,78 @@ function refreshFeeEstimates() {
   $("close-fee-estimate").classList.toggle("hidden", !positions.byAsset.has(selectedAsset.id));
 }
 const fmtAddr = (addr: string) => addr.slice(0, 6) + "…" + addr.slice(-4);
+
+type HeaderHfZone = "green" | "yellow" | "orange" | "red";
+
+function headerHfZone(hf: number): HeaderHfZone {
+  if (hf >= 2.0) return "green";
+  if (hf >= 1.5) return "yellow";
+  if (hf >= 1.2) return "orange";
+  return "red";
+}
+
+function installHeaderHfBadgeStyles() {
+  if (document.getElementById("header-hf-badge-styles")) return;
+  const style = document.createElement("style");
+  style.id = "header-hf-badge-styles";
+  style.textContent = `
+    .header-hf-badge {
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      cursor: help;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1;
+      padding: 6px 10px;
+      white-space: nowrap;
+    }
+    .header-hf-badge.green { color: var(--success); background: var(--success-bg); }
+    .header-hf-badge.yellow { color: var(--warning); background: var(--warning-bg); }
+    .header-hf-badge.orange { color: #ff8a3d; background: rgba(255, 138, 61, .12); }
+    .header-hf-badge.red { color: var(--danger); background: var(--danger-bg); }
+    .header-hf-badge.hidden { display: none; }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureHeaderHfBadge() {
+  installHeaderHfBadgeStyles();
+  let badge = document.getElementById("header-hf-badge") as HTMLElement | null;
+  if (badge) return badge;
+
+  badge = document.createElement("span");
+  badge.id = "header-hf-badge";
+  badge.className = "header-hf-badge hidden";
+  badge.setAttribute("role", "status");
+  badge.setAttribute("aria-live", "polite");
+  badge.tabIndex = 0;
+
+  const walletArea = $("wallet-area");
+  walletArea.insertBefore(badge, $("settings-btn"));
+  return badge;
+}
+
+function updateHeaderHfBadge() {
+  const badge = ensureHeaderHfBadge();
+  const hasPosition = positions.byAsset.size > 0;
+  if (!userAddress || !hasPosition) {
+    badge.className = "header-hf-badge hidden";
+    badge.textContent = "";
+    badge.removeAttribute("data-tip");
+    badge.removeAttribute("title");
+    return;
+  }
+
+  const hf = computePoolHF();
+  const text = isFinite(hf) ? fmt(hf, 3) : "\u221E";
+  const zone = isFinite(hf) ? headerHfZone(hf) : "green";
+  badge.textContent = `HF ${text}`;
+  badge.className = `header-hf-badge ${zone}`;
+  badge.dataset.tip = `Current pool health factor: ${text}`;
+  badge.title = `Current pool health factor: ${text}`;
+  badge.setAttribute("aria-label", `Current pool health factor ${text}`);
+}
 
 // ── Skeleton loading (#3) ────────────────────────────────────────────────────
 
@@ -1352,6 +1425,7 @@ function renderPosition() {
     ($("compound-btn") as HTMLButtonElement).disabled = true;
     // Show Open mode
     setActionCardMode("open");
+    updateHeaderHfBadge();
     return;
   }
 
@@ -1434,6 +1508,7 @@ function renderPosition() {
   const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
   poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
   poolHFEl.className   = `metric-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
+  updateHeaderHfBadge();
 
   // Borrow headroom
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -2336,6 +2411,7 @@ async function disconnect() {
   $("connect-prompt").classList.remove("hidden");
   $("dashboard").classList.add("hidden");
   $("asset-tabs-bar").style.display = "none";
+  updateHeaderHfBadge();
 }
 
 // ── View switching (Leverage / Swap) ─────────────────────────────────────
@@ -2874,6 +2950,7 @@ $("demo-btn").addEventListener("click", () => {
 updatePreview();
 renderTxHistory();
 renderPoolFooter();
+updateHeaderHfBadge();
 initTooltips();
 
 // ── Overview (cross-protocol dashboard) ───────────────────────────────────────
