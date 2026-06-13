@@ -88,8 +88,9 @@ import {
 import { seedHistoryFromServer, fetchSnapshotSeries, type SnapshotPoint } from "./history.ts";
 import { aquariusBestRate, aquariusPrice } from "./aquarius.ts";
 import { getAquariusListing, AQUARIUS_SWAP_URL } from "./aquarius_listings.ts";
-import { initI18n, applyTranslations, t, cycleLang, getLang } from "./i18n.ts";
-import { maybeAutoStartTour } from "./tour.ts";
+import { initI18n, applyTranslations, t, setLang, getLang } from "./i18n.ts";
+import { LANG_NAMES, type Lang } from "./locales.ts";
+import { maybeAutoStartTour, startTour } from "./tour.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -759,42 +760,38 @@ function getRateAtWindow(poolId: string, assetId: string, field: string, windowM
   return candidates[candidates.length - 1].val;
 }
 
-/** Render a trend arrow element next to an APY value element. */
+/** Render trend arrows into a dedicated slot next to an APY value label. */
 function renderTrendArrow(
-  targetEl: HTMLElement,
+  slotEl: HTMLElement,
   current: number,
   past24h: number | null,
   past7d: number | null
 ) {
-  // Remove any existing arrow
-  const existing = targetEl.parentElement?.querySelector(".rate-trend");
-  if (existing) existing.remove();
-
-  if (past24h === null && past7d === null) return;
-
-  const arrow = document.createElement("span");
-  arrow.className = "rate-trend";
+  if (past24h === null && past7d === null) { slotEl.innerHTML = ""; return; }
 
   const parts: string[] = [];
   const tipParts: string[] = [];
 
-  for (const [label, past, ms] of [
-    ["24h", past24h, 24 * 3600_000],
-    ["7d",  past7d,  7 * 24 * 3600_000],
-  ] as [string, number | null, number][]) {
+  for (const [label, past] of [
+    ["24h", past24h],
+    ["7d",  past7d],
+  ] as [string, number | null][]) {
     if (past === null) continue;
     const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
     const up = delta >= 0;
     const sym = up ? "▲" : "▼";
     const cls = up ? "rate-trend-up" : "rate-trend-down";
-    parts.push(`<span class="${cls}">${sym}${fmt(Math.abs(delta), 1)}%</span><span class="rate-trend-label">${label}</span>`);
+    // Clamp the shown delta so huge swings don't overflow the row.
+    const absDelta = Math.abs(delta);
+    const shown = absDelta > 999.9 ? "&gt;999.9%" : `${fmt(absDelta, 1)}%`;
+    const aria = `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
+    parts.push(`<span class="rate-trend" role="img" aria-label="${aria}"><span class="${cls}">${sym}${shown}</span><span class="rate-trend-label">${label}</span></span>`);
     tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
   }
 
-  if (parts.length === 0) return;
-  arrow.innerHTML = parts.join(" ");
-  arrow.setAttribute("title", tipParts.join(" | "));
-  targetEl.insertAdjacentElement("afterend", arrow);
+  if (parts.length === 0) { slotEl.innerHTML = ""; return; }
+  slotEl.innerHTML = parts.join(" ");
+  slotEl.setAttribute("title", tipParts.join(" | "));
 }
 
 // ── Sign + submit ─────────────────────────────────────────────────────────────
@@ -1249,13 +1246,13 @@ function renderSelectedAsset() {
 
   // Render arrows on net rows
   renderTrendArrow(
-    $("supply-net-apr"),
+    $("supply-net-trend"),
     supplyNetVal,
     getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W24),
     getRateAtWindow(selectedPool.id, selectedAsset.id, "supply-net", W7D),
   );
   renderTrendArrow(
-    $("borrow-net-cost"),
+    $("borrow-net-trend"),
     borrowNetVal,
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W24),
     getRateAtWindow(selectedPool.id, selectedAsset.id, "borrow-net", W7D),
@@ -1354,6 +1351,8 @@ function renderPoolFooter() {
     <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
     <span>\u00B7</span>
     <a href="https://github.com/blend-capital" target="_blank" rel="noopener">GitHub</a>
+    <span>\u00B7</span>
+    <a href="./status.html" target="_blank" rel="noopener">${t("nav.status")}</a>
   `;
 }
 
@@ -2669,6 +2668,9 @@ async function fetchSwapQuote() {
       const buySym  = ($("swap-buy-asset") as HTMLSelectElement).selectedOptions[0].text;
 
       $("swap-rate").textContent = `1 ${sellSym} \u2248 ${(buyNum / sellNum).toFixed(6)} ${buySym}`;
+      // Surface which venue the broker routed through (falls back to the broker itself).
+      const q = quote as { route?: string; source?: string };
+      $("swap-route").textContent = q.route ?? q.source ?? "Stellar Broker";
       $("swap-direct").textContent = quote.directTrade
         ? `${Number.parseFloat(quote.directTrade.buying).toFixed(7)} ${buySym}`
         : "\u2014";
@@ -2710,7 +2712,8 @@ async function compareAquariusRate(
   const sellC = BROKER_TO_CONTRACT[sellBrokerId];
   const buyC = BROKER_TO_CONTRACT[buyBrokerId];
   if (!sellC || !buyC) {
-    aqEl.textContent = "—";
+    aqEl.textContent = t("common.na");
+    aqEl.setAttribute("title", "No Aquarius route for this pair");
     badgeEl.textContent = "—";
     badgeEl.className = "best-rate-badge";
     return;
@@ -2719,12 +2722,14 @@ async function compareAquariusRate(
   const aq = await aquariusBestRate(sellC, buyC, amountStroops);
   if (!aq) {
     aqEl.textContent = "unavailable";
+    aqEl.removeAttribute("title");
     badgeEl.textContent = "Broker";
     badgeEl.className = "best-rate-badge best-broker";
     return;
   }
   const aqOut = Number(aq.amountOut) / 1e7;
   aqEl.textContent = `${aqOut.toFixed(7)} ${buySym}`;
+  aqEl.removeAttribute("title");
   const brokerWins = brokerBuyNum >= aqOut;
   badgeEl.textContent = brokerWins ? "Broker" : "Aquarius";
   badgeEl.className = `best-rate-badge ${brokerWins ? "best-broker" : "best-aquarius"}`;
@@ -3737,7 +3742,7 @@ async function registerAlertServiceWorker(): Promise<ServiceWorkerRegistration |
 
 registerAlertServiceWorker();
 
-$("alert-bell-btn").addEventListener("click", () => {
+function openAlertModal() {
   $("alert-pool-name").textContent = selectedPool.name;
   $("alert-asset-name").textContent = selectedAsset.symbol;
 
@@ -3748,6 +3753,14 @@ $("alert-bell-btn").addEventListener("click", () => {
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);
 
   $("alert-modal-overlay").classList.remove("hidden");
+}
+
+$("alert-bell-btn").addEventListener("click", openAlertModal);
+
+// Settings dropdown "Set up alerts" — reachable from any view, not just Trade.
+document.getElementById("alerts-menu-btn")?.addEventListener("click", () => {
+  $("settings-dropdown").classList.add("hidden");
+  openAlertModal();
 });
 
 $("alert-modal-close").addEventListener("click", () => {
@@ -3768,6 +3781,8 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
   }
 
   const leverageBracket = Number(($("alert-leverage") as HTMLSelectElement).value);
+  const hfEnabled = ($("alert-hf-enable") as HTMLInputElement).checked;
+  const hfThreshold = Number(($("alert-hf-threshold") as HTMLInputElement).value);
   const btn = $("alert-subscribe-btn") as HTMLButtonElement;
   btn.disabled = true;
   btn.textContent = "Subscribing...";
@@ -3781,6 +3796,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
         pool_id: selectedPool.id,
         asset_symbol: selectedAsset.symbol,
         leverage_bracket: leverageBracket,
+        ...(hfEnabled && Number.isFinite(hfThreshold) ? { hf_threshold: hfThreshold } : {}),
       }),
     });
 
@@ -3886,12 +3902,47 @@ function updateLangBadge(): void {
   if (badge) badge.textContent = getLang().toUpperCase();
 }
 
-document.getElementById("lang-toggle")?.addEventListener("click", () => {
-  cycleLang();
+// Re-render dynamic views that build strings in JS after a language change.
+function refreshDynamicLangStrings(): void {
   updateLangBadge();
-  // Re-render dynamic views that build strings in JS.
   if (activeView === "compare") renderCompareView();
   if (activeView === "vault") renderAquariusTradeCard(getActiveVault());
+  renderPoolFooter();
+}
+
+// Language picker — replaces the blind EN→ES→PT cycle with a real submenu.
+function buildLangMenu(): void {
+  const toggle = document.getElementById("lang-toggle");
+  if (!toggle) return;
+  let menu = document.getElementById("lang-submenu");
+  if (menu) { menu.classList.toggle("hidden"); return; }
+  menu = document.createElement("div");
+  menu.id = "lang-submenu";
+  menu.className = "lang-submenu";
+  for (const code of ["en", "es", "pt"] as Lang[]) {
+    const btn = document.createElement("button");
+    btn.className = "settings-dropdown-item";
+    btn.textContent = LANG_NAMES[code];
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setLang(code);
+      refreshDynamicLangStrings();
+      menu!.classList.add("hidden");
+    });
+    menu.appendChild(btn);
+  }
+  toggle.insertAdjacentElement("afterend", menu);
+}
+
+document.getElementById("lang-toggle")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  buildLangMenu();
+});
+
+// Take the tour from the settings dropdown.
+document.getElementById("tour-btn")?.addEventListener("click", () => {
+  $("settings-dropdown").classList.add("hidden");
+  startTour();
 });
 
 initI18n();
