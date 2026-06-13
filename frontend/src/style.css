@@ -1309,3 +1309,77 @@ kbd {
 .best-rate-badge { font-weight: 700; }
 .best-rate-badge.best-broker { color: #2DE8A3; }
 .best-rate-badge.best-aquarius { color: #7B61FF; }
+
+/* ── T3.3 — Compare Pools view ─────────────────────────────────────────────── */
+.compare-section {
+  max-width: 1040px; margin: 0 auto; padding: 28px 20px 40px;
+}
+.compare-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.compare-title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+.compare-sub { color: var(--text-2); font-size: 13px; max-width: 560px; margin: 0; line-height: 1.5; }
+.compare-controls { display: flex; align-items: center; gap: 10px; }
+.compare-window-toggle {
+  display: inline-flex; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 99px; padding: 3px;
+}
+.cw-btn {
+  background: transparent; border: none; color: var(--text-2);
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  padding: 5px 12px; border-radius: 99px; cursor: pointer; transition: all .15s;
+}
+.cw-btn:hover { color: var(--text); }
+.cw-btn.active { background: var(--primary); color: #04130D; }
+.compare-refresh {
+  width: 36px; height: 32px; padding: 0; font-size: 16px; line-height: 1;
+}
+.compare-table-wrap {
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface); overflow-x: auto;
+}
+.compare-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+.compare-table thead th {
+  text-align: right; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-3); padding: 14px 16px;
+  border-bottom: 1px solid var(--border); white-space: nowrap; user-select: none;
+}
+.compare-table th.ct-rank, .compare-table th.ct-asset { text-align: left; }
+.compare-table th[data-sort] { cursor: pointer; }
+.compare-table th[data-sort]:hover { color: var(--text); }
+.compare-table th.ct-sorted { color: var(--primary); }
+.compare-table tbody td {
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  font-size: 14px; text-align: right; vertical-align: middle;
+}
+.compare-table tbody tr:last-child td { border-bottom: none; }
+.compare-table tbody tr:hover { background: var(--tab-hover-bg); }
+.ct-rank { width: 44px; text-align: left !important; color: var(--text-3); font-family: var(--mono); }
+.ct-medal { color: var(--warning); font-size: 16px; }
+.ct-asset { text-align: left !important; }
+.ct-asset-cell { display: flex; align-items: center; gap: 8px; }
+.ct-sym { font-weight: 700; font-size: 15px; }
+.ct-pool { display: block; color: var(--text-3); font-size: 11px; margin-top: 2px; }
+.ct-num { font-family: var(--mono); }
+.ct-lev-apy { color: var(--primary); font-weight: 600; }
+.ct-lev { color: var(--text-2); }
+.ct-muted { color: var(--text-3); }
+.ct-best-row { background: linear-gradient(90deg, var(--primary-glow), transparent 60%); }
+.ct-best-row:hover { background: linear-gradient(90deg, var(--primary-glow), transparent 60%); }
+.compare-table .best-rate-badge {
+  font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 99px; background: var(--primary);
+  color: #04130D !important; white-space: nowrap;
+}
+.ct-trend { width: 100px; text-align: right; }
+.ct-spark { display: inline-block; vertical-align: middle; }
+.ct-spark-up { color: var(--success); }
+.ct-spark-down { color: var(--danger); }
+.ct-spark-empty { color: var(--text-3); font-family: var(--mono); }
+.compare-loading { text-align: center !important; color: var(--text-2); padding: 32px 16px !important; }
+.compare-foot { color: var(--text-3); font-size: 11px; line-height: 1.5; margin: 14px 4px 0; }
+@media (max-width: 640px) {
+  .compare-header { flex-direction: column; }
+  .compare-title { font-size: 20px; }
+}

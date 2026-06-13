@@ -49,6 +49,7 @@
         <div id="pool-dropdown" class="pool-dropdown hidden"></div>
         <button class="nav-btn" id="proto-vault">Vault</button>
         <button class="nav-btn" id="proto-swap">Swap</button>
+        <button class="nav-btn" id="proto-compare">Compare</button>
       </div>
       <div class="top-nav-right" id="wallet-area">
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
@@ -108,6 +109,12 @@
             <button class="protocol-btn" id="mobile-proto-swap">
               <span class="protocol-icon">&#8644;</span>
               Swap
+            </button>
+          </div>
+          <div class="protocol-section">
+            <button class="protocol-btn" id="mobile-proto-compare">
+              <span class="protocol-icon">&#9776;</span>
+              Compare
             </button>
           </div>
         </nav>
@@ -810,6 +817,45 @@
             </div>
 
             <p class="disclaimer">Deposits are managed by the Turbolong Strategy on Blend Protocol. Leverage loops are executed atomically. Rebalance is permissionless — anyone can trigger it when HF drops below the minimum threshold to protect all depositors.</p>
+          </section>
+        </div>
+
+        <!-- Compare Pools view (no wallet required) -->
+        <div id="compare-view" class="hidden">
+          <section class="compare-section">
+            <div class="compare-header">
+              <div>
+                <h2 class="compare-title">Compare Pools</h2>
+                <p class="compare-sub">Live net APY across every Blend pool &amp; asset, ranked by best leveraged yield. Best swap rate sourced from Aquarius. No wallet needed.</p>
+              </div>
+              <div class="compare-controls">
+                <div class="compare-window-toggle" id="compare-window-toggle" role="tablist" aria-label="History window">
+                  <button class="cw-btn" data-window="7">7D</button>
+                  <button class="cw-btn active" data-window="30">30D</button>
+                  <button class="cw-btn" data-window="365">1Y</button>
+                </div>
+                <button class="btn btn-ghost compare-refresh" id="compare-refresh" title="Refresh">&#8635;</button>
+              </div>
+            </div>
+            <div class="compare-table-wrap">
+              <table class="compare-table" id="compare-table">
+                <thead>
+                  <tr>
+                    <th class="ct-rank">#</th>
+                    <th class="ct-asset">Pool / Asset</th>
+                    <th class="ct-num" data-sort="base">Base APY</th>
+                    <th class="ct-num" data-sort="lev">Leveraged APY</th>
+                    <th class="ct-num ct-lev">Max Lev</th>
+                    <th class="ct-num" data-sort="rate">Aqua Rate</th>
+                    <th class="ct-trend">Trend</th>
+                  </tr>
+                </thead>
+                <tbody id="compare-tbody">
+                  <tr><td colspan="7" class="compare-loading">Loading pools…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="compare-foot">Leveraged APY assumes the maximum leverage that keeps health factor ≥ 1.20 at current pool rates; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
           </section>
         </div>
 

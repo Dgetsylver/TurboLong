@@ -85,8 +85,8 @@ import {
   type VaultStats,
   type UserVaultPosition,
 } from "./defindex.ts";
-import { seedHistoryFromServer } from "./history.ts";
-import { aquariusBestRate } from "./aquarius.ts";
+import { seedHistoryFromServer, fetchSnapshotSeries, type SnapshotPoint } from "./history.ts";
+import { aquariusBestRate, aquariusPrice } from "./aquarius.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -412,7 +412,7 @@ document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
 
-type AppView = "overview" | "leverage" | "swap" | "vault";
+type AppView = "overview" | "leverage" | "swap" | "vault" | "compare";
 let activeView: AppView = "leverage";
 
 // ── Expert mode ──────────────────────────────────────────────────────────────
@@ -2359,6 +2359,164 @@ async function disconnect() {
 
 // ── View switching (Leverage / Swap) ─────────────────────────────────────
 
+// ── Compare Pools view (T3.3) ────────────────────────────────────────────────
+//
+// No-wallet, read-only ranking of every Blend pool × asset by best leveraged net
+// APY, with an Aquarius indicative swap rate and a net-supply-APY history
+// sparkline sourced from the Turbolong snapshot service. Reuses aquarius.ts +
+// history.ts (T3.1). The grant-required "Best Rate" badge marks the top row.
+
+interface CompareRow {
+  poolName:  string;
+  poolId:    string;
+  asset:     AssetInfo;
+  rs:        ReserveStats;
+  baseApy:   number;          // aprToApy(netSupplyApr)
+  safeLev:   number;          // max leverage keeping HF ≥ COMPARE_HF_FLOOR, capped
+  levApy:    number;          // net APY at the carry-optimal leverage
+  aquaPrice: number | null;   // indicative 1 unit → USDC, null = no route
+  series:    SnapshotPoint[]; // net supply APR history within the window
+}
+
+const COMPARE_HF_FLOOR = 1.2;
+const COMPARE_LEV_CAP  = 8;
+
+let compareWindowDays = 30;
+let compareSortKey: "lev" | "base" | "rate" = "lev";
+let compareRows: CompareRow[] = [];
+let compareLoading = false;
+let compareToken = 0; // generation guard against overlapping renders
+
+function usdcAssetId(): string | null {
+  for (const p of getKnownPools()) {
+    for (const a of getPoolAssets(p)) {
+      if (a.symbol.toUpperCase() === "USDC") return a.id;
+    }
+  }
+  return null;
+}
+
+/** Carry-optimal leverage + the net APY it yields at current pool rates. */
+function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
+  const safeLev = Math.min(COMPARE_LEV_CAP, Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, COMPARE_HF_FLOOR)));
+  const carry   = rs.netSupplyApr - rs.netBorrowCost; // marginal yield per extra leverage unit
+  const effLev  = carry > 0 ? safeLev : 1;            // negative carry → no leverage
+  const levApy  = aprToApy(rs.netSupplyApr * effLev - rs.netBorrowCost * (effLev - 1));
+  return { safeLev, levApy };
+}
+
+function compareSparkline(series: SnapshotPoint[]): string {
+  if (series.length < 2) return `<span class="ct-spark-empty">—</span>`;
+  const W = 88, H = 26, pad = 3;
+  const vals = series.map((p) => p.val);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = max - min || 1;
+  const n = series.length;
+  const x = (i: number) => pad + (i / (n - 1)) * (W - 2 * pad);
+  const y = (v: number) => pad + (1 - (v - min) / range) * (H - 2 * pad);
+  const pts = series.map((p, i) => `${x(i).toFixed(1)},${y(p.val).toFixed(1)}`).join(" ");
+  const up = vals[n - 1] >= vals[0];
+  const lastX = x(n - 1).toFixed(1), lastY = y(vals[n - 1]).toFixed(1);
+  return `<svg class="ct-spark ${up ? "ct-spark-up" : "ct-spark-down"}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX}" cy="${lastY}" r="1.8" fill="currentColor"/>
+  </svg>`;
+}
+
+function compareSortRows(): CompareRow[] {
+  const rows = [...compareRows];
+  rows.sort((a, b) => {
+    if (compareSortKey === "base") return b.baseApy - a.baseApy;
+    if (compareSortKey === "rate") return (b.aquaPrice ?? -1) - (a.aquaPrice ?? -1);
+    return b.levApy - a.levApy;
+  });
+  return rows;
+}
+
+function renderCompareTable(): void {
+  const tbody = $("compare-tbody");
+  const rows = compareSortRows();
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="compare-loading">${
+      compareLoading ? "Loading pools…" : "No pools available."
+    }</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r, i) => {
+    const best = i === 0 && compareSortKey === "lev";
+    const rate = r.aquaPrice == null ? `<span class="ct-muted">n/a</span>` : r.aquaPrice.toFixed(4);
+    return `<tr class="${best ? "ct-best-row" : ""}">
+      <td class="ct-rank">${best ? `<span class="ct-medal">&#9733;</span>` : i + 1}</td>
+      <td class="ct-asset">
+        <div class="ct-asset-cell">
+          <span class="ct-sym">${r.asset.symbol}</span>
+          ${best ? `<span class="best-rate-badge best-broker">Best Rate</span>` : ""}
+        </div>
+        <span class="ct-pool">${r.poolName}</span>
+      </td>
+      <td class="ct-num">${r.baseApy.toFixed(2)}%</td>
+      <td class="ct-num ct-lev-apy">${r.levApy.toFixed(2)}%</td>
+      <td class="ct-num ct-lev">${r.safeLev.toFixed(1)}&times;</td>
+      <td class="ct-num">${rate}</td>
+      <td class="ct-trend">${compareSparkline(r.series)}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function renderCompareView(): Promise<void> {
+  const token = ++compareToken;
+  compareLoading = true;
+  compareRows = [];
+  renderCompareTable();
+
+  const usdc   = usdcAssetId();
+  const cutoff = Date.now() - compareWindowDays * 86_400_000;
+  const limit  = compareWindowDays <= 7 ? 400 : compareWindowDays <= 30 ? 900 : 2000;
+
+  // 1. Reserves per pool (sequential per pool to spare the RPC); render progressively.
+  for (const pool of getKnownPools()) {
+    let reserves: ReserveStats[] = [];
+    try {
+      reserves = await fetchAllReserves(pool, userAddress || "");
+    } catch (e) {
+      console.warn(`compare: reserves failed for ${pool.name}`, e);
+      continue;
+    }
+    if (token !== compareToken) return; // superseded by a newer render
+    for (const rs of reserves) {
+      const { safeLev, levApy } = compareLevApy(rs);
+      compareRows.push({
+        poolName: pool.name, poolId: pool.id, asset: rs.asset, rs,
+        baseApy: aprToApy(rs.netSupplyApr), safeLev, levApy,
+        aquaPrice: null, series: [],
+      });
+    }
+    renderCompareTable();
+  }
+  compareLoading = false;
+  if (token !== compareToken) return;
+  renderCompareTable();
+
+  // 2. Enrich each row with an Aquarius rate + history sparkline, all in parallel.
+  await Promise.allSettled(compareRows.map(async (r) => {
+    const sym = r.asset.symbol.toUpperCase();
+    const tasks: Promise<unknown>[] = [];
+    if (sym === "USDC") {
+      r.aquaPrice = 1;
+    } else if (usdc && r.asset.id !== usdc) {
+      tasks.push(aquariusPrice(r.asset.id, usdc).then((v) => { r.aquaPrice = v; }).catch(() => {}));
+    }
+    tasks.push(
+      fetchSnapshotSeries(r.poolId, r.asset.symbol, "net_supply_apr", limit)
+        .then((s) => { r.series = s.filter((p) => p.ts >= cutoff); })
+        .catch(() => {}),
+    );
+    await Promise.all(tasks);
+    if (token === compareToken) renderCompareTable();
+  }));
+  if (token === compareToken) renderCompareTable();
+}
+
 function switchView(view: AppView) {
   activeView = view;
   // Top nav active states
@@ -2366,16 +2524,19 @@ function switchView(view: AppView) {
   const blendBtn = $("proto-blend");
   const swapBtn  = $("proto-swap");
   const vaultBtn = $("proto-vault");
+  const compareBtn = $("proto-compare");
   overviewBtn.classList.toggle("active", view === "overview");
   blendBtn.classList.toggle("active", view === "leverage");
   swapBtn.classList.toggle("active", view === "swap");
   vaultBtn.classList.toggle("active", view === "vault");
+  compareBtn.classList.toggle("active", view === "compare");
 
   // Mobile sidebar active states
   document.getElementById("mobile-proto-overview")?.classList.toggle("active", view === "overview");
   document.getElementById("mobile-proto-blend")?.classList.toggle("active", view === "leverage");
   document.getElementById("mobile-proto-swap")?.classList.toggle("active", view === "swap");
   document.getElementById("mobile-proto-vault")?.classList.toggle("active", view === "vault");
+  document.getElementById("mobile-proto-compare")?.classList.toggle("active", view === "compare");
 
   // Toggle pool tabs visibility (mobile sidebar)
   $("pool-tabs").style.display = view === "leverage" ? "" : "none";
@@ -2388,6 +2549,7 @@ function switchView(view: AppView) {
   $("overview-view").classList.add("hidden");
   $("swap-view").classList.add("hidden");
   $("vault-view").classList.add("hidden");
+  $("compare-view").classList.add("hidden");
   $("dashboard").classList.add("hidden");
   $("connect-prompt").classList.add("hidden");
 
@@ -2412,6 +2574,9 @@ function switchView(view: AppView) {
   } else if (view === "vault") {
     $("vault-view").classList.remove("hidden");
     refreshVaultView();
+  } else if (view === "compare") {
+    $("compare-view").classList.remove("hidden");
+    renderCompareView();
   }
   closeDrawer();
   // Close pool dropdown
@@ -2711,12 +2876,39 @@ $("proto-blend").addEventListener("click", (e) => {
 });
 $("proto-swap").addEventListener("click",  () => switchView("swap"));
 $("proto-vault").addEventListener("click", () => switchView("vault"));
+$("proto-compare").addEventListener("click", () => switchView("compare"));
 
 // Mobile sidebar nav
 document.getElementById("mobile-proto-overview")?.addEventListener("click", () => switchView("overview"));
 document.getElementById("mobile-proto-blend")?.addEventListener("click", () => switchView("leverage"));
 document.getElementById("mobile-proto-swap")?.addEventListener("click", () => switchView("swap"));
 document.getElementById("mobile-proto-vault")?.addEventListener("click", () => switchView("vault"));
+document.getElementById("mobile-proto-compare")?.addEventListener("click", () => switchView("compare"));
+
+// Compare view: history-window toggle (re-fetches series)
+$("compare-window-toggle").addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".cw-btn") as HTMLElement | null;
+  if (!btn) return;
+  const w = Number(btn.dataset.window);
+  if (!w || w === compareWindowDays) return;
+  compareWindowDays = w;
+  for (const b of document.querySelectorAll("#compare-window-toggle .cw-btn")) {
+    b.classList.toggle("active", b === btn);
+  }
+  renderCompareView();
+});
+// Compare view: sort by column header
+$("compare-table").addEventListener("click", (e) => {
+  const th = (e.target as HTMLElement).closest("th[data-sort]") as HTMLElement | null;
+  if (!th) return;
+  compareSortKey = th.dataset.sort as "lev" | "base" | "rate";
+  for (const h of document.querySelectorAll("#compare-table th[data-sort]")) {
+    h.classList.toggle("ct-sorted", h === th);
+  }
+  renderCompareTable();
+});
+// Compare view: manual refresh
+$("compare-refresh").addEventListener("click", () => renderCompareView());
 
 // Close dropdowns on click outside
 document.addEventListener("click", () => {
