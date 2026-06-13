@@ -10,7 +10,7 @@ use crate::storage;
 use defindex_strategy_core::StrategyError;
 use soroban_sdk::{contractimpl, symbol_short, Address, Env, String};
 
-use crate::BlendLeverageStrategy;
+use crate::{BlendLeverageStrategy, BlendLeverageStrategyArgs, BlendLeverageStrategyClient};
 
 // ── SEP-41 interface ─────────────────────────────────────────────────────────
 

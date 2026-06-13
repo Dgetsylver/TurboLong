@@ -20,7 +20,8 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Val, Vec,
+    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Symbol, Val,
+    Vec,
 };
 use storage::{extend_instance_ttl, Config};
 
