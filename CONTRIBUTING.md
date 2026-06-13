@@ -10,15 +10,21 @@ issues.
 2. For Drips wave work, prefer issues labeled `drips`, `Stellar Wave`, and a
    size label such as `size:S`.
 3. Check that the issue has no assignee and no active linked pull request.
-4. Comment on the issue before starting so maintainers and other contributors
+4. Confirm the work is not already merged. Branch your work from the latest
+   `main`, and check that no open or merged PR already covers the issue before
+   starting — a closed issue means the work is done, not available.
+5. Comment on the issue before starting so maintainers and other contributors
    know you are working on it.
-5. Keep the change scoped to the issue acceptance criteria unless a maintainer
+6. Keep the change scoped to the issue acceptance criteria unless a maintainer
    asks for more.
 
 ## Branch naming
 
 Use short, descriptive branch names that include the issue number when there is
-one.
+one. **Always work on a dedicated feature branch — never open a pull request
+from your fork's `main` branch.** A PR from `main` mutates every time you push
+to your fork and cannot be updated independently of unrelated work, so such PRs
+will be closed with a request to resubmit from a feature branch.
 
 Examples:
 
@@ -26,6 +32,23 @@ Examples:
 - `fix/42-wallet-connect-error`
 - `feat/79-architecture-diagram`
 - `chore/update-alerts-deploy`
+
+## What not to commit
+
+Pull requests that contain any of the following will be closed without review:
+
+- **Build artifacts or dependencies.** Never commit `node_modules/`, Rust
+  `target/` directories, `dist/`, or other generated output. These are listed
+  in `.gitignore`; run `git status` before committing and confirm your diff
+  contains only source changes. A PR whose file count is dominated by
+  `node_modules/` or `target/` is unreviewable.
+- **Scratch or debug files.** Remove temporary scripts (`tmp_*.js`, one-off
+  inspection files) before opening a PR.
+- **Secrets.** Never commit private keys, `.env` files, or API tokens. The
+  secret-scanning workflow will flag these, but it is your responsibility to
+  keep them out.
+- **Duplicate submissions.** Do not open the same change under multiple titles
+  or branches. One change, one pull request.
 
 ## Commits
 
