@@ -409,7 +409,7 @@ function startFreshnessTimer() {
 
 function animateNumber(el: HTMLElement, to: number, duration = 200, formatFn: (n: number) => string = (n) => fmt(n, 2)) {
   const fromText = el.textContent?.replace(/[^\d.\-]/g, "") ?? "0";
-  const from = parseFloat(fromText) || 0;
+  const from = Number.parseFloat(fromText) || 0;
   if (Math.abs(from - to) < 0.001) { el.textContent = formatFn(to); return; }
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     el.textContent = formatFn(to); return;
@@ -822,7 +822,7 @@ function selectPool(pool: PoolDef) {
 // ── Asset tabs ────────────────────────────────────────────────────────────────
 
 /** Set leverage slider min/max/step based on asset cFactor and lFactor. */
-function updateLeverageSlider(c: number, l: number = 1) {
+function updateLeverageSlider(c: number, l = 1) {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
   const maxLev = Math.floor(maxLeverageFor(c, l, minHF()) * 10) / 10; // floor to 1 decimal
@@ -834,8 +834,8 @@ function updateLeverageSlider(c: number, l: number = 1) {
   slider.max = numIn.max = String(leverageable ? maxLev : 1.0);
   slider.step = numIn.step = "0.1";
   slider.disabled = numIn.disabled = !leverageable;
-  const cur = parseFloat(slider.value);
-  const clamped = Math.min(parseFloat(slider.max), Math.max(1.0, cur));
+  const cur = Number.parseFloat(slider.value);
+  const clamped = Math.min(Number.parseFloat(slider.max), Math.max(1.0, cur));
   if (clamped !== cur) { slider.value = String(clamped); numIn.value = String(clamped); }
   // Gradient track (#9)
   slider.style.background = leverageable
@@ -922,7 +922,7 @@ async function refreshTabData() {
 
 function renderHFGauge(hf: number): string {
   const cx = 60, cy = 55, r = 45;
-  const clampedHF = Math.max(1.0, Math.min(1.3, isFinite(hf) ? hf : 1.3));
+  const clampedHF = Math.max(1.0, Math.min(1.3, Number.isFinite(hf) ? hf : 1.3));
   const pct = (clampedHF - 1.0) / 0.3;
   const angle = Math.PI * (1 - pct);
   const nx = cx + r * Math.cos(angle);
@@ -937,7 +937,7 @@ function renderHFGauge(hf: number): string {
     <path d="${bgArc}" fill="none" stroke="var(--hf-bar-bg)" stroke-width="8" stroke-linecap="round"/>
     <path d="${fillArc}" fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"/>
     <circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="5" fill="${color}"/>
-    <text x="${cx}" y="${cy + 2}" text-anchor="middle" class="hf-gauge-text ${textColor}">${isFinite(hf) ? fmt(hf, 3) : "\u221E"}</text>
+    <text x="${cx}" y="${cy + 2}" text-anchor="middle" class="hf-gauge-text ${textColor}">${Number.isFinite(hf) ? fmt(hf, 3) : "\u221E"}</text>
   </svg>`;
 }
 
@@ -963,7 +963,7 @@ function renderLiqCountdownRing(days: number, maxDays = 365): string {
 function renderApyChart(rs: ReserveStats | undefined, currentLev: number, equity: number, oldSupply = 0, oldBorrow = 0) {
   const container = $("apy-chart");
   if (!rs) { container.innerHTML = ""; return; }
-  const maxLev = parseFloat(($("leverage-slider") as HTMLInputElement).max);
+  const maxLev = Number.parseFloat(($("leverage-slider") as HTMLInputElement).max);
   const W = 300, H = 120, padL = 34, padR = 10, padT = 14, padB = 15;
   const steps: { lev: number; apy: number }[] = [];
   for (let l = 1.0; l <= maxLev; l += 0.2) {
@@ -1198,7 +1198,7 @@ function computePoolHF(): number {
     weightedCollateral += pos.collateral * rs.cFactor * rs.priceUsd;
     totalDebt          += (pos.debt / rs.lFactor) * rs.priceUsd;
   }
-  return totalDebt > 0 ? weightedCollateral / totalDebt : Infinity;
+  return totalDebt > 0 ? weightedCollateral / totalDebt : Number.POSITIVE_INFINITY;
 }
 
 // ── Portfolio summary (#8) ───────────────────────────────────────────────────
@@ -1299,7 +1299,7 @@ function renderPosition() {
   // Hero metrics
   const hf = pos.hf;
   const heroHf = $("hero-hf");
-  heroHf.textContent = isFinite(hf) ? fmt(hf, 3) : "\u221E";
+  heroHf.textContent = Number.isFinite(hf) ? fmt(hf, 3) : "\u221E";
   heroHf.className = `metric-hero-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
   $("hero-leverage").textContent = `${fmt(pos.leverage, 2)}\u00D7`;
 
@@ -1307,7 +1307,7 @@ function renderPosition() {
   const hfEl = $("pos-hf");
   const hfIcon = hf > 1.1 ? "\u2713" : hf > 1.03 ? "\u26A0" : "\u2717";
   const hfDec = expertMode ? 5 : 3;
-  hfEl.textContent = `${hfIcon} ${isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
+  hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
   hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
   const barPct = Math.min(100, Math.max(0, (hf - 1) / 0.3 * 100));
   const bar = $("hf-bar");
@@ -1317,7 +1317,7 @@ function renderPosition() {
   // ARIA on HF bar (#6)
   const barWrap = $("hf-bar").parentElement!;
   barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
-  barWrap.setAttribute("aria-label", `Health factor ${isFinite(hf) ? fmt(hf, 3) : "infinity"}`);
+  barWrap.setAttribute("aria-label", `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}`);
 
   // HF Gauge (#7)
   const gaugeEl = document.querySelector(".hf-gauge-container") as HTMLElement;
@@ -1325,7 +1325,7 @@ function renderPosition() {
 
   // HF warning banner (#2) — only show below 1.01
   const warnEl = $("hf-pos-warning");
-  if (isFinite(hf) && hf < 1.01) {
+  if (Number.isFinite(hf) && hf < 1.01) {
     const isDanger = hf < 1.003;
     warnEl.className = `hf-pos-warning ${isDanger ? "hf-danger-level" : "hf-warn-level"}`;
     warnEl.innerHTML = `
@@ -1343,7 +1343,7 @@ function renderPosition() {
   const poolHF   = computePoolHF();
   const poolHFEl = $("pos-pool-hf");
   const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
-  poolHFEl.textContent = `${poolIcon} ${isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
+  poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
   poolHFEl.className   = `metric-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
 
   // Borrow headroom
@@ -1388,7 +1388,7 @@ function renderPosition() {
   // Days until liquidation with ring (#18)
   const liqDaysEl  = $("pos-liq-days");
   const liqNoteEl  = $("pos-liq-note");
-  if (rs && pos.leverage > 0 && isFinite(pos.hf) && pos.hf > 1) {
+  if (rs && pos.leverage > 0 && Number.isFinite(pos.hf) && pos.hf > 1) {
     const spreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
     if (spreadPct <= 0) {
       liqDaysEl.textContent = "Never (supply rate \u2265 borrow rate)";
@@ -1423,7 +1423,7 @@ async function updateCompoundEstimate() {
   // Check pending BLND from the displayed value
   const blndText = $("pos-blnd").textContent ?? "";
   const blndMatch = blndText.match(/([\d.]+)/);
-  const pendingBlnd = blndMatch ? parseFloat(blndMatch[1]) : 0;
+  const pendingBlnd = blndMatch ? Number.parseFloat(blndMatch[1]) : 0;
 
   if (pendingBlnd <= 0 || !positions.byAsset.has(selectedAsset.id)) {
     estimateEl.textContent = "";
@@ -1544,9 +1544,9 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
 function updatePreview() {
   const slider = $("leverage-slider") as HTMLInputElement;
   const numIn  = $("leverage-input")  as HTMLInputElement;
-  const lev    = parseFloat(slider.value) || 1.0;
+  const lev    = Number.parseFloat(slider.value) || 1.0;
   // Keep the number input in sync with the slider
-  if (parseFloat(numIn.value) !== lev) numIn.value = lev.toFixed(1);
+  if (Number.parseFloat(numIn.value) !== lev) numIn.value = lev.toFixed(1);
   const rs      = reserves.find(r => r.asset.id === selectedAsset.id);
   const c       = rs ? rs.cFactor : selectedAsset.cFactor;
   const l       = rs?.lFactor ?? 1;
@@ -1555,8 +1555,8 @@ function updatePreview() {
 
   // In adjust mode, use equity as the base; in add-funds mode, use the add-funds input; in open mode, use initial deposit
   const equity  = (actionMode === "adjust" && pos) ? pos.equity
-    : actionMode === "add-funds" ? (parseFloat(($("add-funds-input") as HTMLInputElement).value) || 0)
-    : (parseFloat(($("initial-input") as HTMLInputElement).value) || 0);
+    : actionMode === "add-funds" ? (Number.parseFloat(($("add-funds-input") as HTMLInputElement).value) || 0)
+    : (Number.parseFloat(($("initial-input") as HTMLInputElement).value) || 0);
   const supply  = equity * lev;
   const borrow  = equity * (lev - 1);
 
@@ -1568,7 +1568,7 @@ function updatePreview() {
   $("prev-lev").textContent         = `${lev.toFixed(2)}\u00D7`;
   $("prev-supply").textContent      = `${fmt(supply, 2)} ${selectedAsset.symbol}`;
   $("prev-borrow").textContent      = `${fmt(borrow, 2)} ${selectedAsset.symbol}`;
-  $("prev-hf").textContent          = isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "\u221E";
+  $("prev-hf").textContent          = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "\u221E";
   $("prev-hf").className            = hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
 
   // Borrow headroom: how much more could be borrowed before liquidation
@@ -1608,7 +1608,7 @@ function updatePreview() {
     if (spreadPct <= 0) {
       prevLiqEl.textContent = "Never";
       prevLiqEl.className   = "hf-ok";
-    } else if (isFinite(hf) && hf > 1) {
+    } else if (Number.isFinite(hf) && hf > 1) {
       const days = Math.log(hf) / (spreadPct / 100) * 365;
       prevLiqEl.textContent = days > 3650 ? ">10 years" : `~${Math.round(days)} days`;
       prevLiqEl.className   = days < 30 ? "hf-bad" : days < 90 ? "hf-warn" : "hf-ok";
@@ -1621,10 +1621,10 @@ function updatePreview() {
     renderApyChart(rs, lev, equity, oldSupply, oldBorrow);
 
     // Return calculator (#36)
-    const depositUsd = parseFloat(($("calc-deposit-usd") as HTMLInputElement).value);
+    const depositUsd = Number.parseFloat(($("calc-deposit-usd") as HTMLInputElement).value);
     const weeklyEl  = $("calc-weekly");
     const monthlyEl = $("calc-monthly");
-    if (!isNaN(depositUsd) && depositUsd > 0) {
+    if (!Number.isNaN(depositUsd) && depositUsd > 0) {
       const weekly  = depositUsd * netApy / 100 / 52;
       const monthly = depositUsd * netApy / 100 / 12;
       const cls = netApy > 0 ? "apr-great" : netApy < 0 ? "apr-bad" : "";
@@ -1641,7 +1641,7 @@ function updatePreview() {
   }
 
   // Risk zone labels (#9)
-  const maxSlider = parseFloat(($("leverage-slider") as HTMLInputElement).max) || 10;
+  const maxSlider = Number.parseFloat(($("leverage-slider") as HTMLInputElement).max) || 10;
   const atMax = Math.abs(lev - maxSlider) < 0.15;
   const zones = document.querySelectorAll<HTMLElement>(".slider-zone");
   const maxiDegenEl = $("zone-maxi-degen");
@@ -1700,7 +1700,7 @@ function updatePreview() {
 
   // Add Funds button: enabled if amount > 0 and HF is safe
   if (actionMode === "add-funds") {
-    const addAmt = parseFloat(($("add-funds-input") as HTMLInputElement).value) || 0;
+    const addAmt = Number.parseFloat(($("add-funds-input") as HTMLInputElement).value) || 0;
     ($("add-funds-btn") as HTMLButtonElement).disabled = !safe || addAmt <= 0;
     ($("add-funds-btn") as HTMLButtonElement).textContent = addAmt > 0
       ? `Add ${fmt(addAmt, 2)} ${selectedAsset.symbol} at ${lev.toFixed(1)}\u00D7`
@@ -1758,9 +1758,9 @@ async function openPosition() {
   if (!userAddress) return;
   if (demoMode) { toast("Demo mode \u2014 connect a real wallet to transact", "info"); return; }
   if (selectedPool.status !== 1) { toast("Pool is frozen \u2014 cannot open new positions", "error"); return; }
-  const initial  = parseFloat(($("initial-input") as HTMLInputElement).value);
-  const leverage = parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
+  const initial  = Number.parseFloat(($("initial-input") as HTMLInputElement).value);
+  const leverage = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  if (Number.isNaN(initial) || initial <= 0) { toast("Enter a valid amount", "error"); return; }
 
   // Use live cFactor from reserves so intermediate borrow steps don't exceed pool limits
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -1972,7 +1972,7 @@ async function adjustLeverage() {
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
-  const targetLev = parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  const targetLev = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
   const curLev = pos.leverage;
   if (Math.abs(targetLev - curLev) < 0.05) { toast("Target leverage is same as current", "error"); return; }
 
@@ -2022,9 +2022,9 @@ async function addFundsToPosition() {
   const pos = positions.byAsset.get(selectedAsset.id);
   if (!pos) return;
 
-  const additional = parseFloat(($("add-funds-input") as HTMLInputElement).value);
-  const leverage   = parseFloat(($("leverage-slider") as HTMLInputElement).value);
-  if (isNaN(additional) || additional <= 0) { toast("Enter a valid amount", "error"); return; }
+  const additional = Number.parseFloat(($("add-funds-input") as HTMLInputElement).value);
+  const leverage   = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value);
+  if (Number.isNaN(additional) || additional <= 0) { toast("Enter a valid amount", "error"); return; }
 
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
   const liveAsset = rs?.asset ?? selectedAsset;
@@ -2338,7 +2338,7 @@ async function fetchSwapQuote() {
   const sellAsset  = ($("swap-sell-asset") as HTMLSelectElement).value;
   const buyAsset   = ($("swap-buy-asset") as HTMLSelectElement).value;
 
-  if (!sellAmount || parseFloat(sellAmount) <= 0 || sellAsset === buyAsset) {
+  if (!sellAmount || Number.parseFloat(sellAmount) <= 0 || sellAsset === buyAsset) {
     $("swap-quote-details").classList.add("hidden");
     ($("swap-buy-amount") as HTMLInputElement).value = "";
     _lastQuote = null;
@@ -2358,16 +2358,16 @@ async function fetchSwapQuote() {
 
     if (quote.status === "success" && quote.estimatedBuyingAmount) {
       ($("swap-buy-amount") as HTMLInputElement).placeholder = "\u2014";
-      ($("swap-buy-amount") as HTMLInputElement).value = parseFloat(quote.estimatedBuyingAmount).toFixed(7);
+      ($("swap-buy-amount") as HTMLInputElement).value = Number.parseFloat(quote.estimatedBuyingAmount).toFixed(7);
 
-      const sellNum = parseFloat(sellAmount);
-      const buyNum  = parseFloat(quote.estimatedBuyingAmount);
+      const sellNum = Number.parseFloat(sellAmount);
+      const buyNum  = Number.parseFloat(quote.estimatedBuyingAmount);
       const sellSym = ($("swap-sell-asset") as HTMLSelectElement).selectedOptions[0].text;
       const buySym  = ($("swap-buy-asset") as HTMLSelectElement).selectedOptions[0].text;
 
       $("swap-rate").textContent = `1 ${sellSym} \u2248 ${(buyNum / sellNum).toFixed(6)} ${buySym}`;
       $("swap-direct").textContent = quote.directTrade
-        ? `${parseFloat(quote.directTrade.buying).toFixed(7)} ${buySym}`
+        ? `${Number.parseFloat(quote.directTrade.buying).toFixed(7)} ${buySym}`
         : "\u2014";
       $("swap-profit").textContent = quote.profit ? `${quote.profit}` : "\u2014";
       $("swap-quote-details").classList.remove("hidden");
@@ -2390,7 +2390,7 @@ async function fetchSwapQuote() {
 function updateSwapBtn() {
   const btn = $("swap-btn") as HTMLButtonElement;
   const sellAmount = ($("swap-sell-amount") as HTMLInputElement).value;
-  const hasAmount = sellAmount && parseFloat(sellAmount) > 0;
+  const hasAmount = sellAmount && Number.parseFloat(sellAmount) > 0;
   const sellAsset = ($("swap-sell-asset") as HTMLSelectElement).value;
   const buyAsset  = ($("swap-buy-asset") as HTMLSelectElement).value;
   const samePair = sellAsset === buyAsset;
@@ -2602,12 +2602,12 @@ document.querySelectorAll(".slippage-opt").forEach(btn => {
     document.querySelectorAll(".slippage-opt").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     (document.getElementById("slippage-custom-input") as HTMLInputElement).value = "";
-    swapSlippage = parseFloat((btn as HTMLElement).dataset.slip!);
+    swapSlippage = Number.parseFloat((btn as HTMLElement).dataset.slip!);
     debounceQuote();
   });
 });
 $("slippage-custom-input").addEventListener("input", () => {
-  const val = parseFloat(($("slippage-custom-input") as HTMLInputElement).value);
+  const val = Number.parseFloat(($("slippage-custom-input") as HTMLInputElement).value);
   if (val > 0 && val <= 50) {
     document.querySelectorAll(".slippage-opt").forEach(b => b.classList.remove("active"));
     swapSlippage = val / 100;
@@ -2703,8 +2703,8 @@ function debouncedPreview() {
 ($("leverage-input")  as HTMLInputElement).addEventListener("input", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;
   const slider = $("leverage-slider") as HTMLInputElement;
-  const v = parseFloat(numIn.value);
-  if (!isNaN(v) && v >= 1.0) {
+  const v = Number.parseFloat(numIn.value);
+  if (!Number.isNaN(v) && v >= 1.0) {
     slider.value = v.toFixed(1);
     updatePreview();
   }
@@ -2713,9 +2713,9 @@ function debouncedPreview() {
 ($("leverage-input")  as HTMLInputElement).addEventListener("change", () => {
   const numIn  = $("leverage-input")  as HTMLInputElement;
   const slider = $("leverage-slider") as HTMLInputElement;
-  let v = parseFloat(numIn.value);
-  if (isNaN(v)) v = 1.0;
-  v = Math.min(parseFloat(slider.max), Math.max(1.0, Math.round(v * 10) / 10));
+  let v = Number.parseFloat(numIn.value);
+  if (Number.isNaN(v)) v = 1.0;
+  v = Math.min(Number.parseFloat(slider.max), Math.max(1.0, Math.round(v * 10) / 10));
   numIn.value  = v.toFixed(1);
   slider.value = v.toFixed(1);
   updatePreview();
@@ -2882,7 +2882,7 @@ function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVau
         <td style="color:var(--text-2);font-family:var(--sans)">${pool.name}</td>
         <td class="text-right">${fmt(bp.pos.equity, 2)} ${bp.asset.symbol}</td>
         <td class="text-right">${fmt(bp.pos.leverage, 1)}&times;</td>
-        <td class="text-right ${hfColor}">${isFinite(bp.pos.hf) ? fmt(bp.pos.hf, 3) : "\u221E"}</td>
+        <td class="text-right ${hfColor}">${Number.isFinite(bp.pos.hf) ? fmt(bp.pos.hf, 3) : "\u221E"}</td>
         <td class="text-right ${netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</td>
         <td class="text-right">${fmt(bp.pos.debt, 2)} ${bp.asset.symbol}</td>
       </tr>`;
@@ -2953,8 +2953,8 @@ function getActiveVault(): VaultConfig {
 }
 
 let _lastVaultStats: VaultStats | null = null;
-let _userVaultBalance: number = 0;
-let _userWalletBalance: number = 0;
+let _userVaultBalance = 0;
+let _userWalletBalance = 0;
 
 async function refreshVaultView() {
   const vault = getActiveVault();
@@ -3065,17 +3065,17 @@ async function refreshVaultView() {
 
     // HF bar visualization
     $("vault-hf-bar-wrap").classList.remove("hidden");
-    const hfVal = isFinite(stats.healthFactor) ? stats.healthFactor : 3;
+    const hfVal = Number.isFinite(stats.healthFactor) ? stats.healthFactor : 3;
     const hfPct = Math.min(Math.max((hfVal - 1) / 1.0 * 100, 0), 100); // 1.0 to 2.0 range
     const fillEl = $("vault-hf-bar-fill") as HTMLElement;
     const markerEl = $("vault-hf-bar-marker") as HTMLElement;
     fillEl.style.width = hfPct + "%";
     fillEl.className = "hf-bar-fill " + (hfVal >= 1.1 ? (hfVal >= 1.5 ? "hf-fill-ok" : "hf-fill-warn") : "hf-fill-bad");
     markerEl.style.left = hfPct + "%";
-    $("vault-hf-bar-label").textContent = isFinite(stats.healthFactor) ? stats.healthFactor.toFixed(3) : "\u221e";
+    $("vault-hf-bar-label").textContent = Number.isFinite(stats.healthFactor) ? stats.healthFactor.toFixed(3) : "\u221e";
 
     // Rebalance button — enabled only when HF < min_hf
-    const needsRebalance = isFinite(stats.healthFactor) && stats.healthFactor < vault.minHf;
+    const needsRebalance = Number.isFinite(stats.healthFactor) && stats.healthFactor < vault.minHf;
     rebalBtn.disabled = !connected || !needsRebalance;
     const hintEl = $("vault-rebalance-hint");
     if (needsRebalance) {
@@ -3145,7 +3145,7 @@ $("vault-withdraw-max").addEventListener("click", () => {
 $("vault-deposit-btn").addEventListener("click", async () => {
   const vault = getActiveVault();
   if (!userAddress || !vault.vaultId) return;
-  const amount = parseFloat(($("vault-deposit-input") as HTMLInputElement).value);
+  const amount = Number.parseFloat(($("vault-deposit-input") as HTMLInputElement).value);
   if (!amount || amount <= 0) return;
 
   try {
@@ -3169,7 +3169,7 @@ $("vault-deposit-btn").addEventListener("click", async () => {
 $("vault-withdraw-btn").addEventListener("click", async () => {
   const vault = getActiveVault();
   if (!userAddress || !vault.vaultId) return;
-  let amount = parseFloat(($("vault-withdraw-input") as HTMLInputElement).value);
+  let amount = Number.parseFloat(($("vault-withdraw-input") as HTMLInputElement).value);
   if (!amount || amount <= 0) return;
 
   // Cap at vault balance to prevent InsufficientBalance errors from rounding
@@ -3315,7 +3315,7 @@ $("alert-bell-btn").addEventListener("click", () => {
   $("alert-asset-name").textContent = selectedAsset.symbol;
 
   // Pre-select the closest leverage bracket to current slider value
-  const curLev = parseFloat(($("leverage-slider") as HTMLInputElement).value) || 5;
+  const curLev = Number.parseFloat(($("leverage-slider") as HTMLInputElement).value) || 5;
   const brackets = [2, 3, 5, 8, 10];
   const closest = brackets.reduce((a, b) => Math.abs(b - curLev) < Math.abs(a - curLev) ? b : a);
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);

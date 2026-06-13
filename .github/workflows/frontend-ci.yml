@@ -1,0 +1,46 @@
+name: Frontend & Worker CI
+
+# Lint + build gates for the two TypeScript surfaces. The parity test
+# (vitest + Rust rate_calc) is owned by parity.yml and not duplicated here.
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "alerts/**"
+      - ".github/workflows/frontend-ci.yml"
+  push:
+    branches: [main, dev]
+    paths:
+      - "frontend/**"
+      - "alerts/**"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Lint (Biome)
+        run: npm run lint:ci
+      - name: Build
+        run: npm run build
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: alerts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Build (wrangler dry-run)
+        run: npm run build
