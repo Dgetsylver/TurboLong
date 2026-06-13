@@ -247,59 +247,89 @@ pub fn check_deposit_safety(
     Ok(())
 }
 
-/// Compute how many loops to unwind to bring HF back above min_hf.
-/// Returns the number of (withdraw, repay) pairs needed.
-pub fn compute_unwind_loops(
+/// Compute the minimal underlying amount to repay (and withdraw) to restore HF
+/// to `target_hf`, and the number of leverage loops that covers it.
+///
+/// Closed-form derivation (all values in underlying units):
+///   B = b_tokens × b_rate / SCALAR_12   (supply value)
+///   D = d_tokens × d_rate / SCALAR_12   (debt value)
+///   HF = B × c_factor / D               (current, in 1e7)
+///
+/// After repaying x underlying (and withdrawing x collateral):
+///   (B - x) × c_factor = target_hf × (D - x)
+///   x = (B × c_factor - target_hf × D) / (c_factor - target_hf)
+///
+/// Returns `(repay_underlying, loops_needed)`.
+/// Returns `(0, 0)` if already at or above target_hf, or if no debt.
+pub fn compute_partial_unwind(
     b_tokens: i128,
     d_tokens: i128,
     b_rate: i128,
     d_rate: i128,
     c_factor: i128,
-    min_hf: i128,
-) -> Result<u32, StrategyError> {
-    let mut current_b = b_tokens;
-    let mut current_d = d_tokens;
-    let mut loops = 0u32;
-
-    loop {
-        let hf = compute_health_factor(current_b, current_d, b_rate, d_rate, c_factor)?;
-        if hf >= min_hf || current_d == 0 {
-            break;
-        }
-
-        // Unwind one loop: withdraw enough collateral to repay one "layer" of debt.
-        // The last borrow layer ≈ d_tokens × (c_factor/SCALAR_7)^n pattern.
-        // Simplified: repay an amount equal to current_d × (1 - c_factor/SCALAR_7)
-        // which is approximately the smallest borrow layer.
-        let repay_amount = current_d
-            .checked_mul(SCALAR_7 - c_factor)
-            .ok_or(StrategyError::ArithmeticError)?
-            / SCALAR_7;
-
-        if repay_amount == 0 {
-            break;
-        }
-
-        // The d_tokens burned = repay_underlying / d_rate * SCALAR_12
-        let d_tokens_burned = repay_amount
-            .fixed_mul_floor(SCALAR_12, d_rate)
-            .ok_or(StrategyError::ArithmeticError)?;
-
-        // The b_tokens withdrawn = withdraw_underlying / b_rate * SCALAR_12
-        // We withdraw same amount as we repay (netting)
-        let b_tokens_withdrawn = repay_amount
-            .fixed_mul_floor(SCALAR_12, b_rate)
-            .ok_or(StrategyError::ArithmeticError)?;
-
-        current_d = current_d.checked_sub(d_tokens_burned).unwrap_or(0);
-        current_b = current_b.checked_sub(b_tokens_withdrawn).unwrap_or(0);
-        loops += 1;
-
-        if loops >= 5 {
-            // Safety limit on unwind iterations
-            break;
-        }
+    target_hf: i128,
+) -> Result<(i128, u32), StrategyError> {
+    if d_tokens == 0 {
+        return Ok((0, 0));
     }
 
-    Ok(loops)
+    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor)?;
+    if hf >= target_hf {
+        return Ok((0, 0));
+    }
+
+    // Supply and debt values in underlying (SCALAR_12 precision)
+    let supply_value = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let debt_value = d_tokens
+        .fixed_mul_floor(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    // numerator   = B × c_factor - target_hf × D  (both in 1e7 × underlying)
+    // denominator = c_factor - target_hf           (in 1e7)
+    // x = numerator / denominator
+    let numerator = supply_value
+        .checked_mul(c_factor)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_sub(
+            target_hf
+                .checked_mul(debt_value)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    // denominator = c_factor - target_hf; negative when target_hf > c_factor (always true for
+    // a healthy target), so we negate both sides.
+    let denom = target_hf
+        .checked_sub(c_factor)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    if denom <= 0 {
+        // target_hf <= c_factor: can't reach target by partial unwind alone
+        return Err(StrategyError::ArithmeticError);
+    }
+
+    // x = -numerator / denom  (numerator is negative when HF < target_hf)
+    let repay_underlying = numerator
+        .checked_neg()
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_div(denom)
+        .ok_or(StrategyError::DivisionByZero)?
+        + 1; // +1 stroop to ensure we clear the threshold
+
+    // Convert repay amount to loop count.
+    // Each loop layer ≈ initial × c_factor^k. The smallest layer (last borrow) ≈
+    // total_debt × (1 - c_factor/SCALAR_7). We count how many layers sum to repay_underlying.
+    let layer_size = debt_value
+        .checked_mul(SCALAR_7 - c_factor)
+        .ok_or(StrategyError::ArithmeticError)?
+        / SCALAR_7;
+
+    if layer_size == 0 {
+        return Ok((repay_underlying, 1));
+    }
+
+    let loops = ((repay_underlying + layer_size - 1) / layer_size) as u32;
+    Ok((repay_underlying, loops.max(1).min(20)))
 }

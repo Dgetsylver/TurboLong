@@ -30,6 +30,30 @@ With collateral factor `c = 0.95`:
 | Health factor | `(total_supplied × c) / total_borrowed` |
 | Net APY on initial | `(supply_rate × supplied − borrow_rate × borrowed) / initial` |
 
+## Harvest APY Methodology
+
+The Vault APY includes both the base lending APY (from interest and emissions) and the realized revenue from harvesting BLND rewards.
+
+### Realized Harvest Revenue
+
+When the vault harvests BLND rewards, it swaps them for the underlying asset via Soroswap and reinvests them into the leverage loop. This increases the per-share equity of the vault without minting new shares.
+
+The harvest APY is computed by:
+1. Fetching all `harvest_realized` events for the vault from the last 30 days.
+2. Summing the total amount of underlying asset realized from these swaps.
+3. Annualizing the revenue relative to the current total equity:
+   ```
+   Harvest APY = (Total Realized 30d / Current Total Equity) * (365 / 30)
+   ```
+
+### Reported APY
+
+The reported APY is the sum of:
+- **Base APY**: `(Supply APR * Leverage) - (Borrow APR * (Leverage - 1))` (annualized)
+- **Harvest APY**: The annualized realized swap revenue from the last 30 days.
+
+This provides a more accurate representation of the total yield, including the "real yield" generated from compounding rewards.
+
 **Maximum leverage** (n → ∞):
 
 ```

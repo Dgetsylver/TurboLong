@@ -43,6 +43,8 @@ import {
   estimateBlndSwap,
   submitSignedXdr,
   submitClassicXdr,
+  getMissingTrustlines,
+  prependTrustlineOps,
   hfForLeverage,
   maxLeverageFor,
   getBlndPriceAssumption,
@@ -55,6 +57,7 @@ import {
   type ReserveStats,
   type AssetPosition,
   type UserPositions,
+  type MissingTrustlineResult,
   projectRates,
   fetchPositionEvents,
   type PositionEvent,
@@ -421,6 +424,13 @@ function animateNumber(el: HTMLElement, to: number, duration = 200, formatFn: (n
   requestAnimationFrame(frame);
 }
 
+// ── Stellar Expert URL helper ─────────────────────────────────────────────────
+
+function expertUrl(type: "tx" | "contract" | "account" | "asset", id: string): string {
+  const net = getActiveNetwork() === "testnet" ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${net}/${type}/${id}`;
+}
+
 // ── Toast stack (#20) ────────────────────────────────────────────────────────
 
 let _toastCounter = 0;
@@ -435,7 +445,7 @@ function toast(msg: string, type: "info" | "success" | "error", hash?: string) {
   el.setAttribute("role", "alert");
   const icon = type === "success" ? "\u2713" : type === "error" ? "\u2717" : "\u27F3";
   const linkHtml = hash
-    ? ` <a class="toast-link" href="https://stellar.expert/explorer/public/tx/${hash}" target="_blank" rel="noopener">View \u2192</a>`
+    ? ` <a class="toast-link" href="${expertUrl("tx", hash)}" target="_blank" rel="noopener">View \u2192</a>`
     : "";
   el.innerHTML = `<span>${icon}</span><span>${msg}</span>${linkHtml}`;
   stack.appendChild(el);
@@ -473,7 +483,7 @@ function renderTxHistory() {
       <span class="tx-history-status-${tx.status === "success" ? "ok" : "err"}">${tx.status === "success" ? "\u2713" : "\u2717"}</span>
       <span class="tx-history-label">${tx.label}</span>
       <span class="tx-history-time">${timeStr}</span>
-      <a class="tx-history-link" href="https://stellar.expert/explorer/public/tx/${tx.hash}" target="_blank" rel="noopener">View</a>
+      <a class="tx-history-link" href="${expertUrl("tx", tx.hash)}" target="_blank" rel="noopener">View</a>
     </div>`;
   }).join("");
 }
@@ -1209,7 +1219,7 @@ function renderPoolFooter() {
   const addr = selectedPool.id;
   const truncated = addr.slice(0, 6) + "\u2026" + addr.slice(-4);
   footer.innerHTML = `
-    <span>Pool: <a href="https://stellar.expert/explorer/public/contract/${addr}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
+    <span>Pool: <a href="${expertUrl("contract", addr)}" target="_blank" rel="noopener" class="mono">${truncated}</a></span>
     <span>\u00B7</span>
     <a href="https://docs.blend.capital/" target="_blank" rel="noopener">Blend Docs</a>
     <span>\u00B7</span>
@@ -1749,12 +1759,42 @@ async function openPosition() {
 
   const initialStroops = BigInt(Math.round(initial * 1e7));
   setLoading($("open-btn") as HTMLButtonElement, true);
-  showTxStepper(["Approve", "Submit"]);
+
+  // Check for missing trustlines before building the submit tx.
+  // We do this after the early-exit guards so we only hit Horizon when we're
+  // actually going to proceed.
+  let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
+  try {
+    trustlineResult = await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
+  } catch (e: any) {
+    toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const STELLAR_TRUSTLINE_LIMIT = 1000;
+  if (trustlineResult.currentCount + trustlineResult.missing.length > STELLAR_TRUSTLINE_LIMIT) {
+    toast(
+      `Adding ${trustlineResult.missing.length} trustline(s) would exceed the Stellar limit of 1,000. ` +
+      `You currently have ${trustlineResult.currentCount}. Remove unused trustlines before depositing.`,
+      "error",
+    );
+    setLoading($("open-btn") as HTMLButtonElement, false);
+    return;
+  }
+
+  const hasMissingTrustlines = trustlineResult.missing.length > 0;
+  const submitLabel = hasMissingTrustlines
+    ? `Open ${liveAsset.symbol} leverage (+ trustlines)`
+    : `Open ${liveAsset.symbol} leverage`;
+  showTxStepper(["Approve", hasMissingTrustlines ? "Setup Trustlines + Submit" : "Submit"]);
+
   try {
     const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, 0);
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
-    const openHash = await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, 1);
+    const rawSubmitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const bundledXdr = await prependTrustlineOps(rawSubmitXdr, trustlineResult.missing, userAddress);
+    const openHash = await signAndSubmit(bundledXdr, submitLabel, 1);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
     recordPositionEvent("open", openHash, hfForLeverage(leverage, liveAsset.cFactor, rs?.lFactor ?? 1));
@@ -2900,13 +2940,10 @@ async function refreshVaultView() {
   $("vault-loops").textContent = String(vault.targetLoops);
 
   // Contract link
-  const explorerBase = getActiveNetwork() === "testnet"
-    ? "https://stellar.expert/explorer/testnet/contract/"
-    : "https://stellar.expert/explorer/public/contract/";
   const linkEl = $("vault-contract-link") as HTMLAnchorElement;
   if (vaultReady) {
     linkEl.textContent = vault.vaultId.slice(0, 8) + "..." + vault.vaultId.slice(-4);
-    linkEl.href = explorerBase + vault.vaultId;
+    linkEl.href = expertUrl("contract", vault.vaultId);
   } else {
     linkEl.textContent = "Not deployed";
     linkEl.href = "#";
@@ -2943,12 +2980,22 @@ async function refreshVaultView() {
     // Net APY (stats.netApy is actually APR — convert for display)
     const apyEl = $("vault-apy");
     if (stats.netApy !== null) {
-      const vaultApy = aprToApy(stats.netApy);
-      apyEl.textContent = (vaultApy >= 0 ? "+" : "") + vaultApy.toFixed(2) + "%";
-      apyEl.className = "stat-value mono " + (vaultApy > 0 ? "hf-ok" : "hf-bad");
+      const baseApy = aprToApy(stats.netApy);
+      const harvestApy = stats.harvestApy ? stats.harvestApy * 100 : 0;
+      const totalApy = baseApy + harvestApy;
+
+      apyEl.textContent = (totalApy >= 0 ? "+" : "") + totalApy.toFixed(2) + "%";
+      apyEl.className = "stat-value mono " + (totalApy > 0 ? "hf-ok" : "hf-bad");
+
       const vaultTip = $("vault-apy-tip");
-      if (vaultTip) vaultTip.setAttribute("data-tip",
-        `Approximate APY — Blend interest does not auto-compound. Actual net APR: ${fmt(stats.netApy, 2)}%`);
+      if (vaultTip) {
+        let tip = `Base APY: ${baseApy.toFixed(2)}% (from interest/emissions)`;
+        if (harvestApy > 0) {
+          tip += `\nHarvest APY: +${harvestApy.toFixed(2)}% (30-day realized BLND swaps)`;
+        }
+        tip += `\nTotal: ${totalApy.toFixed(2)}%`;
+        vaultTip.setAttribute("data-tip", tip);
+      }
     } else {
       apyEl.textContent = "--";
       apyEl.className = "stat-value mono";
