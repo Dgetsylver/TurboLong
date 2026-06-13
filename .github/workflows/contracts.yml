@@ -10,11 +10,17 @@ on:
       - 'contracts/**'
 
 jobs:
-  blend_leverage:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - contracts/strategies/blend_leverage
+          - contracts/tokens/vault_share
     defaults:
       run:
-        working-directory: contracts/strategies/blend_leverage
+        working-directory: ${{ matrix.crate }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -28,7 +34,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: contracts/strategies/blend_leverage
+          workspaces: ${{ matrix.crate }}
 
       - name: Rustfmt
         run: cargo fmt --check
