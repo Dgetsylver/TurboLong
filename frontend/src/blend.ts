@@ -14,7 +14,6 @@ import {
   Operation,
   rpc as SorobanRpc,
   scValToNative,
-  Transaction,
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -1524,57 +1523,42 @@ export async function getMissingTrustlines(
 }
 
 /**
- * Prepend changeTrust operations to an existing Soroban transaction XDR.
+ * Build a standalone classic transaction containing one changeTrust op per
+ * missing asset.
  *
- * When missingAssets is empty, returns the original XDR unchanged (no-op path).
- * Otherwise deserialises the XDR, prepends one changeTrust op per missing asset
- * with the Stellar maximum limit, appends the original Soroban ops, and returns
- * the rebuilt XDR ready for wallet signing.
+ * This MUST be a separate transaction from the Soroban deposit: the Stellar
+ * protocol requires any transaction containing a Soroban operation
+ * (invokeHostFunction) to contain exactly that one operation, so changeTrust
+ * ops cannot be bundled into the leverage-loop submit tx. The caller signs and
+ * submits this classic tx (via Horizon) BEFORE the Soroban deposit tx.
  *
- * @param submitXdr     Base64 XDR of the assembled Soroban transaction
- * @param missingAssets Classic assets that need trustlines
- * @param userAddress   Account address (used to reload sequence for rebuild)
- * @returns             New XDR string with changeTrust ops prepended, or original if empty
+ * Returns null when there are no missing trustlines (caller skips the step).
+ *
+ * @param missingAssets Classic assets that need a trustline
+ * @param userAddress   Source account G-address
+ * @returns             Base64 XDR of the classic changeTrust tx, or null if none needed
  */
-export async function prependTrustlineOps(
-  submitXdr: string,
+export async function buildTrustlineXdr(
   missingAssets: Asset[],
   userAddress: string,
-): Promise<string> {
-  // Fast path: nothing to do
-  if (missingAssets.length === 0) return submitXdr;
+): Promise<string | null> {
+  if (missingAssets.length === 0) return null;
 
   const MAX_TRUSTLINE_LIMIT = "922337203685.4775807"; // Stellar i64::MAX in stroops / 1e7
 
-  // Deserialise the existing Soroban transaction
-  const original = TransactionBuilder.fromXDR(submitXdr, _cfg.passphrase) as Transaction;
+  // Classic tx: load the source account from Horizon for a fresh sequence.
+  const account = await horizon.loadAccount(userAddress);
 
-  // Load current account sequence; decrement by 1 because TransactionBuilder
-  // auto-increments on build(), so we need to start one below the target sequence.
-  const accData = await server.getAccount(userAddress);
-  const adjustedAcc = new Account(
-    userAddress,
-    (BigInt(accData.sequenceNumber()) - 1n).toString(),
-  );
-
-  const builder = new TransactionBuilder(adjustedAcc, {
-    fee: original.fee,
+  const builder = new TransactionBuilder(account, {
+    fee: (BigInt(BASE_FEE) * BigInt(Math.max(1, missingAssets.length))).toString(),
     networkPassphrase: _cfg.passphrase,
-    memo: original.memo,
-    timebounds: original.timeBounds ?? undefined,
   });
 
-  // Prepend changeTrust ops for each missing trustline
   for (const asset of missingAssets) {
     builder.addOperation(
       Operation.changeTrust({ asset, limit: MAX_TRUSTLINE_LIMIT })
     );
   }
 
-  // Append all original Soroban operations unchanged
-  for (const op of original.operations) {
-    builder.addOperation(op);
-  }
-
-  return builder.build().toXDR();
+  return builder.setTimeout(180).build().toXDR();
 }
