@@ -21,7 +21,7 @@
 | D2 | Full SEP-41 receipt token ($4k) | ✅ Done | Separate `vault_share` SEP-41 contract (resolves the trait-`balance` vs SEP-41-`balance` collision). `transfer`/`approve`/`allowance`/`transfer_from`, `total_supply == Σ balances`. **15 unit tests** (`contracts/tokens/vault_share/src/test.rs`). Mainnet address captured at D1 deploy. |
 | D3 | In-place WASM upgrade + admin ($2k) | ✅ Done | `upgrade()` + admin role + `version()`; storage/positions preserved. Upgrade-parity tests assert Config, every `VaultPos`, `total_shares`, recomputed HF identical **within 1e-7** pre/post (`test_integration.rs`, **13 tests**). Runbook: `docs/migration-runbook.md`. |
 | D4 | Wallets Kit mobile + Ledger + E2E ($5k) | ✅ Code done / ⛔ device sign-off | Ledger module + WalletConnect mobile deep-link + Playwright e2e (5 wallets × {classic, Soroban}, mock seam) — PR #259. ⛔ Physical Ledger run + iOS/Android device runs (Lobstr/xBull) + wallet-team sign-off pending (external). |
-| D5 | CI / supply-chain hygiene ($2k) | ✅ Done | `dependabot.yml`, `cargo-audit.yml`, Clippy `-D warnings` + `cargo fmt --check` (`contracts.yml`), Biome + build + e2e (`frontend-ci.yml`), `secret-scan.yml` (gitleaks) + `.gitleaks.toml` + pre-commit. Dependabot actively opening PRs. ⛔ gitleaks planted-secret block screenshot (evidence demo) — in progress. |
+| D5 | CI / supply-chain hygiene ($2k) | ✅ Done | `dependabot.yml`, `cargo-audit.yml`, Clippy `-D warnings` + `cargo fmt --check` (`contracts.yml`), Biome + build + e2e (`frontend-ci.yml`), `secret-scan.yml` (gitleaks) + `.gitleaks.toml` + pre-commit. Dependabot actively opening PRs. ✅ gitleaks blocks a planted Stellar key (rule `stellar-secret-key`, exit 1) — local proof captured in `docs/evidence/gitleaks-block-demo.md`. |
 
 ## Verifiable now (on `main`)
 
@@ -42,7 +42,7 @@
 - [ ] Per-asset deposit → loop → withdraw tx hashes (Stellar Expert).
 - [ ] DeFindex co-sign of the 4 deployments.
 - [ ] Ledger hardware run + iOS/Android deep-link runs + wallet-team sign-off.
-- [ ] gitleaks planted-secret block screenshot.
+- [x] gitleaks planted-secret block — local proof captured (`docs/evidence/gitleaks-block-demo.md`).
 
 ## Revised dates / notice to SCF
 
