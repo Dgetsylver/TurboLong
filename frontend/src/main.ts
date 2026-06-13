@@ -87,6 +87,7 @@ import {
 } from "./defindex.ts";
 import { seedHistoryFromServer, fetchSnapshotSeries, type SnapshotPoint } from "./history.ts";
 import { aquariusBestRate, aquariusPrice } from "./aquarius.ts";
+import { getAquariusListing, AQUARIUS_SWAP_URL } from "./aquarius_listings.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -2910,6 +2911,17 @@ $("compare-table").addEventListener("click", (e) => {
 // Compare view: manual refresh
 $("compare-refresh").addEventListener("click", () => renderCompareView());
 
+// Vault view: copy the Aquarius receipt-token contract ID
+document.getElementById("aqua-trade-card")?.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".aqua-copy-btn") as HTMLElement | null;
+  if (!btn?.dataset.copy) return;
+  navigator.clipboard?.writeText(btn.dataset.copy).then(() => {
+    const prev = btn.innerHTML;
+    btn.innerHTML = "&#10003;";
+    setTimeout(() => { btn.innerHTML = prev; }, 1200);
+  }).catch(() => {});
+});
+
 // Close dropdowns on click outside
 document.addEventListener("click", () => {
   $("pool-dropdown").classList.add("hidden");
@@ -3327,8 +3339,30 @@ let _lastVaultStats: VaultStats | null = null;
 let _userVaultBalance = 0;
 let _userWalletBalance = 0;
 
+// T3.2 — surface the vault receipt token's Aquarius listing in the vault view.
+function renderAquariusTradeCard(vault: VaultConfig) {
+  const body = document.getElementById("aqua-trade-body");
+  if (!body) return;
+  const listing = getAquariusListing(vault.assetSymbol);
+  if (listing?.shareToken) {
+    const id = listing.shareToken;
+    const short = `${id.slice(0, 6)}…${id.slice(-4)}`;
+    body.innerHTML = `
+      <a class="btn btn-primary aqua-trade-btn" href="${AQUARIUS_SWAP_URL}" target="_blank" rel="noopener">Trade on Aquarius &#8599;</a>
+      <div class="aqua-trade-token">
+        <span class="aqua-trade-token-label">Receipt token</span>
+        <code class="mono aqua-token-id" title="${id}">${short}</code>
+        <button type="button" class="aqua-copy-btn" data-copy="${id}" title="Copy contract ID">&#10697;</button>
+        <a class="aqua-token-expert" href="${expertUrl("contract", id)}" target="_blank" rel="noopener">Explorer &#8599;</a>
+      </div>`;
+  } else {
+    body.innerHTML = `<p class="aqua-trade-pending">Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.</p>`;
+  }
+}
+
 async function refreshVaultView() {
   const vault = getActiveVault();
+  renderAquariusTradeCard(vault);
   const vaultDepBtn = $("vault-deposit-btn") as HTMLButtonElement;
   const vaultWdBtn  = $("vault-withdraw-btn") as HTMLButtonElement;
   const rebalBtn    = $("vault-rebalance-btn") as HTMLButtonElement;
