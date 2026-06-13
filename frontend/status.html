@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Turbolong — Status</title>
+  <link rel="icon" href="/logo.svg" />
+</head>
+<body>
+  <main class="status-page">
+    <div class="status-card">
+      <div class="status-head">
+        <img src="/logo.svg" alt="Turbolong" class="status-logo" />
+        <div>
+          <h1 class="status-title" data-i18n="status.title">Turbolong Status</h1>
+          <p class="status-sub" data-i18n="status.subtitle">Live health of the protocol's services and contracts.</p>
+        </div>
+      </div>
+
+      <div id="status-banner" class="status-overall status-overall-checking">…</div>
+
+      <div id="status-list" class="status-list"></div>
+
+      <div class="status-footer">
+        <span id="status-checked" class="status-checked"></span>
+        <span class="status-footer-actions">
+          <button id="status-lang" class="status-btn" title="Language">&#127760;</button>
+          <button id="status-refresh" class="status-btn" data-i18n="common.refresh">Refresh</button>
+        </span>
+      </div>
+    </div>
+    <a class="status-back" href="./">&larr; turbolong</a>
+  </main>
+  <script type="module" src="/src/status.ts"></script>
+</body>
+</html>

@@ -1410,3 +1410,81 @@ kbd {
 .aqua-copy-btn:hover { border-color: var(--border-h); color: var(--text); }
 .aqua-token-expert { color: var(--primary); text-decoration: none; }
 .aqua-token-expert:hover { text-decoration: underline; }
+
+/* ── T3.5 — onboarding tour ────────────────────────────────────────────────── */
+.tour-overlay {
+  position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center;
+  justify-content: center; padding: 20px; background: rgba(0,0,0,.6);
+  backdrop-filter: blur(3px);
+}
+.tour-card {
+  position: relative; width: 100%; max-width: 420px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r); padding: 28px 24px 20px;
+  box-shadow: var(--shadow);
+}
+.tour-skip {
+  position: absolute; top: 12px; right: 14px; background: transparent; border: none;
+  color: var(--text-3); font-size: 12px; cursor: pointer;
+}
+.tour-skip:hover { color: var(--text); }
+.tour-title { margin: 0 0 10px; font-size: 19px; font-weight: 700; }
+.tour-body { margin: 0 0 18px; font-size: 14px; line-height: 1.55; color: var(--text-2); }
+.tour-dots { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; }
+.tour-dot { width: 7px; height: 7px; border-radius: 99px; background: var(--surface3); transition: background .15s; }
+.tour-dot.active { background: var(--primary); }
+.tour-dontshow { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-3); margin-bottom: 16px; cursor: pointer; }
+.tour-actions { display: flex; justify-content: space-between; gap: 10px; }
+.tour-actions .btn { width: auto; padding: 9px 20px; }
+
+/* ── T3.5 — status page ────────────────────────────────────────────────────── */
+.status-page {
+  min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; padding: 24px;
+  background: var(--bg); color: var(--text); font-family: var(--sans);
+}
+.status-card {
+  width: 100%; max-width: 520px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r); padding: 28px;
+  box-shadow: var(--shadow);
+}
+.status-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.status-logo { width: 40px; height: 40px; }
+.status-title { margin: 0; font-size: 20px; font-weight: 700; }
+.status-sub { margin: 2px 0 0; font-size: 13px; color: var(--text-2); }
+.status-overall {
+  text-align: center; font-weight: 600; font-size: 14px; padding: 12px;
+  border-radius: var(--r-sm); margin-bottom: 18px;
+}
+.status-overall-good { background: var(--primary-glow); color: var(--primary); }
+.status-overall-bad { background: rgba(255,77,106,.12); color: var(--danger); }
+.status-overall-checking { background: var(--surface2); color: var(--text-2); }
+.status-list { display: flex; flex-direction: column; gap: 2px; }
+.status-row {
+  display: flex; align-items: center; gap: 12px; padding: 14px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.status-row:last-child { border-bottom: none; }
+.status-name { flex: 1; font-size: 14px; }
+.status-dot { width: 10px; height: 10px; border-radius: 99px; flex-shrink: 0; }
+.status-dot-operational { background: var(--success); box-shadow: 0 0 8px rgba(45,232,163,.5); }
+.status-dot-degraded { background: var(--warning); }
+.status-dot-down { background: var(--danger); }
+.status-dot-checking { background: var(--text-3); }
+.status-state { font-size: 12px; font-family: var(--mono); }
+.status-state-operational { color: var(--success); }
+.status-state-degraded { color: var(--warning); }
+.status-state-down { color: var(--danger); }
+.status-state-checking { color: var(--text-3); }
+.status-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.status-checked { font-size: 12px; color: var(--text-3); }
+.status-footer-actions { display: flex; gap: 8px; }
+.status-btn {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text-2);
+  border-radius: var(--r-xs); padding: 6px 12px; font-size: 12px; cursor: pointer;
+}
+.status-btn:hover { border-color: var(--border-h); color: var(--text); }
+.status-back { color: var(--text-3); font-size: 13px; text-decoration: none; }
+.status-back:hover { color: var(--text); }
