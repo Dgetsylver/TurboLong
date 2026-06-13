@@ -564,4 +564,123 @@ impl BlendLeverageStrategy {
         storage::set_vault_shares(&e, &holder, 0);
         Ok(legacy)
     }
+
+    // ── Split harvest for pluggable swap routing (T2.1) ──────────────────────
+    //
+    // The DeFindex-trait `harvest` stays as the atomic on-chain Soroswap path.
+    // These keeper entrypoints let an off-chain keeper choose the best swap venue
+    // per harvest (Stellar Broker vs Soroswap): `harvest_claim` claims BLND and
+    // approves the keeper's swap account to pull it (for an off-chain Broker swap)
+    // while leaving it recoverable for the on-chain Soroswap fallback;
+    // `harvest_reinvest` executes whichever path the keeper chose and re-leverages.
+
+    /// Set the keeper-controlled account allowed to pull claimed BLND for an
+    /// off-chain swap (admin-gated).
+    pub fn set_swap_account(e: Env, account: Address) -> Result<(), StrategyError> {
+        storage::get_admin(&e).require_auth();
+        storage::set_swap_account(&e, &account);
+        extend_instance_ttl(&e);
+        Ok(())
+    }
+
+    /// The configured swap account, or an error if unset.
+    pub fn swap_account(e: Env) -> Result<Address, StrategyError> {
+        if storage::has_swap_account(&e) {
+            Ok(storage::get_swap_account(&e))
+        } else {
+            Err(StrategyError::NotAuthorized)
+        }
+    }
+
+    /// Keeper-gated: claim BLND emissions into the strategy and approve the swap
+    /// account to pull them (if set) for an off-chain Broker swap. The BLND stays
+    /// in the contract until pulled, so the on-chain Soroswap path remains a valid
+    /// fallback. Returns the BLND balance available to swap.
+    pub fn harvest_claim(e: Env, from: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+        if from != keeper {
+            return Err(StrategyError::NotAuthorized);
+        }
+
+        let config = storage::get_config(&e);
+        blend_pool::claim(&e, &config);
+
+        let blnd = TokenClient::new(&e, &config.blend_token);
+        let bal = blnd.balance(&e.current_contract_address());
+        if bal > 0 && storage::has_swap_account(&e) {
+            let expiration = e.ledger().sequence().saturating_add(17_280); // ~1 day
+            blnd.approve(
+                &e.current_contract_address(),
+                &storage::get_swap_account(&e),
+                &bal,
+                &expiration,
+            );
+        }
+
+        e.events()
+            .publish((Symbol::new(&e, "harvest_claim"), keeper), bal);
+        Ok(bal)
+    }
+
+    /// Keeper-gated: re-leverage harvested proceeds via the chosen route.
+    ///
+    /// - `via_soroswap = true`: swap the strategy's BLND → underlying on-chain
+    ///   through Soroswap (mandatory non-zero `amount_out_min`), then re-leverage.
+    /// - `via_soroswap = false` (Broker): the keeper has already swapped off-chain
+    ///   and transferred `amount_in` of underlying back to the strategy; re-leverage
+    ///   it directly (asserted to be held). `amount_out_min` is ignored here.
+    ///
+    /// Emits a `harvest_route` event `(route, amount_in, amount_out_min, realized)`
+    /// for the keeper's A/B telemetry. Returns realized underlying re-leveraged.
+    pub fn harvest_reinvest(
+        e: Env,
+        from: Address,
+        amount_in: i128,
+        via_soroswap: bool,
+        amount_out_min: i128,
+    ) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+        if from != keeper {
+            return Err(StrategyError::NotAuthorized);
+        }
+        check_positive_amount(amount_in)?;
+        let config = storage::get_config(&e);
+
+        let (b_delta, d_delta, realized) = if via_soroswap {
+            // Mandatory slippage protection on the on-chain swap.
+            if amount_out_min <= 0 {
+                return Err(StrategyError::OnlyPositiveAmountAllowed);
+            }
+            blend_pool::perform_reinvest(&e, &config, amount_out_min)?
+        } else {
+            let (b, d) = blend_pool::reinvest_underlying(&e, &config, amount_in)?;
+            (b, d, amount_in)
+        };
+
+        if b_delta > 0 {
+            let updated = reserves::harvest(&e, b_delta, d_delta, &config)?;
+            event::emit_harvest(
+                &e,
+                String::from_str(&e, STRATEGY_NAME),
+                realized,
+                keeper.clone(),
+                shares_to_underlying(SCALAR_12, &updated)?,
+            );
+        }
+
+        e.events().publish(
+            (Symbol::new(&e, "harvest_route"), keeper),
+            (
+                if via_soroswap { 0u32 } else { 1u32 },
+                amount_in,
+                amount_out_min,
+                realized,
+            ),
+        );
+        Ok(realized)
+    }
 }

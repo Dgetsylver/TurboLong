@@ -877,3 +877,60 @@ fn test_rebalance_keeper_auth_gating_and_noop() {
     // The permissionless rebalance is also a safe no-op with no position.
     sclient.rebalance();
 }
+
+// ── Split harvest entrypoints (T2.1) — auth gating + swap account ─────────────
+
+#[test]
+fn test_set_swap_account_admin_and_getter() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Unset → error.
+    assert!(sclient.try_swap_account().is_err());
+
+    let swap_acct = Address::generate(&e);
+    sclient.set_swap_account(&swap_acct);
+    assert_eq!(sclient.swap_account(), swap_acct);
+}
+
+#[test]
+fn test_split_harvest_rejects_non_keeper() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let stranger = Address::generate(&e);
+
+    assert!(
+        sclient.try_harvest_claim(&stranger).is_err(),
+        "harvest_claim: non-keeper rejected"
+    );
+    assert!(
+        sclient
+            .try_harvest_reinvest(&stranger, &1_000, &true, &900)
+            .is_err(),
+        "harvest_reinvest: non-keeper rejected"
+    );
+}
+
+#[test]
+fn test_harvest_reinvest_soroswap_requires_min_out() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    // via_soroswap with amount_out_min = 0 must be rejected (mandatory slippage).
+    assert!(
+        sclient
+            .try_harvest_reinvest(&keeper, &1_000, &true, &0)
+            .is_err(),
+        "soroswap path requires non-zero amount_out_min"
+    );
+}

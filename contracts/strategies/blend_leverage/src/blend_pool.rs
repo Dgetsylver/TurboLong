@@ -459,6 +459,25 @@ pub fn perform_reinvest(
     Ok((b_delta, d_delta, amount_out))
 }
 
+/// Re-leverage `amount` of the underlying asset that is already held by the
+/// strategy (the Stellar Broker harvest path: the keeper swapped BLND→underlying
+/// off-chain and transferred the proceeds back). No on-chain swap. Asserts the
+/// contract actually holds at least `amount` of underlying before leveraging.
+pub fn reinvest_underlying(
+    e: &Env,
+    config: &Config,
+    amount: i128,
+) -> Result<(i128, i128), StrategyError> {
+    if amount <= 0 {
+        return Ok((0, 0));
+    }
+    let held = TokenClient::new(e, &config.asset).balance(&e.current_contract_address());
+    if held < amount {
+        return Err(StrategyError::InsufficientBalance);
+    }
+    submit_leverage_loop(e, amount, config)
+}
+
 // ── Pool state queries ───────────────────────────────────────────────────────
 
 /// Fetch current b_rate and d_rate for the configured asset.
