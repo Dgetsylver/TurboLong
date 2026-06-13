@@ -285,7 +285,7 @@
               <!-- Stats row -->
               <div class="stats-row">
                 <div class="stat-card">
-                  <span class="stat-label">c_factor <span class="tooltip" data-tip="Collateral factor — the fraction of your collateral that counts toward borrowing power. 95% means $100 of collateral lets you borrow up to $95.">?</span></span>
+                  <span class="stat-label">c_factor <span class="tooltip" data-term="c_factor">?</span></span>
                   <span class="stat-value" id="stat-cfactor">—</span>
                 </div>
                 <div class="stat-card">
@@ -297,7 +297,7 @@
                   <span class="stat-value" id="stat-liquidity">—</span>
                 </div>
                 <div class="stat-card">
-                  <span class="stat-label">Utilization <span class="tooltip" data-tip="Pool utilization = total borrowed / total supplied.">?</span></span>
+                  <span class="stat-label">Utilization <span class="tooltip" data-term="util_target" data-tip="">?</span></span>
                   <span class="stat-value" id="stat-util">—</span>
                   <div class="util-bar-wrap"><div class="util-bar" id="util-bar"></div></div>
                 </div>
@@ -322,7 +322,7 @@
                 <div class="apr-card">
                   <div class="apr-card-label">Supply</div>
                   <div class="apr-row">
-                    <span class="apr-key">Interest APY</span>
+                    <span class="apr-key">Interest <span class="tooltip" data-term="APY">APY</span></span>
                     <span class="apr-val" id="supply-interest-apr">—</span>
                   </div>
                   <div class="apr-row">
@@ -339,6 +339,14 @@
                   <div class="apr-row">
                     <span class="apr-key">Interest cost</span>
                     <span class="apr-val" id="borrow-interest-apr">—</span>
+                  </div>
+                  <div class="apr-row apr-rate-params">
+                    <span class="apr-key">Rate model:
+                      <span class="tooltip" data-term="r_base">r_base</span>
+                      <span class="tooltip" data-term="r_one">r_one</span>
+                      <span class="tooltip" data-term="r_two">r_two</span>
+                      <span class="tooltip" data-term="r_three">r_three</span>
+                    </span>
                   </div>
                   <div class="apr-row">
                     <span class="apr-key">BLND emissions <span class="tooltip" data-tip="BLND token rewards that offset borrow cost. Shown as APR since emissions are linear and do not auto-compound.">?</span></span>
@@ -420,6 +428,11 @@
                   <input type="number" id="leverage-input" class="input mono leverage-num-input" min="1.1" max="12.9" step="0.1" value="2.0" />
                   <span class="slider-value-x mono">&times;</span>
                 </div>
+                <div class="target-hf-row">
+                  <label class="target-hf-label" for="target-hf-input">or target HF <span class="tooltip" data-term="HF">?</span></label>
+                  <input type="number" id="target-hf-input" class="input mono target-hf-input" placeholder="e.g. 1.8" min="1" step="0.0001" aria-label="Target Health Factor" />
+                </div>
+                <p class="hf-warning hidden" id="target-hf-error"></p>
                 <div class="slider-zones" id="slider-zones">
                   <span class="slider-zone zone-conservative" data-zone="conservative">Conservative</span>
                   <span class="slider-zone zone-moderate" data-zone="moderate">Moderate</span>
@@ -530,11 +543,11 @@
                 <!-- Position data as table rows -->
                 <div class="position-grid">
                   <div class="position-metric">
-                    <span class="metric-label">Collateral</span>
+                    <span class="metric-label">Collateral <span class="tooltip" data-term="b_token">?</span></span>
                     <span class="metric-value mono" id="pos-collateral">—</span>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Debt</span>
+                    <span class="metric-label">Debt <span class="tooltip" data-term="d_token">?</span></span>
                     <span class="metric-value mono" id="pos-debt">—</span>
                   </div>
                   <div class="position-metric">
@@ -546,13 +559,13 @@
                     <span class="metric-value mono" id="pos-leverage">—</span>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Asset HF <span class="tooltip" data-tip="Health Factor for this asset only. HF = (collateral x c_factor) / (debt / l_factor). Below 1.0 = liquidatable.">?</span></span>
+                    <span class="metric-label">Asset <span class="tooltip" data-term="HF">HF</span></span>
                     <span class="metric-value" id="pos-hf">—</span>
                     <div class="hf-bar-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="hf-bar" id="hf-bar"></div></div>
                     <div class="hf-gauge-container"></div>
                   </div>
                   <div class="position-metric">
-                    <span class="metric-label">Pool HF <span class="tooltip" data-tip="Health Factor across ALL your positions in this pool, weighted by oracle price.">?</span></span>
+                    <span class="metric-label">Pool <span class="tooltip" data-term="HF">HF</span></span>
                     <span class="metric-value" id="pos-pool-hf">—</span>
                   </div>
                   <div class="position-metric">

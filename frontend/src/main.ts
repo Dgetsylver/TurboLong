@@ -424,6 +424,53 @@ function minHF() { return expertMode ? MIN_HF_EXPERT : MIN_HF_NORMAL; }
 
 let demoMode = false;
 
+// ── Glossary — single source of truth for acronym tooltips (#8) ──────────────
+
+const DOCS_URL = "https://docs.blend.capital/";
+
+const GLOSSARY: Record<string, { text: string; html: string }> = {
+  HF: {
+    text: "Health Factor — ratio of weighted collateral to weighted debt. Below 1.0 means your position is liquidatable.",
+    html: `Health Factor — ratio of weighted collateral to weighted debt. Below 1.0 means your position is liquidatable. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  APY: {
+    text: "Annual Percentage Yield — estimated annual return assuming continuous compounding. Blend does not auto-compound; treat this as an approximation.",
+    html: `Annual Percentage Yield — estimated annual return assuming continuous compounding. Blend does not auto-compound; treat this as an approximation. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  c_factor: {
+    text: "Collateral Factor — fraction of your supplied amount that counts toward borrowing power. A 90% c_factor lets you borrow up to $90 for every $100 supplied.",
+    html: `Collateral Factor — fraction of your supplied amount that counts toward borrowing power. A 90% c_factor lets you borrow up to $90 for every $100 supplied. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  util_target: {
+    text: "Utilization Target — the pool's ideal ratio of total borrowed to total supplied. Above this threshold borrow rates rise sharply to attract new suppliers.",
+    html: `Utilization Target — the pool's ideal ratio of total borrowed to total supplied. Above this threshold borrow rates rise sharply to attract new suppliers. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  r_base: {
+    text: "Base Rate — the minimum borrow APR charged when pool utilization is near zero.",
+    html: `Base Rate — the minimum borrow APR charged when pool utilization is near zero. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  r_one: {
+    text: "Rate at Util Target — the borrow APR at the pool's utilization target; rates scale linearly from r_base to r_one below that threshold.",
+    html: `Rate at Util Target — the borrow APR at the pool's utilization target; rates scale linearly from r_base to r_one below that threshold. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  r_two: {
+    text: "Rate at 100% Utilization — borrow APR when the pool is fully utilized; rates scale steeply from r_one to r_two above the util_target.",
+    html: `Rate at 100% Utilization — borrow APR when the pool is fully utilized; rates scale steeply from r_one to r_two above the util_target. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  r_three: {
+    text: "Backstop Rate — extreme borrow APR activated when the backstop module is covering losses, incentivizing immediate repayment.",
+    html: `Backstop Rate — extreme borrow APR activated when the backstop module is covering losses, incentivizing immediate repayment. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  b_token: {
+    text: "Balance Token (b-token) — a receipt token Blend issues for every asset you supply; its redeemable value grows as supply interest accrues.",
+    html: `Balance Token (b-token) — a receipt token Blend issues for every asset you supply; its redeemable value grows as supply interest accrues. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+  d_token: {
+    text: "Debt Token (d-token) — a token that tracks your outstanding borrow; its underlying value grows as borrow interest accrues.",
+    html: `Debt Token (d-token) — a token that tracks your outstanding borrow; its underlying value grows as borrow interest accrues. <a href="${DOCS_URL}" target="_blank" rel="noopener">Learn more →</a>`,
+  },
+};
+
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -1628,6 +1675,15 @@ function switchAdjustSubTab(sub: "leverage" | "add-funds") {
   updatePreview();
 }
 
+// ── Target-HF solver (#5) ─────────────────────────────────────────────────────
+
+/** Compute the leverage that produces a given HF: lev = HF / (HF - c·l). */
+function leverageFromHf(hf: number, c: number, l: number): number {
+  const cl = c * l;
+  if (hf <= cl) return Infinity;
+  return hf / (hf - cl);
+}
+
 // ── Leverage preview ──────────────────────────────────────────────────────────
 
 function updatePreview() {
@@ -1659,6 +1715,14 @@ function updatePreview() {
   $("prev-borrow").textContent      = `${fmt(borrow, 2)} ${selectedAsset.symbol}`;
   $("prev-hf").textContent          = Number.isFinite(hf) ? fmt(hf, expertMode ? 5 : 4) : "\u221E";
   $("prev-hf").className            = hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad";
+
+  // Sync target-HF input when slider drives the change (#5)
+  const targetHfEl = document.getElementById("target-hf-input") as HTMLInputElement | null;
+  if (targetHfEl && document.activeElement !== targetHfEl) {
+    targetHfEl.value = isFinite(hf) ? hf.toFixed(4) : "";
+    const errEl = document.getElementById("target-hf-error");
+    if (errEl) errEl.classList.add("hidden");
+  }
 
   // Borrow headroom: how much more could be borrowed before liquidation
   if (rs && rs.priceUsd > 0) {
@@ -2534,40 +2598,85 @@ function debounceQuote() {
   _quoteTimer = setTimeout(fetchSwapQuote, 500);
 }
 
-// ── Tooltip popovers (#1) ────────────────────────────────────────────────────
+// ── Tooltip popovers (#1, #8) ─────────────────────────────────────────────────
 
 function initTooltips() {
   const popover = $("tooltip-popover");
+  let _hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Apply glossary entries to elements with data-term attribute
+  document.querySelectorAll<HTMLElement>("[data-term]").forEach(el => {
+    const term = el.dataset.term!;
+    const entry = GLOSSARY[term];
+    if (entry) {
+      el.dataset.tip = entry.text;
+      el.dataset.tipHtml = entry.html;
+    }
+  });
+
   function showTip(el: HTMLElement) {
-    popover.textContent = el.dataset.tip || "";
+    if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null; }
+    const html = el.dataset.tipHtml;
+    if (html) {
+      popover.innerHTML = html;
+    } else {
+      popover.textContent = el.dataset.tip || "";
+    }
     const rect = el.getBoundingClientRect();
     popover.style.left = `${rect.left + rect.width / 2}px`;
     popover.style.top = `${rect.bottom + 8}px`;
     popover.style.transform = "translateX(-50%)";
+    popover.classList.add("visible");
   }
+
+  function hideTip() {
+    _hideTimer = setTimeout(() => popover.classList.remove("visible"), 150);
+  }
+
+  // Keep popover visible while hovering it (so "Learn more" link is clickable)
+  popover.addEventListener("mouseenter", () => { if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null; } });
+  popover.addEventListener("mouseleave", hideTip);
+
   document.querySelectorAll<HTMLElement>(".tooltip").forEach(el => {
     if (el.hasAttribute("title")) {
       el.dataset.tip = el.getAttribute("title") || "";
       el.removeAttribute("title");
     }
+    // Keyboard accessibility: make tooltip spans focusable
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    if (!el.hasAttribute("aria-label")) {
+      const term = el.dataset.term;
+      el.setAttribute("aria-label", term ? `${term} definition` : "tooltip");
+    }
 
-    el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
-    el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
-    // Mobile: toggle on click
+    el.addEventListener("mouseenter", () => showTip(el));
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("focus",      () => showTip(el));
+    el.addEventListener("blur",       hideTip);
+    // Mobile / keyboard: toggle on click or Enter/Space
     el.addEventListener("click", (e) => {
       e.stopPropagation();
-      showTip(el);
-      popover.classList.toggle("visible");
+      if (popover.classList.contains("visible")) { popover.classList.remove("visible"); }
+      else { showTip(el); }
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        if (popover.classList.contains("visible")) { popover.classList.remove("visible"); }
+        else { showTip(el); }
+      }
     });
   });
-  // Also handle data-tip on non-.tooltip elements (buttons, etc.)
-  document.querySelectorAll<HTMLElement>("[data-tip]:not(.tooltip)").forEach(el => {
-    el.removeAttribute("title");
 
-    el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
-    el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
+  // Also handle data-tip on non-.tooltip elements (buttons, etc.)
+  document.querySelectorAll<HTMLElement>("[data-tip]:not(.tooltip),[data-tip-html]:not(.tooltip)").forEach(el => {
+    el.removeAttribute("title");
+    el.addEventListener("mouseenter", () => showTip(el));
+    el.addEventListener("mouseleave", hideTip);
   });
-  document.addEventListener("click", () => popover.classList.remove("visible"));
+
+  document.addEventListener("click", () => { if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null; } popover.classList.remove("visible"); });
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
@@ -2839,6 +2948,51 @@ function debouncedPreview() {
 ($("initial-input")   as HTMLInputElement).addEventListener("input",  () => { refreshTabData(); updatePreview(); });
 ($("initial-input")   as HTMLInputElement).addEventListener("change", () => { refreshTabData(); updatePreview(); });
 ($("calc-deposit-usd") as HTMLInputElement).addEventListener("input", updatePreview);
+
+// Target-HF input: solve for leverage and drive the slider (#5)
+($("target-hf-input") as HTMLInputElement).addEventListener("input", () => {
+  const targetHfEl = $("target-hf-input") as HTMLInputElement;
+  const errEl       = $("target-hf-error");
+  const raw         = targetHfEl.value;
+
+  if (!raw || raw === "") { errEl.classList.add("hidden"); return; }
+
+  const hfTarget = parseFloat(raw);
+  if (isNaN(hfTarget)) { errEl.classList.add("hidden"); return; }
+
+  const rs = reserves.find(r => r.asset.id === selectedAsset.id);
+  const c  = rs ? rs.cFactor : selectedAsset.cFactor;
+  const l  = rs?.lFactor ?? 1;
+  const cl = c * l;
+
+  if (hfTarget < 1) {
+    errEl.textContent = "HF must be at least 1.0 — values below 1.0 are liquidatable.";
+    errEl.classList.remove("hidden");
+    return;
+  }
+  if (hfTarget <= cl) {
+    errEl.textContent = `HF must exceed ${fmt(cl, 4)} — the floor for this asset at maximum leverage.`;
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  const lev = leverageFromHf(hfTarget, c, l);
+  const slider = $("leverage-slider") as HTMLInputElement;
+  const numIn  = $("leverage-input")  as HTMLInputElement;
+  const maxLev = parseFloat(slider.max);
+
+  if (lev > maxLev) {
+    errEl.textContent = `Target HF ${fmt(hfTarget, 4)} requires leverage above the pool maximum (${fmt(maxLev, 1)}×). Enter a lower HF.`;
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  errEl.classList.add("hidden");
+  const snapped = Math.round(lev * 10) / 10;
+  slider.value  = String(snapped);
+  numIn.value   = snapped.toFixed(1);
+  updatePreview();
+});
 
 // ── Demo mode (#17) ──────────────────────────────────────────────────────────
 
