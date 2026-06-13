@@ -1,0 +1,38 @@
+name: Contracts
+on:
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/contracts.yml'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'contracts/**'
+
+jobs:
+  blend_leverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/strategies/blend_leverage
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/strategies/blend_leverage
+
+      # TODO: add `cargo clippy --all-targets -- -D warnings` once the
+      # existing lint debt in the crate (digit grouping etc.) is paid down.
+      - name: Test
+        run: cargo test
+
+      - name: Build wasm release
+        run: cargo build --target wasm32v1-none --release
