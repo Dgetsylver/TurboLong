@@ -19,6 +19,10 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
+    /// Admin authorized to upgrade the contract WASM and set the share token.
+    Admin,
+    /// Monotonic contract version, bumped on each upgrade.
+    Version,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -136,6 +140,29 @@ pub fn get_keeper(e: &Env) -> Address {
         .persistent()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
+}
+
+// ── Admin ────────────────────────────────────────────────────────────────────
+
+pub fn set_admin(e: &Env, admin: &Address) {
+    e.storage().instance().set(&DataKey::Admin, admin);
+}
+
+pub fn get_admin(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .expect("Admin not set")
+}
+
+// ── Version ──────────────────────────────────────────────────────────────────
+
+pub fn set_version(e: &Env, version: u32) {
+    e.storage().instance().set(&DataKey::Version, &version);
+}
+
+pub fn get_version(e: &Env) -> u32 {
+    e.storage().instance().get(&DataKey::Version).unwrap_or(1)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

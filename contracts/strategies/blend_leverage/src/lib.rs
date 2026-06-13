@@ -29,8 +29,8 @@ use leverage::{
     shares_to_underlying,
 };
 use soroban_sdk::{
-    contract, contractimpl, token::TokenClient, Address, Bytes, Env, IntoVal, String, Symbol, Val,
-    Vec,
+    contract, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env, IntoVal, String,
+    Symbol, Val, Vec,
 };
 use storage::{extend_instance_ttl, Config};
 
@@ -61,6 +61,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [6] target_loops: u32      — number of leverage loops
     ///   [7] min_hf: i128           — minimum health factor (1e7)
     ///   [8] orange_hf: i128        — orange-zone threshold; partial unwind triggered below this (1e7)
+    ///   [9] admin: Address         — authorized to upgrade the contract and set the share token
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -80,6 +81,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .into_val(&e);
         let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
+        let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
 
         // Look up the reserve index from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
@@ -107,6 +109,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_admin(&e, &admin);
+        storage::set_version(&e, 1);
     }
 
     fn asset(e: Env) -> Result<Address, StrategyError> {
@@ -426,5 +430,29 @@ impl BlendLeverageStrategy {
             reserves.b_rate,
             reserves.d_rate,
         ))
+    }
+
+    /// Upgrade the contract WASM in place (admin-gated).
+    ///
+    /// All persistent storage (Config, Reserves, per-user VaultPos, Keeper,
+    /// Admin) is preserved across the upgrade, so user health factors and
+    /// balances are untouched — no exit/re-enter required. The version counter
+    /// is bumped for observability. See docs/migration-runbook.md.
+    pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>) -> Result<(), StrategyError> {
+        let admin = storage::get_admin(&e);
+        admin.require_auth();
+        e.deployer().update_current_contract_wasm(new_wasm_hash);
+        storage::set_version(&e, storage::get_version(&e).saturating_add(1));
+        Ok(())
+    }
+
+    /// Current contract version (1 at deploy, bumped on each upgrade).
+    pub fn version(e: Env) -> u32 {
+        storage::get_version(&e)
+    }
+
+    /// The admin authorized to upgrade the contract and set the share token.
+    pub fn admin(e: Env) -> Address {
+        storage::get_admin(&e)
     }
 }

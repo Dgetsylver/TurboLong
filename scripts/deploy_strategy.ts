@@ -71,6 +71,8 @@ async function main() {
     nativeToScVal(9_000_000n, { type: "i128" }),  // [5] c_factor (0.90)
     nativeToScVal(3, { type: "u32" }),            // [6] target_loops
     nativeToScVal(10_500_000n, { type: "i128" }), // [7] min_hf (1.05)
+    nativeToScVal(11_500_000n, { type: "i128" }), // [8] orange_hf (1.15)
+    addrScVal(account),                           // [9] admin (deployer, testnet)
   ]);
 
   // Step 2: Build deploy transaction with constructor
