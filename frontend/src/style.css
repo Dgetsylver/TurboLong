@@ -1304,3 +1304,8 @@ kbd {
   font-family: var(--font-mono, monospace);
   font-size: 0.8rem;
 }
+
+/* T3.1 — Aquarius best-rate badge */
+.best-rate-badge { font-weight: 700; }
+.best-rate-badge.best-broker { color: #2DE8A3; }
+.best-rate-badge.best-aquarius { color: #7B61FF; }
