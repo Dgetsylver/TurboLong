@@ -438,5 +438,245 @@
     "supplyEps": 196450,
     "borrowEps": 96091,
     "blndPrice": 0.5
+  },
+  {
+    "name": "Just below utilOpt (49.99%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 49990.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Just above utilOpt (50.01%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 50010.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Just below 95% (94.99%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 94990.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Just above 95% (95.01%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 95010.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Loop crosses kink 1->2 (40%->70%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 40000.0,
+    "addSupply": 0.0,
+    "addBorrow": 30000.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Loop crosses kink 2->3 (80%->97%)",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 80000.0,
+    "addSupply": 0.0,
+    "addBorrow": 17000.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "High irMod 3x",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 30000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 70000.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Low irMod 0.5x",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 5000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 70000.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Zero emissions",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 60000.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 0,
+    "borrowEps": 0,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "High backstop 50pct",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 5000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 85000.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "utilOpt 75pct mid-seg2",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 7500000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 85000.0,
+    "addSupply": 0.0,
+    "addBorrow": 0.0,
+    "priceUsd": 1.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
+  },
+  {
+    "name": "Addition pushes above 95pct",
+    "rateConfig": {
+      "rBase": 300000,
+      "rOne": 400000,
+      "rTwo": 1200000,
+      "rThree": 50000000,
+      "utilOpt": 5000000,
+      "irMod": 10000000,
+      "backstopFP": 2000000
+    },
+    "totalSupply": 100000.0,
+    "totalBorrow": 90000.0,
+    "addSupply": 0.0,
+    "addBorrow": 8000.0,
+    "priceUsd": 2.0,
+    "supplyEps": 100000,
+    "borrowEps": 80000,
+    "blndPrice": 0.5
   }
 ]
