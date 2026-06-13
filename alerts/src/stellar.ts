@@ -72,18 +72,6 @@ function addressToScVal(addr: string): string {
   return JSON.stringify({ type: "Address", value: addr });
 }
 
-/** Build a simulateTransaction JSON-RPC request body. */
-function buildSimulateBody(contractId: string, method: string, args: any[]): object {
-  return {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "simulateTransaction",
-    params: {
-      transaction: buildInvokeXdr(contractId, method, args),
-    },
-  };
-}
-
 // We need proper XDR encoding. Since we can't use the SDK in a worker easily,
 // we'll use the soroban-rpc's native JSON interface via stellar-sdk-like encoding.
 // Actually, the simplest approach: build a minimal transaction envelope in base64.
@@ -101,6 +89,10 @@ export interface ReserveRates {
   interestBorrowApr: number;
   blndSupplyApr: number;
   blndBorrowApr: number;
+  /** Current pool utilisation (0..1). */
+  util: number;
+  /** Collateral factor (0..1). */
+  cFactor: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -217,6 +209,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const blndSupplyApr = totalSupplyUsd > 0 ? (supplyBlndYr * blndPrice / totalSupplyUsd) * 100 : 0;
     const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
 
+    const cFactor = (reserveRaw.config?.c_factor ?? 9_500_000) / SCALAR;
+
     return {
       netSupplyApr:     interestSupplyApr + blndSupplyApr,
       netBorrowCost:    interestBorrowApr - blndBorrowApr,
@@ -224,6 +218,8 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       interestBorrowApr,
       blndSupplyApr,
       blndBorrowApr,
+      util,
+      cFactor,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
@@ -234,4 +230,17 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
 /** Compute net APY at a given leverage. */
 export function computeNetApy(rates: ReserveRates, leverage: number): number {
   return rates.netSupplyApr * leverage - rates.netBorrowCost * (leverage - 1);
+}
+
+/**
+ * Nominal health factor of a recursive-loop position at a given leverage.
+ *
+ * For leverage L the position holds supply = L·equity, debt = (L−1)·equity, so
+ * HF = (supply · cFactor) / debt = L·cFactor / (L−1). Returns +Infinity for
+ * L ≤ 1 (no debt). This is the bracket's HF given the pool's current collateral
+ * factor — it falls as cFactor drops or leverage rises.
+ */
+export function computeHealthFactor(rates: ReserveRates, leverage: number): number {
+  if (leverage <= 1) return Number.POSITIVE_INFINITY;
+  return (leverage * rates.cFactor) / (leverage - 1);
 }

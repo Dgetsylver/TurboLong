@@ -3,19 +3,31 @@
  *
  * Routes:
  *   POST /subscribe              — register an email alert subscription
+ *                                  (alert_type: 'apy' | 'hf' | 'liquidation';
+ *                                  hf_threshold required for 'hf')
  *   GET  /verify?token=          — verify email
  *   GET  /unsubscribe?token=     — remove email subscription
  *   GET  /vapid-public-key       — VAPID public key for web push
  *   POST /push/subscribe         — register a web-push subscription
  *   GET  /push/unsubscribe?token= — remove web-push subscription
+ *   GET  /snapshots              — paginated rate time-series
+ *                                  (?pool_id=&asset=&limit=&before=)
  *
  * Cron (every 15 min):
- *   Fetch pool reserve rates, compute APY per bracket, alert email + push subscribers.
+ *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
+ *   → HF / liquidation-imminent alerts → prune snapshots past 365 days.
  */
 
-import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, type ReserveRates } from "./stellar.ts";
-import { sendVerificationEmail, sendApyAlert } from "./email.ts";
+import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
+import { sendVerificationEmail, sendApyAlert, sendHfAlert } from "./email.ts";
 import { sendApyPush } from "./push.ts";
+
+/** Liquidation-imminent HF threshold. */
+const LIQUIDATION_HF = 1.05;
+/** Minimum hours between repeat HF/liquidation alerts for a subscription. */
+const HF_ALERT_DEBOUNCE_HOURS = 6;
+/** Snapshot retention window. */
+const SNAPSHOT_RETENTION_DAYS = 365;
 
 interface Env {
   DB: D1Database;
@@ -112,16 +124,29 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   const target = validateAlertTarget(pool_id, asset_symbol, leverage_bracket);
   if (!target.ok) return jsonResponse({ ok: false, error: target.error }, 400, env);
 
+  // Alert channel + optional HF threshold.
+  const alertType = (body.alert_type ?? "apy") as string;
+  if (!["apy", "hf", "liquidation"].includes(alertType)) {
+    return jsonResponse({ ok: false, error: "Invalid alert_type" }, 400, env);
+  }
+  let hfThreshold: number | null = null;
+  if (alertType === "hf") {
+    hfThreshold = Number(body.hf_threshold);
+    if (!Number.isFinite(hfThreshold) || hfThreshold <= 1) {
+      return jsonResponse({ ok: false, error: "hf_threshold must be > 1 for the 'hf' channel" }, 400, env);
+    }
+  }
+
   const verifyToken = generateToken();
   const unsubToken  = generateToken();
 
   try {
     await env.DB.prepare(`
-      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, verified = 0
-    `).bind(email, pool_id, asset_symbol, target.lev, verifyToken, unsubToken).run();
+      INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token, alert_type, hf_threshold)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket, alert_type) DO UPDATE
+        SET verify_token = ?5, unsub_token = ?6, hf_threshold = ?8, verified = 0
+    `).bind(email, pool_id, asset_symbol, target.lev, verifyToken, unsubToken, alertType, hfThreshold).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
     return jsonResponse({ ok: false, error: "Database error" }, 500, env);
@@ -376,8 +401,90 @@ async function alertPushSubscribers(
   }
 }
 
+/** Persist a rate snapshot for the time-series endpoint + delta arrows. */
+async function writeSnapshot(env: Env, pool: { id: string }, asset: { symbol: string }, rates: ReserveRates): Promise<void> {
+  try {
+    await env.DB.prepare(`
+      INSERT INTO rate_snapshots
+        (pool_id, asset_symbol, net_supply_apr, net_borrow_cost, interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    `).bind(
+      pool.id, asset.symbol, rates.netSupplyApr, rates.netBorrowCost,
+      rates.interestSupplyApr, rates.interestBorrowApr, rates.blndSupplyApr,
+      rates.blndBorrowApr, rates.util, rates.cFactor,
+    ).run();
+  } catch (e) {
+    console.error(`[cron] snapshot insert failed for ${asset.symbol}:`, e);
+  }
+}
+
+/** Fire HF / liquidation-imminent alerts for verified subscribers. */
+async function alertHfSubscribers(
+  env: Env,
+  pool: { id: string; name: string },
+  asset: { symbol: string },
+  rates: ReserveRates,
+  base: string,
+): Promise<void> {
+  let rows: any;
+  try {
+    rows = await env.DB.prepare(`
+      SELECT id, email, leverage_bracket, alert_type, hf_threshold, unsub_token, last_fired_at
+      FROM subscriptions
+      WHERE verified = 1 AND pool_id = ?1 AND asset_symbol = ?2 AND alert_type IN ('hf','liquidation')
+    `).bind(pool.id, asset.symbol).all();
+  } catch (e) {
+    console.error("[cron] HF subscriber query failed:", e);
+    return;
+  }
+
+  const nowMs = Date.now();
+  for (const row of rows?.results ?? []) {
+    const lev = Number(row.leverage_bracket);
+    const hf = computeHealthFactor(rates, lev);
+    const liquidation = row.alert_type === "liquidation";
+    const threshold = liquidation ? LIQUIDATION_HF : Number(row.hf_threshold);
+    if (!Number.isFinite(threshold) || hf >= threshold) continue;
+
+    // Debounce.
+    if (row.last_fired_at) {
+      const lastMs = Date.parse((row.last_fired_at as string).replace(" ", "T") + "Z");
+      if (Number.isFinite(lastMs) && nowMs - lastMs < HF_ALERT_DEBOUNCE_HOURS * 3600_000) continue;
+    }
+
+    const result = await sendHfAlert(
+      { RESEND_API_KEY: env.RESEND_API_KEY, RESEND_FROM: env.RESEND_FROM },
+      row.email,
+      {
+        poolName: pool.name,
+        assetSymbol: asset.symbol,
+        leverage: lev,
+        hf,
+        threshold,
+        liquidation,
+        unsubscribeUrl: `${base}/unsubscribe?token=${row.unsub_token}`,
+        appUrl: env.FRONTEND_ORIGIN,
+      },
+    );
+    if (result.ok) {
+      await env.DB.prepare(`UPDATE subscriptions SET last_fired_at = datetime('now') WHERE id = ?1`).bind(row.id).run();
+    }
+  }
+}
+
+/** Delete snapshots older than the retention window. */
+async function pruneSnapshots(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(
+      `DELETE FROM rate_snapshots WHERE recorded_at < datetime('now', ?1)`,
+    ).bind(`-${SNAPSHOT_RETENTION_DAYS} days`).run();
+  } catch (e) {
+    console.error("[cron] snapshot prune failed:", e);
+  }
+}
+
 async function handleCron(env: Env, requestBase?: string): Promise<void> {
-  console.log("[cron] APY alert check starting...");
+  console.log("[cron] rate snapshot + alert check starting...");
   const base = requestBase ?? "https://turbolong-alerts.workers.dev";
 
   for (const pool of POOLS) {
@@ -395,20 +502,59 @@ async function handleCron(env: Env, requestBase?: string): Promise<void> {
         continue;
       }
 
+      // Record the snapshot every tick (15 min).
+      await writeSnapshot(env, pool, asset, rates);
+
+      // APY-negative alerts.
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
-
         if (netApy >= 0) continue;
-
         console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
-
         await alertEmailSubscribers(env, pool, asset, bracket, netApy, rates, base);
         await alertPushSubscribers(env, pool, asset, bracket, netApy);
       }
+
+      // Health-factor + liquidation-imminent alerts.
+      await alertHfSubscribers(env, pool, asset, rates, base);
     }
   }
 
-  console.log("[cron] APY alert check complete.");
+  await pruneSnapshots(env);
+  console.log("[cron] rate snapshot + alert check complete.");
+}
+
+/**
+ * Public GET /snapshots — paginated rate time-series.
+ * Query: pool_id, asset (symbol), limit (≤500, default 100), before (id cursor).
+ */
+async function handleSnapshots(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const poolId = url.searchParams.get("pool_id");
+  const asset = url.searchParams.get("asset");
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 500);
+  const before = url.searchParams.get("before");
+
+  const where: string[] = [];
+  const binds: any[] = [];
+  if (poolId) { where.push(`pool_id = ?${binds.length + 1}`); binds.push(poolId); }
+  if (asset) { where.push(`asset_symbol = ?${binds.length + 1}`); binds.push(asset); }
+  if (before) { where.push(`id < ?${binds.length + 1}`); binds.push(Number(before)); }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, pool_id, asset_symbol, recorded_at, net_supply_apr, net_borrow_cost,
+              interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor
+       FROM rate_snapshots ${whereSql}
+       ORDER BY id DESC LIMIT ?${binds.length + 1}`,
+    ).bind(...binds, limit).all();
+    const results = rows?.results ?? [];
+    const nextCursor = results.length === limit ? (results[results.length - 1] as any).id : null;
+    return jsonResponse({ snapshots: results, nextCursor }, 200, env);
+  } catch (e) {
+    console.error("[snapshots] query failed:", e);
+    return jsonResponse({ error: "Database error" }, 500, env);
+  }
 }
 
 // ── Worker entry ─────────────────────────────────────────────────────────────
@@ -448,6 +594,12 @@ export default {
 
       case "/push/unsubscribe":
         return handlePushUnsubscribe(request, env);
+
+      case "/snapshots":
+        if (request.method !== "GET") {
+          return jsonResponse({ error: "Method not allowed" }, 405, env);
+        }
+        return handleSnapshots(request, env);
 
       default:
         return jsonResponse({ error: "Not found" }, 404);
