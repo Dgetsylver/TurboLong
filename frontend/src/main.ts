@@ -403,6 +403,11 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()
 
 // ── Disclaimer ───────────────────────────────────────────────────────────
 
+// Modal focus-management state. Declared BEFORE this top-level disclaimer block,
+// which calls openModal() during module init — a `const` defined later (next to
+// openModal) would be in the temporal dead zone and crash boot for new visitors.
+const _modalState = new WeakMap<HTMLElement, { trigger: HTMLElement | null; trap: (e: KeyboardEvent) => void }>();
+
 if (!localStorage.getItem("disclaimerAccepted")) {
   openModal(document.getElementById("disclaimer-overlay")!, {
     focus: document.getElementById("disclaimer-checkbox"),
@@ -3047,8 +3052,8 @@ function debounceQuote() {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-// Per-overlay state: the element to restore focus to, and the active trap handler.
-const _modalState = new WeakMap<HTMLElement, { trigger: HTMLElement | null; trap: (e: KeyboardEvent) => void }>();
+// _modalState is declared near the top ($ helper) so it's initialized before the
+// top-level disclaimer block calls openModal() during module init (TDZ fix).
 
 function _focusable(overlay: HTMLElement): HTMLElement[] {
   return Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE))
