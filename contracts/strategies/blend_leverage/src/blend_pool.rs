@@ -36,10 +36,7 @@ pub fn submit_leverage_loop(
 
     // Get pre-loop positions
     let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre_positions
         .liabilities
         .get(config.reserve_id)
@@ -96,17 +93,19 @@ pub fn submit_leverage_loop(
             sub_invocations: vec![e],
         }),
     ]);
-    token_client.approve(&strategy, &config.pool, &total_supply, &(e.ledger().sequence() + 1));
+    token_client.approve(
+        &strategy,
+        &config.pool,
+        &total_supply,
+        &(e.ledger().sequence() + 1),
+    );
 
     // Single atomic submit using allowance-based transfers
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     // Read final positions
     let new_positions = pool_client.get_positions(&strategy);
-    let new_b = new_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let new_d = new_positions
         .liabilities
         .get(config.reserve_id)
@@ -146,10 +145,7 @@ pub fn submit_unwind(
     let strategy = e.current_contract_address();
 
     let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre_positions
         .liabilities
         .get(config.reserve_id)
@@ -246,7 +242,12 @@ pub fn submit_unwind(
                 sub_invocations: vec![e],
             }),
         ]);
-        token_client_inner.approve(&strategy, &config.pool, &total_repay, &(e.ledger().sequence() + 1));
+        token_client_inner.approve(
+            &strategy,
+            &config.pool,
+            &total_repay,
+            &(e.ledger().sequence() + 1),
+        );
     }
 
     // Single atomic submit using allowance-based transfers
@@ -265,12 +266,7 @@ pub fn submit_unwind(
                 context: ContractContext {
                     contract: config.asset.clone(),
                     fn_name: Symbol::new(e, "transfer"),
-                    args: (
-                        strategy.clone(),
-                        to.clone(),
-                        equity,
-                    )
-                        .into_val(e),
+                    args: (strategy.clone(), to.clone(), equity).into_val(e),
                 },
                 sub_invocations: vec![e],
             }),
@@ -280,17 +276,18 @@ pub fn submit_unwind(
 
     // Read final positions for return
     let end_positions = pool_client.get_positions(&strategy);
-    let end_b = end_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let end_b = end_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let end_d = end_positions
         .liabilities
         .get(config.reserve_id)
         .unwrap_or(0);
 
-    let b_removed = pre_b.checked_sub(end_b).ok_or(StrategyError::UnderflowOverflow)?;
-    let d_removed = pre_d.checked_sub(end_d).ok_or(StrategyError::UnderflowOverflow)?;
+    let b_removed = pre_b
+        .checked_sub(end_b)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    let d_removed = pre_d
+        .checked_sub(end_d)
+        .ok_or(StrategyError::UnderflowOverflow)?;
 
     Ok((b_removed, d_removed))
 }
@@ -307,10 +304,7 @@ pub fn submit_deleverage(
     let strategy = e.current_contract_address();
 
     let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre_positions
         .liabilities
         .get(config.reserve_id)
@@ -342,7 +336,7 @@ pub fn submit_deleverage(
 
     for i in 0..loops_to_unwind {
         let idx = n_layers - 1 - i;
-        let layer_amount = layers.get(idx as u32).unwrap_or(0);
+        let layer_amount = layers.get(idx).unwrap_or(0);
         if layer_amount == 0 {
             continue;
         }
@@ -379,7 +373,12 @@ pub fn submit_deleverage(
                 sub_invocations: vec![e],
             }),
         ]);
-        token_client.approve(&strategy, &config.pool, &total_repay, &(e.ledger().sequence() + 1));
+        token_client.approve(
+            &strategy,
+            &config.pool,
+            &total_repay,
+            &(e.ledger().sequence() + 1),
+        );
     }
 
     if !requests.is_empty() {
@@ -387,10 +386,7 @@ pub fn submit_deleverage(
     }
 
     let new_positions = pool_client.get_positions(&strategy);
-    let new_b = new_positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
     let new_d = new_positions
         .liabilities
         .get(config.reserve_id)
@@ -498,14 +494,8 @@ pub fn get_strategy_positions(e: &Env, config: &Config) -> (i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let positions = pool_client.get_positions(&e.current_contract_address());
 
-    let b_tokens = positions
-        .collateral
-        .get(config.reserve_id)
-        .unwrap_or(0);
-    let d_tokens = positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let b_tokens = positions.collateral.get(config.reserve_id).unwrap_or(0);
+    let d_tokens = positions.liabilities.get(config.reserve_id).unwrap_or(0);
 
     (b_tokens, d_tokens)
 }

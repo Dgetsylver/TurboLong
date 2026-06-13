@@ -67,18 +67,20 @@ impl BlendLeverageStrategy {
         storage::set_vault_shares(
             &e,
             &from,
-            from_shares.checked_sub(amount).ok_or(StrategyError::UnderflowOverflow)?,
+            from_shares
+                .checked_sub(amount)
+                .ok_or(StrategyError::UnderflowOverflow)?,
         );
         storage::set_vault_shares(
             &e,
             &to,
-            to_shares.checked_add(amount).ok_or(StrategyError::UnderflowOverflow)?,
+            to_shares
+                .checked_add(amount)
+                .ok_or(StrategyError::UnderflowOverflow)?,
         );
 
-        e.events().publish(
-            (symbol_short!("transfer"), from, to),
-            amount,
-        );
+        e.events()
+            .publish((symbol_short!("transfer"), from, to), amount);
 
         Ok(())
     }
