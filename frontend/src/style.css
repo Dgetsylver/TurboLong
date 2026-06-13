@@ -1383,3 +1383,30 @@ kbd {
   .compare-header { flex-direction: column; }
   .compare-title { font-size: 20px; }
 }
+
+/* ── T3.2 — Aquarius trade card (vault view) ───────────────────────────────── */
+.aqua-trade-card {
+  margin: 16px 0 0; padding: 16px; border: 1px solid var(--border);
+  border-radius: var(--r); background: var(--surface2);
+}
+.aqua-trade-head { display: flex; align-items: flex-start; gap: 12px; }
+.aqua-trade-icon { font-size: 20px; color: var(--blnd); line-height: 1.4; }
+.aqua-trade-title { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+.aqua-trade-sub { margin: 0; font-size: 12px; color: var(--text-2); line-height: 1.5; }
+.aqua-trade-body { margin-top: 14px; }
+.aqua-trade-pending { margin: 0; font-size: 12px; color: var(--text-3); line-height: 1.5; }
+.aqua-trade-btn { display: inline-flex; align-items: center; gap: 6px; }
+.aqua-trade-token {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;
+  font-size: 12px;
+}
+.aqua-trade-token-label { color: var(--text-3); }
+.aqua-token-id { color: var(--text); background: var(--surface3); padding: 2px 8px; border-radius: var(--r-xs); }
+.aqua-copy-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text-2);
+  border-radius: var(--r-xs); padding: 2px 7px; cursor: pointer; font-size: 12px;
+  line-height: 1.2; transition: all .15s;
+}
+.aqua-copy-btn:hover { border-color: var(--border-h); color: var(--text); }
+.aqua-token-expert { color: var(--primary); text-decoration: none; }
+.aqua-token-expert:hover { text-decoration: underline; }
