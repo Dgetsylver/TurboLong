@@ -1394,7 +1394,6 @@ function renderPosition() {
     $("position-data").classList.add("hidden");
     $("metrics-hero").classList.add("hidden");
     ($("close-btn") as HTMLButtonElement).disabled = true;
-    ($("repay-btn") as HTMLButtonElement).disabled = true;
     ($("resupply-btn") as HTMLButtonElement).disabled = true;
     // Clear stale compound estimate from previous asset
     $("compound-estimate").textContent = "";
@@ -1412,7 +1411,6 @@ function renderPosition() {
   $("position-data").classList.remove("hidden");
   $("metrics-hero").classList.remove("hidden");
   ($("close-btn") as HTMLButtonElement).disabled = false;
-  ($("repay-btn") as HTMLButtonElement).disabled = pos.dTokens === 0n;
   ($("resupply-btn") as HTMLButtonElement).disabled = false;
   // Show Adjust mode
   setActionCardMode("adjust", pos);
@@ -1475,7 +1473,6 @@ function renderPosition() {
     warnEl.innerHTML = `
       <span>${isDanger ? "\u2717" : "\u26A0"} Health Factor is ${fmt(hf, 3)} \u2014 ${isDanger ? "liquidation imminent!" : "approaching liquidation"}</span>
       <div class="hf-warn-actions">
-        <button class="btn btn-sm btn-secondary" onclick="document.getElementById('repay-btn').click()">Repay</button>
         <button class="btn btn-sm btn-secondary" onclick="document.getElementById('resupply-btn').click()">Resupply</button>
       </div>`;
     warnEl.classList.remove("hidden");
@@ -2179,7 +2176,7 @@ async function closePosition() {
     // Pool utilization too high for atomic close \u2014 fall back to two-step:
     // 1) Deleverage (repay debt using collateral, net flow \u2248 0)
     // 2) Withdraw remaining collateral (now debt-free, smaller supply impact)
-    if ((msg.includes("#1207") || msg.includes("InvalidUtilRate")) && pos.dTokens > 0n) {
+    if ((msg.includes("#1207") || msg.includes("InvalidUtilRate") || msg.includes("#1205") || msg.includes("InvalidHf")) && pos.dTokens > 0n) {
       try {
         toast(t("toast.closeTwoSteps"), "info");
         showTxStepper(["Repay Debt", "Withdraw Collateral"]);
@@ -2214,26 +2211,6 @@ async function closePosition() {
     }
   } finally {
     setLoading($("close-btn") as HTMLButtonElement, false);
-  }
-}
-
-async function repayDebt() {
-  if (!userAddress) return;
-  if (demoMode) { toast(t("toast.demoMode"), "info"); return; }
-  const pos = positions.byAsset.get(selectedAsset.id);
-  if (!pos || pos.dTokens === 0n) return;
-  setLoading($("repay-btn") as HTMLButtonElement, true);
-  showTxStepper(["Repay Debt"]);
-  try {
-    const repayXdr = await buildRepayXdr(selectedPool, userAddress, pos);
-    await signAndSubmit(repayXdr, `Repay ${selectedAsset.symbol} debt`, 0);
-    hideTxStepper();
-    await loadAll();
-  } catch (e: any) {
-    markStepperError(1);
-    toast(e?.message ?? t("toast.txFailed"), "error");
-  } finally {
-    setLoading($("repay-btn") as HTMLButtonElement, false);
   }
 }
 
@@ -3420,7 +3397,6 @@ $("disconnect-btn").addEventListener("click", disconnect);
 $("refresh-btn").addEventListener("click",    () => loadAll());
 $("open-btn").addEventListener("click",       openPosition);
 $("close-btn").addEventListener("click",      closePosition);
-$("repay-btn").addEventListener("click",      repayDebt);
 $("claim-btn").addEventListener("click",      claimBlnd);
 $("max-btn").addEventListener("click",        maxDeposit);
 $("compound-btn").addEventListener("click",   claimAndConvert);
@@ -4216,7 +4192,11 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
       toast(data.error || t("toast.subscriptionFailed"), "error");
     }
   } catch (e: any) {
-    toast(t("toast.subscriptionFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
+    if (e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e?.message ?? "")) {
+      toast(t("toast.alertsUnavailable"), "error");
+    } else {
+      toast(t("toast.subscriptionFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = t("alert.subscribe");
@@ -4281,7 +4261,11 @@ $("alert-push-btn").addEventListener("click", async () => {
       toast(data.error || t("toast.pushSubFailed"), "error");
     }
   } catch (e: any) {
-    toast(t("toast.pushSubFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
+    if (e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e?.message ?? "")) {
+      toast(t("toast.alertsUnavailable"), "error");
+    } else {
+      toast(t("toast.pushSubFailedMsg", { msg: e.message?.slice(0, 100) ?? "" }), "error");
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = t("alert.push");
