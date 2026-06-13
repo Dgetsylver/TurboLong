@@ -452,6 +452,7 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 .rate-trend-label { color: var(--text-3); font-family: var(--sans); font-size: 10px; margin-right: 3px; }
 .rate-trend-up   { color: var(--success); }
 .rate-trend-down { color: var(--danger); }
+.rate-trend-flat { color: var(--text-3); }
 .rate-trend-slot:empty { display: none; }
 
 /* ── APY history chart (B4) ──────────────────────────────────────────────── */

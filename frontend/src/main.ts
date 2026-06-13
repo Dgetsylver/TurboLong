@@ -783,13 +783,15 @@ function renderTrendArrow(
   ] as [string, number | null][]) {
     if (past === null) continue;
     const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
-    const up = delta >= 0;
-    const sym = up ? "▲" : "▼";
-    const cls = up ? "rate-trend-up" : "rate-trend-down";
-    // Clamp the shown delta so huge swings don't overflow the row.
     const absDelta = Math.abs(delta);
+    // Treat sub-0.05% moves as flat — a neutral marker, not a misleading ▲0.0%.
+    const flat = absDelta < 0.05;
+    const up = delta >= 0;
+    const sym = flat ? "→" : up ? "▲" : "▼";
+    const cls = flat ? "rate-trend-flat" : up ? "rate-trend-up" : "rate-trend-down";
+    // Clamp the shown delta so huge swings don't overflow the row.
     const shown = absDelta > 999.9 ? "&gt;999.9%" : `${fmt(absDelta, 1)}%`;
-    const aria = `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
+    const aria = flat ? `${label} unchanged` : `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
     parts.push(`<span class="rate-trend" role="img" aria-label="${aria}"><span class="${cls}">${sym}${shown}</span><span class="rate-trend-label">${label}</span></span>`);
     tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
   }
@@ -2516,15 +2518,14 @@ interface CompareRow {
   asset:     AssetInfo;
   rs:        ReserveStats;
   baseApy:   number;          // aprToApy(netSupplyApr)
-  safeLev:   number;          // max leverage keeping HF ≥ COMPARE_HF_FLOOR, capped
+  safeLev:   number;          // max leverage at minHF() — matches the trade form
   levApy:    number;          // net APY at the carry-optimal leverage
   aquaPrice: number | null;   // indicative 1 unit → USDC, null = no route
   series:    SnapshotPoint[]; // net supply APR history within the window
 }
 
-const COMPARE_HF_FLOOR = 1.2;
-const COMPARE_LEV_CAP  = 8;
-
+// Max leverage shown in Compare uses the SAME health-factor floor as the trade
+// form (minHF()), so the figure matches what a user can actually open.
 let compareWindowDays = 30;
 let compareSortKey: "lev" | "base" | "rate" = "lev";
 let compareRows: CompareRow[] = [];
@@ -2540,9 +2541,12 @@ function usdcAssetId(): string | null {
   return null;
 }
 
-/** Carry-optimal leverage + the net APY it yields at current pool rates. */
+/** Carry-optimal leverage + the net APY it yields at current pool rates.
+ *  Max leverage uses minHF() — identical to the trade form's slider ceiling —
+ *  so Compare's "Max Lev" and ranking reflect the achievable position, not a
+ *  more conservative hidden assumption. (maxLeverageFor caps at 100.) */
 function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
-  const safeLev = Math.min(COMPARE_LEV_CAP, Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, COMPARE_HF_FLOOR)));
+  const safeLev = Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, minHF()));
   const carry   = rs.netSupplyApr - rs.netBorrowCost; // marginal yield per extra leverage unit
   const effLev  = carry > 0 ? safeLev : 1;            // negative carry → no leverage
   const levApy  = aprToApy(rs.netSupplyApr * effLev - rs.netBorrowCost * (effLev - 1));
