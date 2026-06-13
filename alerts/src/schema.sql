@@ -63,3 +63,29 @@ CREATE TABLE IF NOT EXISTS rate_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_pool_asset_time
   ON rate_snapshots(pool_id, asset_symbol, recorded_at);
+
+-- A/B routing telemetry: one row per harvest swap comparing Stellar Broker vs
+-- Soroswap quotes + the executed result (SCF T2.1). Public read endpoint powers
+-- the Broker-vs-Soroswap win-rate / uplift report.
+CREATE TABLE IF NOT EXISTS swap_routes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts             TEXT NOT NULL DEFAULT (datetime('now')),
+  network        TEXT NOT NULL DEFAULT 'mainnet',   -- only 'mainnet' counts toward the ≥50
+  strategy_id    TEXT NOT NULL,
+  asset_symbol   TEXT NOT NULL,
+  amount_in      TEXT NOT NULL,                       -- BLND in (stroops, i128 as string)
+  broker_quote   TEXT,                                -- estimated underlying out, NULL if unavailable
+  soroswap_quote TEXT,                                -- router_get_amounts_out, NULL if unavailable
+  chosen         TEXT NOT NULL,                       -- 'broker' | 'soroswap'
+  reason         TEXT NOT NULL,                       -- 'best' | 'fallback_unavailable' | 'fallback_worse' | 'fallback_error'
+  executed_out   TEXT,                                -- actual underlying received
+  amount_out_min TEXT NOT NULL,                       -- min-output enforced on the executed path
+  slippage_bps   INTEGER,                             -- (chosen_quote - executed_out)/chosen_quote * 1e4
+  uplift_bps     INTEGER,                             -- (chosen_quote - other_quote)/other_quote * 1e4, signed
+  tx_hash        TEXT,
+  keeper         TEXT,
+  status         TEXT NOT NULL DEFAULT 'executed'     -- 'executed' | 'quote_only' | 'failed'
+);
+
+CREATE INDEX IF NOT EXISTS idx_swap_routes_ts ON swap_routes(ts);
+CREATE INDEX IF NOT EXISTS idx_swap_routes_net_strat ON swap_routes(network, strategy_id);

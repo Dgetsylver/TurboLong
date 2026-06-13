@@ -12,6 +12,10 @@
  *   GET  /push/unsubscribe?token= — remove web-push subscription
  *   GET  /snapshots              — paginated rate time-series
  *                                  (?pool_id=&asset=&limit=&before=)
+ *   GET  /swap-routes            — Broker-vs-Soroswap A/B report
+ *                                  (?network=&strategy_id=&limit=)
+ *   POST /swap-routes            — keeper ingests one routing record
+ *                                  (Authorization: Bearer KEEPER_INGEST_KEY)
  *
  * Cron (every 15 min):
  *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
@@ -37,6 +41,8 @@ interface Env {
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT?: string;
+  /** Shared secret the keeper sends to POST /swap-routes (Authorization: Bearer). */
+  KEEPER_INGEST_KEY?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -557,6 +563,116 @@ async function handleSnapshots(request: Request, env: Env): Promise<Response> {
   }
 }
 
+// ── Swap-route A/B telemetry (T2.1) ──────────────────────────────────────────
+
+/**
+ * POST /swap-routes — keeper ingests one Broker-vs-Soroswap routing record.
+ * Auth: `Authorization: Bearer <KEEPER_INGEST_KEY>` (financial telemetry write).
+ */
+async function handleSwapRoutesPost(request: Request, env: Env): Promise<Response> {
+  if (!env.KEEPER_INGEST_KEY) {
+    return jsonResponse({ ok: false, error: "Ingestion not configured" }, 503, env);
+  }
+  const auth = request.headers.get("Authorization") ?? "";
+  if (auth !== `Bearer ${env.KEEPER_INGEST_KEY}`) {
+    return jsonResponse({ ok: false, error: "Unauthorized" }, 401, env);
+  }
+
+  let b: any;
+  try {
+    b = await request.json();
+  } catch {
+    return jsonResponse({ ok: false, error: "Invalid JSON" }, 400, env);
+  }
+
+  // Required fields.
+  for (const f of ["strategy_id", "asset_symbol", "amount_in", "chosen", "reason", "amount_out_min"]) {
+    if (b[f] == null || b[f] === "") {
+      return jsonResponse({ ok: false, error: `Missing field: ${f}` }, 400, env);
+    }
+  }
+  if (!["broker", "soroswap"].includes(b.chosen)) {
+    return jsonResponse({ ok: false, error: "chosen must be 'broker' or 'soroswap'" }, 400, env);
+  }
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO swap_routes
+        (network, strategy_id, asset_symbol, amount_in, broker_quote, soroswap_quote,
+         chosen, reason, executed_out, amount_out_min, slippage_bps, uplift_bps, tx_hash, keeper, status)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+    `).bind(
+      b.network ?? "mainnet", b.strategy_id, b.asset_symbol, String(b.amount_in),
+      b.broker_quote != null ? String(b.broker_quote) : null,
+      b.soroswap_quote != null ? String(b.soroswap_quote) : null,
+      b.chosen, b.reason,
+      b.executed_out != null ? String(b.executed_out) : null,
+      String(b.amount_out_min),
+      b.slippage_bps != null ? Math.round(Number(b.slippage_bps)) : null,
+      b.uplift_bps != null ? Math.round(Number(b.uplift_bps)) : null,
+      b.tx_hash ?? null, b.keeper ?? null, b.status ?? "executed",
+    ).run();
+  } catch (e) {
+    console.error("[swap-routes] insert failed:", e);
+    return jsonResponse({ ok: false, error: "Database error" }, 500, env);
+  }
+  return jsonResponse({ ok: true }, 200, env);
+}
+
+/**
+ * GET /swap-routes — public A/B report. Aggregates the Broker-vs-Soroswap
+ * win-rate + uplift over executed mainnet harvests, plus the recent rows.
+ * Query: network (default mainnet), strategy_id, limit (≤500).
+ */
+async function handleSwapRoutesGet(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const network = url.searchParams.get("network") ?? "mainnet";
+  const strategyId = url.searchParams.get("strategy_id");
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 500);
+
+  const filter: string[] = [`network = ?1`];
+  const binds: any[] = [network];
+  if (strategyId) { filter.push(`strategy_id = ?${binds.length + 1}`); binds.push(strategyId); }
+  const whereSql = `WHERE ${filter.join(" AND ")}`;
+
+  try {
+    const agg = await env.DB.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'executed' THEN 1 ELSE 0 END) AS executed,
+        SUM(CASE WHEN status = 'executed' AND chosen = 'broker' THEN 1 ELSE 0 END) AS broker_wins,
+        AVG(CASE WHEN status = 'executed' THEN uplift_bps END) AS avg_uplift_bps,
+        AVG(CASE WHEN status = 'executed' THEN slippage_bps END) AS avg_slippage_bps
+      FROM swap_routes ${whereSql}
+    `).bind(...binds).first<any>();
+
+    const rows = await env.DB.prepare(`
+      SELECT id, ts, network, strategy_id, asset_symbol, amount_in, broker_quote, soroswap_quote,
+             chosen, reason, executed_out, amount_out_min, slippage_bps, uplift_bps, tx_hash, status
+      FROM swap_routes ${whereSql}
+      ORDER BY id DESC LIMIT ?${binds.length + 1}
+    `).bind(...binds, limit).all();
+
+    const executed = Number(agg?.executed ?? 0);
+    const brokerWins = Number(agg?.broker_wins ?? 0);
+    return jsonResponse({
+      report: {
+        network,
+        total: Number(agg?.total ?? 0),
+        executed,
+        broker_wins: brokerWins,
+        broker_win_rate: executed > 0 ? brokerWins / executed : null,
+        avg_uplift_bps: agg?.avg_uplift_bps ?? null,
+        avg_slippage_bps: agg?.avg_slippage_bps ?? null,
+      },
+      rows: rows?.results ?? [],
+    }, 200, env);
+  } catch (e) {
+    console.error("[swap-routes] query failed:", e);
+    return jsonResponse({ error: "Database error" }, 500, env);
+  }
+}
+
 // ── Worker entry ─────────────────────────────────────────────────────────────
 
 export default {
@@ -600,6 +716,11 @@ export default {
           return jsonResponse({ error: "Method not allowed" }, 405, env);
         }
         return handleSnapshots(request, env);
+
+      case "/swap-routes":
+        if (request.method === "POST") return handleSwapRoutesPost(request, env);
+        if (request.method === "GET") return handleSwapRoutesGet(request, env);
+        return jsonResponse({ error: "Method not allowed" }, 405, env);
 
       default:
         return jsonResponse({ error: "Not found" }, 404);
