@@ -97,6 +97,11 @@ const en: Dict = {
   "status.svc.aquarius": "Aquarius AMM API",
   "status.allGood": "All systems operational",
   "status.someIssues": "Some services are degraded",
+  // remove funds (proportional partial close)
+  "action.removeFunds": "Remove Funds",
+  "removeFunds.disclaimer": "Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.",
+  "removeFunds.inPosition": "In position",
+  "removeFunds.useClose": "Use Close to exit fully.",
 };
 
 const es: Dict = {
@@ -172,6 +177,10 @@ const es: Dict = {
   "status.svc.aquarius": "API del AMM Aquarius",
   "status.allGood": "Todos los sistemas operativos",
   "status.someIssues": "Algunos servicios están degradados",
+  "action.removeFunds": "Retirar fondos",
+  "removeFunds.disclaimer": "Retira parte de tu capital y deshace la posición de forma proporcional — tu apalancamiento y factor de salud no cambian.",
+  "removeFunds.inPosition": "En posición",
+  "removeFunds.useClose": "Usa Cerrar para salir por completo.",
 };
 
 const pt: Dict = {
@@ -247,6 +256,10 @@ const pt: Dict = {
   "status.svc.aquarius": "API do AMM Aquarius",
   "status.allGood": "Todos os sistemas operacionais",
   "status.someIssues": "Alguns serviços estão degradados",
+  "action.removeFunds": "Remover fundos",
+  "removeFunds.disclaimer": "Saca parte do seu principal e desfaz a posição proporcionalmente — sua alavancagem e fator de saúde permanecem iguais.",
+  "removeFunds.inPosition": "Na posição",
+  "removeFunds.useClose": "Use Fechar para sair completamente.",
 };
 
 export const LOCALES: Record<Lang, Dict> = { en, es, pt };
