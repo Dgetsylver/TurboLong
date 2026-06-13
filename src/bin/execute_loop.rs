@@ -15,20 +15,16 @@
 /// Key file format: one line containing the Stellar secret key (S...).
 /// Never paste a secret key in the terminal or in source code.
 use std::{
-    env,
-    fs,
+    env, fs,
     process::{self, Command},
 };
 
-use reqwest::blocking::Client;
-use serde::Deserialize;
-use serde_json::{json, Value};
 use ed25519_dalek::SigningKey;
+use reqwest::blocking::Client;
 use stellar_strkey::ed25519::{PrivateKey, PublicKey};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAINNET_RPC: &str = "https://mainnet.sorobanrpc.com";
 const POOL_ID: &str = "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI";
 const USDC_ID: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 
@@ -59,9 +55,21 @@ impl Args {
         while let Some(flag) = args.next() {
             match flag.as_str() {
                 "--key-file" => key_file = Some(args.next().expect("--key-file requires a value")),
-                "--loops"    => loops = args.next().expect("--loops requires a value").parse().expect("loops must be an integer"),
-                "--initial"  => initial_usdc = args.next().expect("--initial requires a value").parse().expect("initial must be a number"),
-                "--dry-run"  => dry_run = true,
+                "--loops" => {
+                    loops = args
+                        .next()
+                        .expect("--loops requires a value")
+                        .parse()
+                        .expect("loops must be an integer")
+                }
+                "--initial" => {
+                    initial_usdc = args
+                        .next()
+                        .expect("--initial requires a value")
+                        .parse()
+                        .expect("initial must be a number")
+                }
+                "--dry-run" => dry_run = true,
                 other => eprintln!("Unknown flag: {other}"),
             }
         }
@@ -73,31 +81,6 @@ impl Args {
             dry_run,
         }
     }
-}
-
-// ── RPC helpers ───────────────────────────────────────────────────────────────
-
-#[derive(Deserialize, Debug)]
-struct RpcResponse {
-    result: Option<Value>,
-    error:  Option<Value>,
-}
-
-fn rpc_call(client: &Client, method: &str, params: Value) -> Value {
-    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let resp: RpcResponse = client
-        .post(MAINNET_RPC)
-        .json(&body)
-        .send()
-        .expect("RPC call failed")
-        .json()
-        .expect("RPC response parse failed");
-
-    if let Some(err) = resp.error {
-        eprintln!("RPC error: {err}");
-        process::exit(1);
-    }
-    resp.result.expect("RPC returned no result")
 }
 
 // ── Pool state from RPC ───────────────────────────────────────────────────────
@@ -115,13 +98,12 @@ const MAX_RATE_SPREAD_PCT: f64 = 15.0;
 /// We use the simulation test for detailed pre-flight; here we just need
 /// c_factor and current rates to compute request amounts.
 struct PoolSnapshot {
-    c_factor:     i128, // 1e7-scaled
+    c_factor: i128, // 1e7-scaled
     usdc_decimals: u32,
-    supply_apr:   f64,
-    borrow_apr:   f64,
+    supply_apr: f64,
+    borrow_apr: f64,
     pool_supply_usdc: f64,
     pool_borrow_usdc: f64,
-    supply_cap_usdc:  Option<f64>,
 }
 
 /// Reads a quick pool snapshot via the Soroban RPC `simulateTransaction` trick:
@@ -129,7 +111,7 @@ struct PoolSnapshot {
 /// For the actual amounts computation we rely on c_factor only (fetched via
 /// `stellar contract invoke --dry-run` below), so we hard-code the well-known
 /// USDC decimals here and let stellar-cli do the full pre-flight.
-fn fetch_pool_snapshot(client: &Client) -> PoolSnapshot {
+fn fetch_pool_snapshot(_client: &Client) -> PoolSnapshot {
     // We call the Soroban RPC to get the reserve config via getLedgerEntries.
     // Reserve config key for USDC in this pool is deterministic from the
     // pool ID + USDC address. Rather than computing the XDR key here, we
@@ -142,13 +124,12 @@ fn fetch_pool_snapshot(client: &Client) -> PoolSnapshot {
     //
     // A future improvement would parse the raw XDR ledger entries directly.
     PoolSnapshot {
-        c_factor: 9_500_000,         // 95% — validated in preflight
+        c_factor: 9_500_000, // 95% — validated in preflight
         usdc_decimals: 7,
-        supply_apr: 0.0,             // populated in preflight output
+        supply_apr: 0.0, // populated in preflight output
         borrow_apr: 0.0,
         pool_supply_usdc: 0.0,
         pool_borrow_usdc: 0.0,
-        supply_cap_usdc: None,
     }
 }
 
@@ -216,21 +197,41 @@ fn print_preflight(pairs: &[(i128, i128)], c_factor: i128, initial_usdc: f64, dr
     println!("  USDC:              {USDC_ID}");
     let n_borrows = pairs.iter().filter(|(_, b)| *b > 0).count();
     let n_requests = n_borrows + pairs.len(); // supplies + borrows
-    println!("  Loops:             {}  ({} borrows + {} supplies = {} requests)", n_borrows, n_borrows, pairs.len(), n_requests);
+    println!(
+        "  Loops:             {}  ({} borrows + {} supplies = {} requests)",
+        n_borrows,
+        n_borrows,
+        pairs.len(),
+        n_requests
+    );
     println!("  Initial deposit:   ${initial_usdc:.2}");
     println!("  Collateral factor: {:.0}%", c * 100.0);
     println!();
-    println!("  {:>4}  {:>14}  {:>14}", "Loop", "Supply ($)", "Borrow ($)");
+    println!(
+        "  {:>4}  {:>14}  {:>14}",
+        "Loop", "Supply ($)", "Borrow ($)"
+    );
     println!("  {}", "─".repeat(36));
     for (i, (s, b)) in pairs.iter().enumerate() {
         if *b > 0 {
-            println!("  {:>4}  {:>14.2}  {:>14.2}", i + 1, *s as f64 / scalar_f, *b as f64 / scalar_f);
+            println!(
+                "  {:>4}  {:>14.2}  {:>14.2}",
+                i + 1,
+                *s as f64 / scalar_f,
+                *b as f64 / scalar_f
+            );
         } else {
-            println!("  {:>4}  {:>14.2}  {:>14}  (final supply)", i + 1, *s as f64 / scalar_f, "—");
+            println!(
+                "  {:>4}  {:>14.2}  {:>14}  (final supply)",
+                i + 1,
+                *s as f64 / scalar_f,
+                "—"
+            );
         }
     }
     println!("  {}", "─".repeat(36));
-    println!("  {:>4}  {:>14.2}  {:>14.2}  →  {:.3}× leverage",
+    println!(
+        "  {:>4}  {:>14.2}  {:>14.2}  →  {:.3}× leverage",
         "net",
         total_supply as f64 / scalar_f,
         total_borrow as f64 / scalar_f,
@@ -272,7 +273,8 @@ fn check_safety(snap: &PoolSnapshot, initial_usdc: f64, n_loops: usize) -> Resul
             "Pool utilization is {:.1}% (max {:.0}%). \
              High utilization means collateral d-tokens are illiquid — \
              liquidators won't act, risking bad debt spiral. Wait for utilization to drop.",
-            util * 100.0, MAX_SAFE_UTILIZATION * 100.0
+            util * 100.0,
+            MAX_SAFE_UTILIZATION * 100.0
         ));
     }
 
@@ -282,7 +284,8 @@ fn check_safety(snap: &PoolSnapshot, initial_usdc: f64, n_loops: usize) -> Resul
         return Err(format!(
             "Borrow-supply APR spread is {:.1}% — abnormally high (max {:.0}%). \
              This may indicate rate manipulation. Wait for rates to stabilize.",
-            spread * 100.0, MAX_RATE_SPREAD_PCT
+            spread * 100.0,
+            MAX_RATE_SPREAD_PCT
         ));
     }
 
@@ -292,13 +295,18 @@ fn check_safety(snap: &PoolSnapshot, initial_usdc: f64, n_loops: usize) -> Resul
     let add_borrow = initial_usdc * (lev - 1.0);
     let proj_supply = snap.pool_supply_usdc + add_supply;
     let proj_borrow = snap.pool_borrow_usdc + add_borrow;
-    let proj_util = if proj_supply > 0.0 { proj_borrow / proj_supply } else { 0.0 };
+    let proj_util = if proj_supply > 0.0 {
+        proj_borrow / proj_supply
+    } else {
+        0.0
+    };
 
     if proj_util > MAX_SAFE_UTILIZATION {
         return Err(format!(
             "This position would push pool utilization to {:.1}% (max {:.0}%). \
              Reduce --loops or --initial.",
-            proj_util * 100.0, MAX_SAFE_UTILIZATION * 100.0
+            proj_util * 100.0,
+            MAX_SAFE_UTILIZATION * 100.0
         ));
     }
 
@@ -319,12 +327,16 @@ fn main() {
     let args = Args::parse();
 
     // 1. Load secret key from file — never from env or CLI arg.
-    let secret_raw = fs::read_to_string(&args.key_file)
-        .unwrap_or_else(|e| { eprintln!("Cannot read key file '{}': {e}", args.key_file); process::exit(1); });
+    let secret_raw = fs::read_to_string(&args.key_file).unwrap_or_else(|e| {
+        eprintln!("Cannot read key file '{}': {e}", args.key_file);
+        process::exit(1);
+    });
     let secret_str = secret_raw.trim();
 
-    let secret_key = PrivateKey::from_string(secret_str)
-        .unwrap_or_else(|e| { eprintln!("Invalid secret key: {e}"); process::exit(1); });
+    let secret_key = PrivateKey::from_string(secret_str).unwrap_or_else(|e| {
+        eprintln!("Invalid secret key: {e}");
+        process::exit(1);
+    });
     // Derive the public key via ed25519-dalek (stellar-strkey doesn't expose this).
     let signing_key = SigningKey::from_bytes(&secret_key.0);
     let pub_bytes: [u8; 32] = signing_key.verifying_key().to_bytes();
@@ -367,26 +379,41 @@ fn main() {
     //   --network mainnet \
     //   [--send=no if dry-run] \
     //   -- submit --from ADDR --spender ADDR --to ADDR --requests '[...]'
-    let send_flag = if args.dry_run { "--send=no" } else { "--send=yes" };
+    let send_flag = if args.dry_run {
+        "--send=no"
+    } else {
+        "--send=yes"
+    };
 
     let mut cmd = Command::new(&stellar_cli);
     cmd.args([
-        "contract", "invoke",
-        "--id",             POOL_ID,
-        "--source-account", secret_str,
-        "--network",        "mainnet",
+        "contract",
+        "invoke",
+        "--id",
+        POOL_ID,
+        "--source-account",
+        secret_str,
+        "--network",
+        "mainnet",
         send_flag,
         "--",
         "submit",
-        "--from",           &account_id,
-        "--spender",        &account_id,
-        "--to",             &account_id,
-        "--requests",       &requests_json,
+        "--from",
+        &account_id,
+        "--spender",
+        &account_id,
+        "--to",
+        &account_id,
+        "--requests",
+        &requests_json,
     ]);
 
     println!("Invoking stellar-cli…");
     println!("  stellar contract invoke --id {POOL_ID} --network mainnet {send_flag}");
-    println!("  -- submit --from {account_id} ... ({} requests)", pairs.len() * 2);
+    println!(
+        "  -- submit --from {account_id} ... ({} requests)",
+        pairs.len() * 2
+    );
     println!();
 
     let status = cmd.status().unwrap_or_else(|e| {
@@ -417,14 +444,22 @@ fn which_stellar_cli() -> String {
         // Same cargo bin dir as this binary.
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("stellar").to_string_lossy().to_string()))
+            .and_then(|p| {
+                p.parent()
+                    .map(|d| d.join("stellar").to_string_lossy().to_string())
+            })
             .unwrap_or_default(),
-        format!("{}/.cargo/bin/stellar", env::var("HOME").unwrap_or_default()),
+        format!(
+            "{}/.cargo/bin/stellar",
+            env::var("HOME").unwrap_or_default()
+        ),
         "stellar".to_string(), // in PATH
     ];
 
     for candidate in &candidates {
-        if candidate.is_empty() { continue; }
+        if candidate.is_empty() {
+            continue;
+        }
         if std::path::Path::new(candidate).exists()
             || Command::new(candidate).arg("--version").output().is_ok()
         {
