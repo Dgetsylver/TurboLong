@@ -628,7 +628,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   border-radius: 50%; background: var(--tooltip-bg); color: var(--text-3); font-size: 9px;
   cursor: help; margin-left: 3px; transition: background .2s;
 }
-.tooltip:hover { background: var(--tooltip-hover); color: var(--text-2); }
+.tooltip:hover, .tooltip:focus-visible { background: var(--tooltip-hover); color: var(--text-2); }
+.tooltip:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .input-wrap { position: relative; }
 .input {
   width: 100%; padding: 10px 14px; padding-right: 100px;
@@ -1321,6 +1322,9 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 @media (max-width: 480px) {
   .stats-row { grid-template-columns: 1fr; }
+  /* Force main two-column areas to single column (#2) */
+  .two-col { grid-template-columns: 1fr; }
+  .apr-grid { grid-template-columns: 1fr; }
   .blnd-price-assumption { grid-template-columns: 1fr; }
   .blnd-price-control .input { width: 100%; }
   .position-grid { grid-template-columns: 1fr; }
@@ -1341,6 +1345,35 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   .disclaimer-modal h2 { font-size: 18px; }
   .input { padding-right: 80px; }
   .input-max-btn { right: 40px; font-size: 10px; padding: 2px 6px; }
+  /* Tap targets ≥ 44px on small controls (#5) */
+  .asset-tab { min-height: 44px; }
+  .adjust-tab { min-height: 44px; }
+  .vault-tab { min-height: 44px; }
+  .mobile-card-tab { min-height: 44px; }
+}
+
+/* ── Narrow phones (≤400px / 375px target) ─────────────────────────────────── */
+@media (max-width: 400px) {
+  /* Drawer width: don't squeeze content to ~115px (#3) */
+  .sidebar { width: min(85vw, 300px); }
+  /* Toast stack + TX stepper: constrain width, avoid collision (#6) */
+  .toast-stack { left: 12px; right: 12px; }
+  .toast { max-width: calc(100vw - 24px); }
+  .tx-stepper {
+    left: 12px; right: 12px; transform: none; max-width: calc(100vw - 24px);
+    bottom: 12px; justify-content: center; flex-wrap: wrap;
+  }
+  @keyframes slide-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  /* Asset tabs: scroll cleanly rather than squeeze (#7) */
+  .asset-tabs { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .asset-tabs::-webkit-scrollbar { display: none; }
+  .asset-tab { flex-shrink: 0; }
+}
+
+/* ── Screen-reader-only utility (A11y) ─────────────────────────────────────── */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
@@ -1395,8 +1428,14 @@ kbd {
   width: 36px; height: 32px; padding: 0; font-size: 16px; line-height: 1;
 }
 .compare-table-wrap {
+  position: relative;
   border: 1px solid var(--border); border-radius: var(--r);
-  background: var(--surface); overflow-x: auto;
+  background: var(--surface); overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+/* Scroll affordance — "Scroll →" hint shown only on small screens (#1) */
+.compare-scroll-hint {
+  display: none; font-size: 11px; color: var(--text-3);
+  text-align: right; margin: 0 4px 6px; font-weight: 600;
 }
 .compare-table { width: 100%; border-collapse: collapse; min-width: 640px; }
 .compare-table thead th {
@@ -1441,6 +1480,13 @@ kbd {
 @media (max-width: 640px) {
   .compare-header { flex-direction: column; }
   .compare-title { font-size: 20px; }
+  /* Scroll affordance: visible hint + faint right-edge fade (#1) */
+  .compare-scroll-hint { display: block; }
+  .compare-table-wrap::after {
+    content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 24px;
+    pointer-events: none; border-radius: 0 var(--r) var(--r) 0;
+    background: linear-gradient(90deg, transparent, var(--surface));
+  }
 }
 
 /* ── T3.2 — Aquarius trade card (vault view) ───────────────────────────────── */
