@@ -44,3 +44,23 @@ jobs:
       - run: npm install
       - name: Build (wrangler dry-run)
         run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm install
+      - name: Install e2e deps
+        working-directory: frontend/e2e
+        run: npm install
+      - name: Install Playwright browser
+        working-directory: frontend/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright (mock-wallet harness)
+        working-directory: frontend/e2e
+        run: npm run test:e2e

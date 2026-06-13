@@ -22,3 +22,9 @@ frontend/.env.local
 alerts/package-lock.json
 alerts/.dev.vars
 alerts/.wrangler/
+
+# Playwright e2e outputs
+frontend/e2e/node_modules/
+frontend/e2e/test-results/
+frontend/e2e/playwright-report/
+frontend/e2e/package-lock.json

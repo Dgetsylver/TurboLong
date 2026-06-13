@@ -2,12 +2,19 @@
  * Turbolong UI — multi-pool support (Etherfuse, Fixed, YieldBlox)
  */
 
+// MUST be first: installs a global `Buffer` before the Ledger module (and its
+// @ledgerhq/* deps) is evaluated. Inline code can't do this — ES imports run
+// before any statement in this module.
+import "./polyfills.ts";
+
 import { StellarWalletsKit } from "@creit-tech/stellar-wallets-kit/sdk";
 import { FreighterModule }   from "@creit-tech/stellar-wallets-kit/modules/freighter";
 import { xBullModule }       from "@creit-tech/stellar-wallets-kit/modules/xbull";
 import { AlbedoModule }      from "@creit-tech/stellar-wallets-kit/modules/albedo";
 import { LobstrModule }      from "@creit-tech/stellar-wallets-kit/modules/lobstr";
 import { HanaModule }        from "@creit-tech/stellar-wallets-kit/modules/hana";
+import { LedgerModule }      from "@creit-tech/stellar-wallets-kit/modules/ledger";
+import type { ModuleInterface } from "@creit-tech/stellar-wallets-kit/types";
 import { Networks }          from "@creit-tech/stellar-wallets-kit/types";
 import { estimateSwap }      from "@stellar-broker/client";
 import {
@@ -81,16 +88,103 @@ import {
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
-StellarWalletsKit.init({
-  modules: [
+/**
+ * WalletConnect project id. When set (via the `VITE_WALLET_CONNECT_PROJECT_ID`
+ * env var) the kit registers a WalletConnect module, which renders the Reown
+ * AppKit modal. On a phone that modal shows a QR code / "open in wallet"
+ * deep-link so mobile wallets that speak WalletConnect (Lobstr, xBull, Hana,
+ * Freighter mobile, …) can sign without copy-paste. When unset, the kit still
+ * works with the extension / in-app-browser modules — WalletConnect is simply
+ * skipped (no-op fallback). See PR / README for setup.
+ */
+const WALLET_CONNECT_PROJECT_ID = import.meta.env.VITE_WALLET_CONNECT_PROJECT_ID as string | undefined;
+
+/**
+ * The synchronous base set of wallet modules. Freighter / xBull / Albedo /
+ * Lobstr / Hana are browser-extension or in-app-browser signers; Ledger is a
+ * WebUSB hardware-wallet signer (kit v2 `LedgerModule`, requires a `Buffer`
+ * global — provided in `index.html`). WalletConnect is added asynchronously by
+ * {@link initWalletKit} because constructing it spins up Reown AppKit.
+ */
+function baseWalletModules(): ModuleInterface[] {
+  return [
     new FreighterModule(),
     new xBullModule(),
     new AlbedoModule(),
     new LobstrModule(),
     new HanaModule(),
-  ],
-  network: Networks.PUBLIC,
-});
+    new LedgerModule(),
+  ];
+}
+
+/** Network passphrase → kit `Networks` enum value. */
+function kitNetwork(net: NetworkMode): Networks {
+  return net === "testnet" ? Networks.TESTNET : Networks.PUBLIC;
+}
+
+/**
+ * Build the WalletConnect module if a project id is configured. Returns
+ * `undefined` (the no-op fallback) when no project id is set or if AppKit fails
+ * to load, so wallet connection still works without mobile deep-linking.
+ */
+async function maybeWalletConnectModule(net: NetworkMode): Promise<ModuleInterface | undefined> {
+  if (!WALLET_CONNECT_PROJECT_ID) return undefined;
+  try {
+    const { WalletConnectModule, WalletConnectTargetChain } = await import(
+      "@creit-tech/stellar-wallets-kit/modules/wallet-connect"
+    );
+    return new WalletConnectModule({
+      projectId: WALLET_CONNECT_PROJECT_ID,
+      allowedChains: [
+        net === "testnet" ? WalletConnectTargetChain.TESTNET : WalletConnectTargetChain.PUBLIC,
+      ],
+      metadata: {
+        name: "Turbolong",
+        description: "Leveraged yield on Blend",
+        url: typeof window !== "undefined" ? window.location.origin : "https://turbolong.app",
+        icons: [typeof window !== "undefined" ? `${window.location.origin}/logo.svg` : ""],
+      },
+    }) as unknown as ModuleInterface;
+  } catch (e) {
+    console.warn("WalletConnect module unavailable — mobile deep-link disabled", e);
+    return undefined;
+  }
+}
+
+/**
+ * Initialise (or re-initialise) the Stellar Wallets Kit for a given network.
+ * Registers the base modules synchronously so the kit is usable immediately,
+ * then upgrades to include WalletConnect once it has loaded.
+ */
+function initWalletKit(net: NetworkMode): void {
+  const network = kitNetwork(net);
+  StellarWalletsKit.init({ modules: baseWalletModules(), network });
+  // Best-effort async upgrade with the mobile deep-link / QR module.
+  void maybeWalletConnectModule(net).then((wc) => {
+    if (!wc) return;
+    StellarWalletsKit.init({ modules: [...baseWalletModules(), wc], network });
+  });
+}
+
+initWalletKit("mainnet");
+
+// ── E2E test seam ───────────────────────────────────────────────────────────
+// In production `txSeam` is null and every tx operation talks to the real kit
+// / RPC. When the page is loaded under the E2E harness (`?e2e=1` or a
+// pre-injected `window.__E2E__`) `installE2EHarness()` swaps in deterministic
+// mocks so headless tests can drive the full sign → submit → history pipeline
+// with no extension, hardware wallet, or live network. The harness module is
+// dynamically imported so it is tree-shaken out of normal builds' hot path.
+
+import type { TxSeam } from "./e2e-harness.ts";
+
+let txSeam: TxSeam | null = null;
+
+async function installE2EHarness(): Promise<void> {
+  const { isE2E, installKitMocks } = await import("./e2e-harness.ts");
+  if (!isE2E()) return;
+  txSeam = installKitMocks(StellarWalletsKit, getNetworkPassphrase());
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -116,16 +210,7 @@ async function switchNetwork(net: NetworkMode) {
   localStorage.setItem("networkMode", net);
 
   // Reinitialize wallet kit for new network
-  StellarWalletsKit.init({
-    modules: [
-      new FreighterModule(),
-      new xBullModule(),
-      new AlbedoModule(),
-      new LobstrModule(),
-      new HanaModule(),
-    ],
-    network: net === "testnet" ? Networks.TESTNET : Networks.PUBLIC,
-  });
+  initWalletKit(net);
 
   // Reset state
   reserves = [];
@@ -712,12 +797,14 @@ function renderTrendArrow(
 async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
   toast(`Sign "${label}" in your wallet\u2026`, "info");
-  const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdrStr, {
-    networkPassphrase: getNetworkPassphrase(),
-    address: userAddress!,
-  });
+  const { signedTxXdr } = txSeam
+    ? await txSeam.signTransaction(xdrStr)
+    : await StellarWalletsKit.signTransaction(xdrStr, {
+        networkPassphrase: getNetworkPassphrase(),
+        address: userAddress!,
+      });
   toast(`Submitting "${label}"\u2026`, "info");
-  const hash = await submitSignedXdr(signedTxXdr);
+  const hash = txSeam ? await txSeam.submitSoroban(signedTxXdr) : await submitSignedXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
   toast(`"${label}" confirmed!`, "success", hash);
   addTxToHistory(label, hash, "success");
@@ -731,12 +818,14 @@ async function signAndSubmit(xdrStr: string, label: string, stepIndex?: number):
 async function signAndSubmitClassic(xdrStr: string, label: string, stepIndex?: number): Promise<string> {
   if (stepIndex !== undefined) updateTxStep(stepIndex, "active");
   toast(`Sign "${label}" in your wallet\u2026`, "info");
-  const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdrStr, {
-    networkPassphrase: getNetworkPassphrase(),
-    address: userAddress!,
-  });
+  const { signedTxXdr } = txSeam
+    ? await txSeam.signTransaction(xdrStr)
+    : await StellarWalletsKit.signTransaction(xdrStr, {
+        networkPassphrase: getNetworkPassphrase(),
+        address: userAddress!,
+      });
   toast(`Submitting "${label}"\u2026`, "info");
-  const hash = await submitClassicXdr(signedTxXdr);
+  const hash = txSeam ? await txSeam.submitClassic(signedTxXdr) : await submitClassicXdr(signedTxXdr);
   if (stepIndex !== undefined) updateTxStep(stepIndex, "done");
   toast(`"${label}" confirmed!`, "success", hash);
   addTxToHistory(label, hash, "success");
@@ -1784,7 +1873,9 @@ async function openPosition() {
   // actually going to proceed.
   let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
   try {
-    trustlineResult = await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
+    trustlineResult = txSeam
+      ? await txSeam.getMissingTrustlines(new Asset("USDC", TESTNET_USDC_ISSUER))
+      : await getMissingTrustlines(selectedPool, userAddress, liveAsset.id);
   } catch (e: any) {
     toast(`Trustline check failed: ${(e?.message ?? String(e)).slice(0, 150)}`, "error");
     setLoading($("open-btn") as HTMLButtonElement, false);
@@ -1816,7 +1907,9 @@ async function openPosition() {
   try {
     if (hasMissingTrustlines) {
       activeStep = trustStep;
-      const trustXdr = await buildTrustlineXdr(trustlineResult.missing, userAddress);
+      const trustXdr = txSeam
+        ? await txSeam.buildXdr()
+        : await buildTrustlineXdr(trustlineResult.missing, userAddress);
       if (trustXdr) {
         await signAndSubmitClassic(
           trustXdr,
@@ -1827,11 +1920,15 @@ async function openPosition() {
     }
 
     activeStep = approveStep;
-    const approveXdr = await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
+    const approveXdr = txSeam
+      ? await txSeam.buildXdr()
+      : await buildApproveXdr(selectedPool, userAddress, liveAsset.id, initialStroops + 1n);
     await signAndSubmit(approveXdr, `Approve ${liveAsset.symbol}`, approveStep);
 
     activeStep = submitStep;
-    const submitXdr = await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
+    const submitXdr = txSeam
+      ? await txSeam.buildXdr()
+      : await buildOpenPositionXdr(selectedPool, userAddress, liveAsset, initialStroops, leverage);
     const openHash = await signAndSubmit(submitXdr, `Open ${liveAsset.symbol} leverage`, submitStep);
     hideTxStepper();
     savePnlEntry(liveAsset.id, selectedPool.id, initial);
@@ -2183,10 +2280,29 @@ async function connect() {
     buildPoolTabs();
     buildAssetTabs();
     renderPoolFooter();
-    await loadAll();
+    // Under the E2E harness we seed deterministic mock reserves/positions
+    // instead of fetching from RPC, so transaction flows stay fully hermetic.
+    if (txSeam) seedE2EState();
+    else await loadAll();
   } catch (e: any) {
     if (e?.message !== "User closed the modal") toast("Failed to connect wallet", "error");
   }
+}
+
+/**
+ * Seed mock reserves / a sample position for the E2E harness. Mirrors the demo
+ * data but, unlike demo mode, leaves `demoMode === false` so real (mocked) tx
+ * flows are allowed to run.
+ */
+function seedE2EState() {
+  reserves = assets.map(a => ({
+    asset: a, cFactor: a.cFactor, lFactor: 1, interestSupplyApr: 4.2, interestBorrowApr: 6.8,
+    blndSupplyApr: 2.1, blndBorrowApr: 1.5, netSupplyApr: 6.3, netBorrowCost: 5.3,
+    totalSupply: 1_000_000, totalBorrow: 650_000, available: 350_000, priceUsd: 1.0,
+  }));
+  positions = { byAsset: new Map() };
+  renderSelectedAsset();
+  updatePreview();
 }
 
 /** Re-open wallet modal to switch to a different account without a full page reload. */
@@ -2949,7 +3065,11 @@ $("overview-refresh-btn").addEventListener("click", () => loadOverview());
 // ── Vault view ───────────────────────────────────────────────────────────────
 
 function getActiveVault(): VaultConfig {
-  return getVaults()[0];
+  const vaults = getVaults();
+  // Under the E2E harness, prefer a vault that has a deployed contract id so
+  // the deposit / withdraw flows are reachable without a live deployment.
+  if (txSeam) return vaults.find(v => !!v.vaultId) ?? vaults[0];
+  return vaults[0];
 }
 
 let _lastVaultStats: VaultStats | null = null;
@@ -2995,6 +3115,15 @@ async function refreshVaultView() {
     $("vault-hf").textContent = "--";
     $("vault-strategy-pos").classList.add("hidden");
     $("vault-hf-bar-wrap").classList.add("hidden");
+    return;
+  }
+
+  // Under the E2E harness, skip all live RPC stat fetches — the deposit/withdraw
+  // buttons are already enabled above, which is what the tests need.
+  if (txSeam) {
+    $("vault-tvl").textContent = formatUsd(1_000_000);
+    $("vault-share-price").textContent = formatUsd(1, 6);
+    $("vault-apy").textContent = "+5.00%";
     return;
   }
 
@@ -3152,9 +3281,12 @@ $("vault-deposit-btn").addEventListener("click", async () => {
     ($("vault-deposit-btn") as HTMLButtonElement).disabled = true;
     ($("vault-deposit-btn") as HTMLButtonElement).textContent = "Depositing...";
 
-    const xdr = await buildVaultDepositXdr(vault, userAddress, amount);
-    const { signedTxXdr } = await StellarWalletsKit.signTransaction(xdr);
-    await submitSignedXdr(signedTxXdr);
+    const xdr = txSeam ? await txSeam.buildXdr() : await buildVaultDepositXdr(vault, userAddress, amount);
+    const { signedTxXdr } = txSeam
+      ? await txSeam.signTransaction(xdr)
+      : await StellarWalletsKit.signTransaction(xdr);
+    const depositHash = txSeam ? await txSeam.submitSoroban(signedTxXdr) : await submitSignedXdr(signedTxXdr);
+    addTxToHistory(`Deposit ${amount} ${vault.assetSymbol}`, depositHash, "success");
     await refreshVaultView();
     ($("vault-deposit-input") as HTMLInputElement).value = "";
   } catch (err: any) {
@@ -3217,14 +3349,18 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
 
 // ── Auto-reconnect saved wallet ──────────────────────────────────────────────
 (async () => {
+  // Install the E2E harness first (no-op outside test mode). When active it
+  // mocks the wallet kit + tx network seam and records which wallets registered.
+  await installE2EHarness();
+  if (txSeam && typeof window !== "undefined" && window.__E2E__) {
+    window.__E2E__.registeredWallets = baseWalletModules().map((m: any) => m.productId);
+  }
+
   // Restore network preference
   const savedNet = localStorage.getItem("networkMode") as NetworkMode | null;
   if (savedNet === "testnet") {
     setNetwork("testnet");
-    StellarWalletsKit.init({
-      modules: [new FreighterModule(), new xBullModule(), new AlbedoModule(), new LobstrModule(), new HanaModule()],
-      network: Networks.TESTNET,
-    });
+    initWalletKit("testnet");
     selectedPool = getKnownPools()[0];
     assets = getPoolAssets(selectedPool);
     selectedAsset = assets[0];
@@ -3232,6 +3368,10 @@ $("vault-rebalance-btn").addEventListener("click", async () => {
     $("network-toggle").classList.add("testnet-active");
     $("testnet-banner").classList.remove("hidden");
   }
+
+  // In E2E mode, leave the wallet disconnected so the test drives connect()
+  // via the real #connect-btn click — keeps the flow hermetic and deterministic.
+  if (txSeam) return;
 
   const saved = localStorage.getItem("walletAddress");
   if (!saved) return;
