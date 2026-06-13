@@ -88,6 +88,8 @@ import {
 import { seedHistoryFromServer, fetchSnapshotSeries, type SnapshotPoint } from "./history.ts";
 import { aquariusBestRate, aquariusPrice } from "./aquarius.ts";
 import { getAquariusListing, AQUARIUS_SWAP_URL } from "./aquarius_listings.ts";
+import { initI18n, applyTranslations, t, cycleLang, getLang } from "./i18n.ts";
+import { maybeAutoStartTour } from "./tour.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -2439,7 +2441,7 @@ function renderCompareTable(): void {
   const rows = compareSortRows();
   if (rows.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" class="compare-loading">${
-      compareLoading ? "Loading pools…" : "No pools available."
+      compareLoading ? t("compare.loading") : t("compare.empty")
     }</td></tr>`;
     return;
   }
@@ -2451,7 +2453,7 @@ function renderCompareTable(): void {
       <td class="ct-asset">
         <div class="ct-asset-cell">
           <span class="ct-sym">${r.asset.symbol}</span>
-          ${best ? `<span class="best-rate-badge best-broker">Best Rate</span>` : ""}
+          ${best ? `<span class="best-rate-badge best-broker">${t("compare.bestRate")}</span>` : ""}
         </div>
         <span class="ct-pool">${r.poolName}</span>
       </td>
@@ -3348,15 +3350,15 @@ function renderAquariusTradeCard(vault: VaultConfig) {
     const id = listing.shareToken;
     const short = `${id.slice(0, 6)}…${id.slice(-4)}`;
     body.innerHTML = `
-      <a class="btn btn-primary aqua-trade-btn" href="${AQUARIUS_SWAP_URL}" target="_blank" rel="noopener">Trade on Aquarius &#8599;</a>
+      <a class="btn btn-primary aqua-trade-btn" href="${AQUARIUS_SWAP_URL}" target="_blank" rel="noopener">${t("vault.tradeCta")} &#8599;</a>
       <div class="aqua-trade-token">
-        <span class="aqua-trade-token-label">Receipt token</span>
+        <span class="aqua-trade-token-label">${t("vault.receiptToken")}</span>
         <code class="mono aqua-token-id" title="${id}">${short}</code>
         <button type="button" class="aqua-copy-btn" data-copy="${id}" title="Copy contract ID">&#10697;</button>
         <a class="aqua-token-expert" href="${expertUrl("contract", id)}" target="_blank" rel="noopener">Explorer &#8599;</a>
       </div>`;
   } else {
-    body.innerHTML = `<p class="aqua-trade-pending">Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.</p>`;
+    body.innerHTML = `<p class="aqua-trade-pending">${t("vault.listingPending")}</p>`;
   }
 }
 
@@ -3877,3 +3879,23 @@ document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
   document.getElementById("settings-dropdown")?.classList.add("hidden");
   document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
 });
+
+// ── i18n + onboarding tour (T3.5) ─────────────────────────────────────────────
+function updateLangBadge(): void {
+  const badge = document.getElementById("lang-badge");
+  if (badge) badge.textContent = getLang().toUpperCase();
+}
+
+document.getElementById("lang-toggle")?.addEventListener("click", () => {
+  cycleLang();
+  updateLangBadge();
+  // Re-render dynamic views that build strings in JS.
+  if (activeView === "compare") renderCompareView();
+  if (activeView === "vault") renderAquariusTradeCard(getActiveVault());
+});
+
+initI18n();
+applyTranslations();
+updateLangBadge();
+maybeAutoStartTour();
+

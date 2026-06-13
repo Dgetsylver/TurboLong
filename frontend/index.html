@@ -44,19 +44,20 @@
           <img src="logo.svg" alt="Turbolong" class="logo-icon-img" />
           <span class="logo-text">Turbo<span class="logo-accent">long</span></span>
         </div>
-        <button class="nav-btn" id="proto-overview">Dashboard</button>
-        <button class="nav-btn active" id="proto-blend">Trade <span class="nav-caret">&#9662;</span></button>
+        <button class="nav-btn" id="proto-overview" data-i18n="nav.dashboard">Dashboard</button>
+        <button class="nav-btn active" id="proto-blend"><span data-i18n="nav.trade">Trade</span> <span class="nav-caret">&#9662;</span></button>
         <div id="pool-dropdown" class="pool-dropdown hidden"></div>
-        <button class="nav-btn" id="proto-vault">Vault</button>
-        <button class="nav-btn" id="proto-swap">Swap</button>
-        <button class="nav-btn" id="proto-compare">Compare</button>
+        <button class="nav-btn" id="proto-vault" data-i18n="nav.vault">Vault</button>
+        <button class="nav-btn" id="proto-swap" data-i18n="nav.swap">Swap</button>
+        <button class="nav-btn" id="proto-compare" data-i18n="nav.compare">Compare</button>
       </div>
       <div class="top-nav-right" id="wallet-area">
         <button id="settings-btn" class="nav-btn" aria-label="Settings">&#9881;</button>
         <div id="settings-dropdown" class="settings-dropdown hidden">
-          <button id="expert-toggle" class="settings-dropdown-item">Expert Mode <span class="settings-badge">Off</span></button>
-          <button id="theme-toggle" class="settings-dropdown-item">Theme <span class="settings-badge">&#9790;</span></button>
-          <button id="shortcuts-help-btn" class="settings-dropdown-item">Keyboard Shortcuts <span class="settings-badge">?</span></button>
+          <button id="expert-toggle" class="settings-dropdown-item"><span data-i18n="settings.expert">Expert Mode</span> <span class="settings-badge">Off</span></button>
+          <button id="theme-toggle" class="settings-dropdown-item"><span data-i18n="settings.theme">Theme</span> <span class="settings-badge">&#9790;</span></button>
+          <button id="shortcuts-help-btn" class="settings-dropdown-item"><span data-i18n="settings.shortcuts">Keyboard Shortcuts</span> <span class="settings-badge">?</span></button>
+          <button id="lang-toggle" class="settings-dropdown-item"><span data-i18n="settings.language">Language</span> <span class="settings-badge" id="lang-badge">EN</span></button>
         </div>
         <button id="network-toggle" class="btn btn-ghost btn-sm network-toggle" data-tip="Switch between Mainnet and Testnet">Mainnet</button>
         <button id="connect-btn" class="btn btn-primary btn-connect">Connect Wallet</button>
@@ -152,11 +153,11 @@
         <div id="connect-prompt" class="connect-prompt">
           <div class="landing-hero">
             <img src="logo.svg" alt="Turbolong" class="landing-hero-logo" />
-            <h1>Leverage trading on Stellar. Simplified.</h1>
-            <p>Open leveraged long positions on Blend Protocol pools with a single click. No perps, no funding rates &mdash; just recursive lending loops.</p>
+            <h1 data-i18n="hero.title">Leverage trading on Stellar. Simplified.</h1>
+            <p data-i18n="hero.subtitle">Open leveraged long positions on Blend Protocol pools with a single click. No perps, no funding rates &mdash; just recursive lending loops.</p>
             <div class="landing-hero-ctas">
-              <button class="btn btn-primary btn-lg" style="width:auto;padding:14px 32px" onclick="document.getElementById('connect-btn').click()">Launch App</button>
-              <button id="demo-btn" class="btn btn-ghost btn-lg" style="width:auto;padding:14px 32px">View Demo</button>
+              <button class="btn btn-primary btn-lg" style="width:auto;padding:14px 32px" onclick="document.getElementById('connect-btn').click()" data-i18n="hero.launch">Launch App</button>
+              <button id="demo-btn" class="btn btn-ghost btn-lg" style="width:auto;padding:14px 32px" data-i18n="hero.demo">View Demo</button>
             </div>
           </div>
 
@@ -837,8 +838,8 @@
           <section class="compare-section">
             <div class="compare-header">
               <div>
-                <h2 class="compare-title">Compare Pools</h2>
-                <p class="compare-sub">Live net APY across every Blend pool &amp; asset, ranked by best leveraged yield. Best swap rate sourced from Aquarius. No wallet needed.</p>
+                <h2 class="compare-title" data-i18n="compare.title">Compare Pools</h2>
+                <p class="compare-sub" data-i18n="compare.subtitle">Live net APY across every Blend pool &amp; asset, ranked by best leveraged yield. Best swap rate sourced from Aquarius. No wallet needed.</p>
               </div>
               <div class="compare-controls">
                 <div class="compare-window-toggle" id="compare-window-toggle" role="tablist" aria-label="History window">
@@ -853,21 +854,21 @@
               <table class="compare-table" id="compare-table">
                 <thead>
                   <tr>
-                    <th class="ct-rank">#</th>
-                    <th class="ct-asset">Pool / Asset</th>
-                    <th class="ct-num" data-sort="base">Base APY</th>
-                    <th class="ct-num" data-sort="lev">Leveraged APY</th>
-                    <th class="ct-num ct-lev">Max Lev</th>
-                    <th class="ct-num" data-sort="rate">Aqua Rate</th>
-                    <th class="ct-trend">Trend</th>
+                    <th class="ct-rank" data-i18n="compare.col.rank">#</th>
+                    <th class="ct-asset" data-i18n="compare.col.poolAsset">Pool / Asset</th>
+                    <th class="ct-num" data-sort="base" data-i18n="compare.col.baseApy">Base APY</th>
+                    <th class="ct-num" data-sort="lev" data-i18n="compare.col.levApy">Leveraged APY</th>
+                    <th class="ct-num ct-lev" data-i18n="compare.col.maxLev">Max Lev</th>
+                    <th class="ct-num" data-sort="rate" data-i18n="compare.col.aquaRate">Aqua Rate</th>
+                    <th class="ct-trend" data-i18n="compare.col.trend">Trend</th>
                   </tr>
                 </thead>
                 <tbody id="compare-tbody">
-                  <tr><td colspan="7" class="compare-loading">Loading pools…</td></tr>
+                  <tr><td colspan="7" class="compare-loading" data-i18n="compare.loading">Loading pools…</td></tr>
                 </tbody>
               </table>
             </div>
-            <p class="compare-foot">Leveraged APY assumes the maximum leverage that keeps health factor ≥ 1.20 at current pool rates; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
+            <p class="compare-foot" data-i18n="compare.foot">Leveraged APY assumes the maximum leverage that keeps health factor ≥ 1.20 at current pool rates; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
           </section>
         </div>
 
