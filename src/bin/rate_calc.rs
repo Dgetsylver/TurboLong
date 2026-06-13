@@ -45,53 +45,64 @@ struct ProjectedRates {
 
 fn compute_rates(fixture: &InputFixture) -> ProjectedRates {
     let cfg = &fixture.rateConfig;
-    
+
     let proj_supply = fixture.totalSupply + fixture.addSupply;
     let proj_borrow = fixture.totalBorrow + fixture.addBorrow;
-    
+
     let proj_util = if proj_supply > 0.0 {
         proj_borrow / proj_supply
     } else {
         0.0
     };
-    
+
     let util_fp = (proj_util * SCALAR_F).round() as i64;
-    
+
     let base_rate: i64;
     if util_fp <= cfg.utilOpt {
-        base_rate = cfg.rBase + (cfg.rOne as f64 * util_fp as f64 / cfg.utilOpt as f64).ceil() as i64;
+        base_rate =
+            cfg.rBase + (cfg.rOne as f64 * util_fp as f64 / cfg.utilOpt as f64).ceil() as i64;
     } else if util_fp <= FIXED_95PCT {
-        let slope = ((util_fp - cfg.utilOpt) as f64 * SCALAR_F / (FIXED_95PCT - cfg.utilOpt) as f64).ceil() as i64;
-        base_rate = cfg.rBase + cfg.rOne + (cfg.rTwo as f64 * slope as f64 / SCALAR_F).ceil() as i64;
+        let slope = ((util_fp - cfg.utilOpt) as f64 * SCALAR_F / (FIXED_95PCT - cfg.utilOpt) as f64)
+            .ceil() as i64;
+        base_rate =
+            cfg.rBase + cfg.rOne + (cfg.rTwo as f64 * slope as f64 / SCALAR_F).ceil() as i64;
     } else {
-        let slope = ((util_fp - FIXED_95PCT) as f64 * SCALAR_F / (SCALAR_F as i64 - FIXED_95PCT) as f64).ceil() as i64;
-        base_rate = cfg.rBase + cfg.rOne + cfg.rTwo + (cfg.rThree as f64 * slope as f64 / SCALAR_F).ceil() as i64;
+        let slope = ((util_fp - FIXED_95PCT) as f64 * SCALAR_F
+            / (SCALAR_F as i64 - FIXED_95PCT) as f64)
+            .ceil() as i64;
+        base_rate = cfg.rBase
+            + cfg.rOne
+            + cfg.rTwo
+            + (cfg.rThree as f64 * slope as f64 / SCALAR_F).ceil() as i64;
     }
-    
+
     let cur_ir = (base_rate as f64 * cfg.irMod as f64 / SCALAR_F).ceil() as i64;
     let interest_borrow_apr = (cur_ir as f64 / SCALAR_F) * 100.0;
-    
-    let supply_capture = ((SCALAR_F as i64 - cfg.backstopFP) as f64 * util_fp as f64 / SCALAR_F).floor() as i64;
-    let interest_supply_apr = (((cur_ir as f64 * supply_capture as f64 / SCALAR_F).floor() as i64) as f64 / SCALAR_F) * 100.0;
-    
+
+    let supply_capture =
+        ((SCALAR_F as i64 - cfg.backstopFP) as f64 * util_fp as f64 / SCALAR_F).floor() as i64;
+    let interest_supply_apr =
+        (((cur_ir as f64 * supply_capture as f64 / SCALAR_F).floor() as i64) as f64 / SCALAR_F)
+            * 100.0;
+
     let supply_blnd_yr = fixture.supplyEps as f64 * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
     let borrow_blnd_yr = fixture.borrowEps as f64 * SECONDS_PER_YEAR / SCALAR_F / SCALAR_F;
-    
+
     let proj_supply_usd = proj_supply * fixture.priceUsd;
     let proj_borrow_usd = proj_borrow * fixture.priceUsd;
-    
+
     let blnd_supply_apr = if proj_supply_usd > 0.0 {
         (supply_blnd_yr * fixture.blndPrice / proj_supply_usd) * 100.0
     } else {
         0.0
     };
-    
+
     let blnd_borrow_apr = if proj_borrow_usd > 0.0 {
         (borrow_blnd_yr * fixture.blndPrice / proj_borrow_usd) * 100.0
     } else {
         0.0
     };
-    
+
     ProjectedRates {
         interestSupplyApr: interest_supply_apr,
         interestBorrowApr: interest_borrow_apr,
@@ -108,7 +119,7 @@ fn main() {
         eprintln!("Failed to read stdin: {}", e);
         std::process::exit(1);
     }
-    
+
     let fixtures: Vec<InputFixture> = match serde_json::from_str(&input) {
         Ok(f) => f,
         Err(e) => {
@@ -116,12 +127,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let mut results = Vec::new();
     for fix in &fixtures {
         results.push(compute_rates(fix));
     }
-    
+
     let output = serde_json::to_string_pretty(&results).unwrap();
     println!("{}", output);
 }
