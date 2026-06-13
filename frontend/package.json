@@ -14,12 +14,14 @@
   },
   "dependencies": {
     "@creit-tech/stellar-wallets-kit": "npm:@jsr/creit-tech__stellar-wallets-kit@^2.0.1",
+    "@nidohq/stellar-wallets-kit-module": "^0.1.0",
     "@stellar-broker/client": "^0.6.14",
     "@stellar/stellar-sdk": "^14.6.1",
     "buffer": "^6.0.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "playwright": "^1.60.0",
     "typescript": "^5.7.3",
     "vite": "^6.2.0",
     "vitest": "^3.0.0"

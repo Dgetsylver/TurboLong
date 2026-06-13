@@ -14,6 +14,7 @@ import { AlbedoModule }      from "@creit-tech/stellar-wallets-kit/modules/albed
 import { LobstrModule }      from "@creit-tech/stellar-wallets-kit/modules/lobstr";
 import { HanaModule }        from "@creit-tech/stellar-wallets-kit/modules/hana";
 import { LedgerModule }      from "@creit-tech/stellar-wallets-kit/modules/ledger";
+import { NidoModule }        from "@nidohq/stellar-wallets-kit-module";
 import type { ModuleInterface } from "@creit-tech/stellar-wallets-kit/types";
 import { Networks }          from "@creit-tech/stellar-wallets-kit/types";
 import { estimateSwap }      from "@stellar-broker/client";
@@ -113,8 +114,13 @@ const WALLET_CONNECT_PROJECT_ID = import.meta.env.VITE_WALLET_CONNECT_PROJECT_ID
  * global — provided in `index.html`). WalletConnect is added asynchronously by
  * {@link initWalletKit} because constructing it spins up Reown AppKit.
  */
-function baseWalletModules(): ModuleInterface[] {
-  return [
+// Nido passkey smart-account wallet (https://nido.fyi). Currently testnet-only,
+// so it's offered only on testnet — picking it on mainnet would yield a testnet
+// C-address that can't sign for the active network.
+const NIDO_BASE = (import.meta.env.VITE_NIDO_BASE as string | undefined) ?? "https://nido.fyi";
+
+function baseWalletModules(net: NetworkMode): ModuleInterface[] {
+  const mods: ModuleInterface[] = [
     new FreighterModule(),
     new xBullModule(),
     new AlbedoModule(),
@@ -122,6 +128,10 @@ function baseWalletModules(): ModuleInterface[] {
     new HanaModule(),
     new LedgerModule(),
   ];
+  if (net === "testnet") {
+    mods.push(new NidoModule({ base: NIDO_BASE }) as unknown as ModuleInterface);
+  }
+  return mods;
 }
 
 /** Network passphrase → kit `Networks` enum value. */
@@ -165,11 +175,11 @@ async function maybeWalletConnectModule(net: NetworkMode): Promise<ModuleInterfa
  */
 function initWalletKit(net: NetworkMode): void {
   const network = kitNetwork(net);
-  StellarWalletsKit.init({ modules: baseWalletModules(), network });
+  StellarWalletsKit.init({ modules: baseWalletModules(net), network });
   // Best-effort async upgrade with the mobile deep-link / QR module.
   void maybeWalletConnectModule(net).then((wc) => {
     if (!wc) return;
-    StellarWalletsKit.init({ modules: [...baseWalletModules(), wc], network });
+    StellarWalletsKit.init({ modules: [...baseWalletModules(net), wc], network });
   });
 }
 
