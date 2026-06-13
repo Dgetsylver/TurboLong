@@ -85,6 +85,8 @@ import {
   type VaultStats,
   type UserVaultPosition,
 } from "./defindex.ts";
+import { seedHistoryFromServer } from "./history.ts";
+import { aquariusBestRate } from "./aquarius.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -1257,10 +1259,27 @@ function renderSelectedAsset() {
   );
 
   renderHistoryChart();
+  maybeSeedHistory();
 
   updatePreview();
   renderPosition();
   renderPortfolioSummary();
+}
+
+// One-time-per-asset: pull the real server time-series (T2.5 /snapshots) into
+// the local history keys so the chart + trend arrows show real 24h/7d/30d/1y
+// data for every visitor, then re-render. No-op if the server has no data yet.
+const _historySeeded = new Set<string>();
+function maybeSeedHistory() {
+  const k = `${selectedPool.id}:${selectedAsset.id}`;
+  if (_historySeeded.has(k)) return;
+  _historySeeded.add(k);
+  void seedHistoryFromServer(selectedPool.id, selectedAsset.id, selectedAsset.symbol).then(
+    (seeded) => {
+      // Only re-render if this asset is still selected and we got server data.
+      if (seeded && `${selectedPool.id}:${selectedAsset.id}` === k) renderSelectedAsset();
+    },
+  );
 }
 
 function renderAprLine(id: string, val: number, isCost: boolean, isBlnd = false, sign?: string, raw = false) {
@@ -2487,6 +2506,9 @@ async function fetchSwapQuote() {
         : "\u2014";
       $("swap-profit").textContent = quote.profit ? `${quote.profit}` : "\u2014";
       $("swap-quote-details").classList.remove("hidden");
+
+      // T3.1: cross-check against Aquarius and badge the best venue.
+      void compareAquariusRate(sellAsset, buyAsset, sellNum, buyNum, buySym);
     } else {
       ($("swap-buy-amount") as HTMLInputElement).value = quote.status === "unfeasible" ? "No route" : "\u2014";
       $("swap-quote-details").classList.add("hidden");
@@ -2501,6 +2523,43 @@ async function fetchSwapQuote() {
     console.warn("Swap quote:", errMsg);
   }
   updateSwapBtn();
+}
+
+/**
+ * T3.1: quote the same pair on Aquarius and badge which venue gives the better
+ * output. Soroban contract IDs come from BROKER_TO_CONTRACT (broker classic ID →
+ * SAC/contract). Hidden gracefully when Aquarius is unreachable (fallback).
+ */
+async function compareAquariusRate(
+  sellBrokerId: string,
+  buyBrokerId: string,
+  sellNum: number,
+  brokerBuyNum: number,
+  buySym: string,
+) {
+  const aqEl = $("swap-aquarius");
+  const badgeEl = $("swap-best-rate");
+  const sellC = BROKER_TO_CONTRACT[sellBrokerId];
+  const buyC = BROKER_TO_CONTRACT[buyBrokerId];
+  if (!sellC || !buyC) {
+    aqEl.textContent = "—";
+    badgeEl.textContent = "—";
+    badgeEl.className = "best-rate-badge";
+    return;
+  }
+  const amountStroops = BigInt(Math.round(sellNum * 1e7));
+  const aq = await aquariusBestRate(sellC, buyC, amountStroops);
+  if (!aq) {
+    aqEl.textContent = "unavailable";
+    badgeEl.textContent = "Broker";
+    badgeEl.className = "best-rate-badge best-broker";
+    return;
+  }
+  const aqOut = Number(aq.amountOut) / 1e7;
+  aqEl.textContent = `${aqOut.toFixed(7)} ${buySym}`;
+  const brokerWins = brokerBuyNum >= aqOut;
+  badgeEl.textContent = brokerWins ? "Broker" : "Aquarius";
+  badgeEl.className = `best-rate-badge ${brokerWins ? "best-broker" : "best-aquarius"}`;
 }
 
 function updateSwapBtn() {
