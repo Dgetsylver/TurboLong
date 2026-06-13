@@ -26,6 +26,8 @@ pub enum DataKey {
     /// The SEP-41 vault-share token contract — the canonical per-user share
     /// ledger. The strategy is its minter (mints on deposit, burns on withdraw).
     ShareToken,
+    /// Ledger sequence of the last keeper rebalance (for rate-limiting).
+    LastRebalance,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -183,6 +185,19 @@ pub fn get_share_token(e: &Env) -> Address {
 
 pub fn has_share_token(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::ShareToken)
+}
+
+// ── Keeper rebalance rate-limit ──────────────────────────────────────────────
+
+pub fn set_last_rebalance(e: &Env, ledger: u32) {
+    e.storage().instance().set(&DataKey::LastRebalance, &ledger);
+}
+
+pub fn get_last_rebalance(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&DataKey::LastRebalance)
+        .unwrap_or(0)
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

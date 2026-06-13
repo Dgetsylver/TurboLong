@@ -851,3 +851,29 @@ fn test_share_token_wiring_set_migrate_balance() {
     let bal = sclient.balance(&holder);
     assert!(bal > 0, "balance via token should be positive, got {}", bal);
 }
+
+// ── Auto-rebalance keeper auth & rate-limit (T2.3) ────────────────────────────
+
+#[test]
+fn test_rebalance_keeper_auth_gating_and_noop() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+    let stranger = Address::generate(&e);
+
+    // A non-keeper caller is rejected (caller != keeper).
+    assert!(
+        sclient.try_rebalance_keeper(&stranger).is_err(),
+        "non-keeper must be rejected"
+    );
+
+    // The keeper may call; with no open position (no debt) it is a no-op.
+    assert_eq!(sclient.rebalance_keeper(&keeper), 0, "no debt → no-op");
+
+    // The permissionless rebalance is also a safe no-op with no position.
+    sclient.rebalance();
+}

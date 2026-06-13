@@ -327,59 +327,113 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     }
 }
 
+/// Shared partial-unwind: if HF is below `target_hf`, unwind the minimal loops
+/// to restore it. Returns `(before_hf, after_hf, loops_unwound)`. A no-op
+/// (loops = 0) when there is no debt or HF is already at/above target.
+fn unwind_to(
+    e: &Env,
+    config: &Config,
+    target_hf: i128,
+) -> Result<(i128, i128, u32), StrategyError> {
+    let (b_rate, d_rate) = blend_pool::get_rates(e, config);
+    let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
+
+    if d_tokens == 0 {
+        return Ok((i128::MAX, i128::MAX, 0));
+    }
+
+    let before_hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
+    if before_hf >= target_hf {
+        return Ok((before_hf, before_hf, 0));
+    }
+
+    let (_, loops) = compute_partial_unwind(
+        b_tokens,
+        d_tokens,
+        b_rate,
+        d_rate,
+        config.c_factor,
+        target_hf,
+    )?;
+    if loops == 0 {
+        return Ok((before_hf, before_hf, 0));
+    }
+
+    let (b_removed, d_removed) = blend_pool::submit_deleverage(e, loops, config)?;
+    reserves::deleverage(e, b_removed, d_removed, config)?;
+
+    // Recompute HF on the post-unwind position for the event / return.
+    let (b2, d2) = blend_pool::get_strategy_positions(e, config);
+    let after_hf = if d2 == 0 {
+        i128::MAX
+    } else {
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor)?
+    };
+
+    Ok((before_hf, after_hf, loops))
+}
+
+/// Emit a rebalance event: topics `("rebalance", caller)`, data
+/// `(before_hf, after_hf, loops_unwound)` (HF in 1e7 scale).
+fn emit_rebalance(e: &Env, caller: &Address, before_hf: i128, after_hf: i128, loops: u32) {
+    e.events().publish(
+        (Symbol::new(e, "rebalance"), caller.clone()),
+        (before_hf, after_hf, loops),
+    );
+}
+
 // ── Additional public methods (not part of the trait) ────────────────────────
 
 #[contractimpl]
 impl BlendLeverageStrategy {
-    /// Rebalance: partial-unwind if HF is in the orange zone (orange_hf > HF >= min_hf),
-    /// or full deleverage if HF < min_hf.
-    /// Callable by anyone (permissionless — protects the vault).
+    /// Rebalance: partial-unwind if HF is in the orange zone (HF < orange_hf),
+    /// restoring HF to orange_hf. Callable by anyone (permissionless — protects
+    /// the vault). Emits a `rebalance` event when loops are unwound.
     pub fn rebalance(e: Env) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
-
         let config = storage::get_config(&e);
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
-        let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-
-        if d_tokens == 0 {
-            return Ok(());
+        let caller = e.current_contract_address();
+        let (before_hf, after_hf, loops) = unwind_to(&e, &config, config.orange_hf)?;
+        if loops > 0 {
+            emit_rebalance(&e, &caller, before_hf, after_hf, loops);
         }
-
-        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
-
-        if hf >= config.orange_hf {
-            return Ok(()); // HF is healthy, no action needed
-        }
-
-        // Use orange_hf as target so we restore to the safe zone, not just min_hf
-        let (_, unwind_loops) = compute_partial_unwind(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            config.orange_hf,
-        )?;
-
-        if unwind_loops == 0 {
-            return Ok(());
-        }
-
-        let (b_removed, d_removed) = blend_pool::submit_deleverage(&e, unwind_loops, &config)?;
-
-        reserves::deleverage(&e, b_removed, d_removed, &config)?;
-
         Ok(())
     }
 
+    /// Keeper-authorised, rate-limited auto-rebalance. Unwinds the minimal loops
+    /// to restore HF to orange_hf when HF has dropped into the orange zone.
+    /// Limited to once per `REBALANCE_COOLDOWN_LEDGERS`; emits a `rebalance`
+    /// event with before/after HF and loops unwound. Returns loops unwound.
+    pub fn rebalance_keeper(e: Env, caller: Address) -> Result<u32, StrategyError> {
+        extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+        if caller != keeper {
+            return Err(StrategyError::NotAuthorized);
+        }
+
+        // Rate-limit.
+        let now = e.ledger().sequence();
+        let last = storage::get_last_rebalance(&e);
+        if last != 0 && now < last.saturating_add(constants::REBALANCE_COOLDOWN_LEDGERS) {
+            return Err(StrategyError::NotAuthorized);
+        }
+
+        let config = storage::get_config(&e);
+        let (before_hf, after_hf, loops) = unwind_to(&e, &config, config.orange_hf)?;
+        if loops > 0 {
+            storage::set_last_rebalance(&e, now);
+            emit_rebalance(&e, &caller, before_hf, after_hf, loops);
+        }
+        Ok(loops)
+    }
+
     /// Partial-unwind liquidation protection: unwind just enough loops to restore
-    /// HF to `target_hf`. Callable by the keeper or the strategy itself.
-    ///
-    /// `target_hf` must be >= config.orange_hf to prevent abuse.
+    /// HF to `target_hf`. Callable by the keeper, or by anyone when HF is already
+    /// in the orange zone. `target_hf` is floored at config.orange_hf to prevent
+    /// over-unwinding. Emits a `rebalance` event when loops are unwound.
     pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<u32, StrategyError> {
         extend_instance_ttl(&e);
-
-        // Keeper or permissionless if HF is already in orange zone
         let config = storage::get_config(&e);
         let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
@@ -390,7 +444,7 @@ impl BlendLeverageStrategy {
 
         let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
 
-        // Only the keeper can trigger above the orange zone; anyone can trigger inside it
+        // Only the keeper can trigger above the orange zone; anyone can inside it.
         if hf >= config.orange_hf {
             let keeper = storage::get_keeper(&e);
             if caller != keeper {
@@ -399,26 +453,11 @@ impl BlendLeverageStrategy {
         }
         caller.require_auth();
 
-        // target_hf must be at least orange_hf to avoid over-unwinding
         let effective_target = target_hf.max(config.orange_hf);
-
-        let (_, loops) = compute_partial_unwind(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            effective_target,
-        )?;
-
-        if loops == 0 {
-            return Ok(0);
+        let (before_hf, after_hf, loops) = unwind_to(&e, &config, effective_target)?;
+        if loops > 0 {
+            emit_rebalance(&e, &caller, before_hf, after_hf, loops);
         }
-
-        let (b_removed, d_removed) = blend_pool::submit_deleverage(&e, loops, &config)?;
-
-        reserves::deleverage(&e, b_removed, d_removed, &config)?;
-
         Ok(loops)
     }
 
