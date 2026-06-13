@@ -894,7 +894,7 @@
                     <th class="ct-num" data-sort="lev" data-i18n="compare.col.levApy">Leveraged APY</th>
                     <th class="ct-num ct-lev" data-i18n="compare.col.maxLev">Max Lev</th>
                     <th class="ct-num" data-sort="rate" data-i18n="compare.col.aquaRate">Aqua Rate</th>
-                    <th class="ct-trend" data-i18n="compare.col.trend">Trend</th>
+                    <th class="ct-trend" id="ct-trend-header">Trend</th>
                   </tr>
                 </thead>
                 <tbody id="compare-tbody">
@@ -902,7 +902,7 @@
                 </tbody>
               </table>
             </div>
-            <p class="compare-foot" data-i18n="compare.foot">Leveraged APY assumes the maximum leverage that keeps health factor ≥ 1.20 at current pool rates; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
+            <p class="compare-foot" data-i18n="compare.foot">Max Lev and Leveraged APY use the same minimum health factor as the trade form, so they match the position you can actually open; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.</p>
           </section>
         </div>
 

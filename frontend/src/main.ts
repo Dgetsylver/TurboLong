@@ -783,13 +783,15 @@ function renderTrendArrow(
   ] as [string, number | null][]) {
     if (past === null) continue;
     const delta = past !== 0 ? (current - past) / Math.abs(past) * 100 : 0;
-    const up = delta >= 0;
-    const sym = up ? "▲" : "▼";
-    const cls = up ? "rate-trend-up" : "rate-trend-down";
-    // Clamp the shown delta so huge swings don't overflow the row.
     const absDelta = Math.abs(delta);
+    // Treat sub-0.05% moves as flat — a neutral marker, not a misleading ▲0.0%.
+    const flat = absDelta < 0.05;
+    const up = delta >= 0;
+    const sym = flat ? "→" : up ? "▲" : "▼";
+    const cls = flat ? "rate-trend-flat" : up ? "rate-trend-up" : "rate-trend-down";
+    // Clamp the shown delta so huge swings don't overflow the row.
     const shown = absDelta > 999.9 ? "&gt;999.9%" : `${fmt(absDelta, 1)}%`;
-    const aria = `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
+    const aria = flat ? `${label} unchanged` : `${label} ${up ? "increased" : "decreased"} ${fmt(absDelta, 1)} percent`;
     parts.push(`<span class="rate-trend" role="img" aria-label="${aria}"><span class="${cls}">${sym}${shown}</span><span class="rate-trend-label">${label}</span></span>`);
     tipParts.push(`${label}: ${fmt(past, 2)}% → ${fmt(current, 2)}% (${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%)`);
   }
@@ -2516,15 +2518,14 @@ interface CompareRow {
   asset:     AssetInfo;
   rs:        ReserveStats;
   baseApy:   number;          // aprToApy(netSupplyApr)
-  safeLev:   number;          // max leverage keeping HF ≥ COMPARE_HF_FLOOR, capped
+  safeLev:   number;          // max leverage at minHF() — matches the trade form
   levApy:    number;          // net APY at the carry-optimal leverage
   aquaPrice: number | null;   // indicative 1 unit → USDC, null = no route
   series:    SnapshotPoint[]; // net supply APR history within the window
 }
 
-const COMPARE_HF_FLOOR = 1.2;
-const COMPARE_LEV_CAP  = 8;
-
+// Max leverage shown in Compare uses the SAME health-factor floor as the trade
+// form (minHF()), so the figure matches what a user can actually open.
 let compareWindowDays = 30;
 let compareSortKey: "lev" | "base" | "rate" = "lev";
 let compareRows: CompareRow[] = [];
@@ -2540,9 +2541,12 @@ function usdcAssetId(): string | null {
   return null;
 }
 
-/** Carry-optimal leverage + the net APY it yields at current pool rates. */
+/** Carry-optimal leverage + the net APY it yields at current pool rates.
+ *  Max leverage uses minHF() — identical to the trade form's slider ceiling —
+ *  so Compare's "Max Lev" and ranking reflect the achievable position, not a
+ *  more conservative hidden assumption. (maxLeverageFor caps at 100.) */
 function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
-  const safeLev = Math.min(COMPARE_LEV_CAP, Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, COMPARE_HF_FLOOR)));
+  const safeLev = Math.max(1, maxLeverageFor(rs.cFactor, rs.lFactor, minHF()));
   const carry   = rs.netSupplyApr - rs.netBorrowCost; // marginal yield per extra leverage unit
   const effLev  = carry > 0 ? safeLev : 1;            // negative carry → no leverage
   const levApy  = aprToApy(rs.netSupplyApr * effLev - rs.netBorrowCost * (effLev - 1));
@@ -2619,10 +2623,18 @@ function renderCompareTable(): void {
   }).join("");
 }
 
+/** Trend column header reflects the selected window, so the 7D/30D/1Y toggle
+ *  gives visible feedback (it scopes the trend sparkline, not the live columns). */
+function updateTrendHeader(): void {
+  const el = document.getElementById("ct-trend-header");
+  if (el) el.textContent = `${t("compare.col.trend")} · ${compareWindowDays >= 365 ? "1y" : `${compareWindowDays}d`}`;
+}
+
 async function renderCompareView(): Promise<void> {
   const token = ++compareToken;
   compareLoading = true;
   compareRows = [];
+  updateTrendHeader();
   renderCompareTable();
 
   const usdc   = usdcAssetId();
@@ -2640,6 +2652,10 @@ async function renderCompareView(): Promise<void> {
     }
     if (token !== compareToken) return; // superseded by a newer render
     for (const rs of reserves) {
+      // Compare ranks LEVERAGED yield. Skip reserves that can't be used as
+      // collateral (c_factor = 0, e.g. EURC on YieldBlox) — they can't be
+      // looped, and their raw emissions-inflated APY would mis-rank the table.
+      if (rs.cFactor <= 0) continue;
       const { safeLev, levApy } = compareLevApy(rs);
       compareRows.push({
         poolName: pool.name, poolId: pool.id, asset: rs.asset, rs,
