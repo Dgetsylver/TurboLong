@@ -403,7 +403,9 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", ()
 // ── Disclaimer ───────────────────────────────────────────────────────────
 
 if (!localStorage.getItem("disclaimerAccepted")) {
-  document.getElementById("disclaimer-overlay")!.classList.remove("hidden");
+  openModal(document.getElementById("disclaimer-overlay")!, {
+    focus: document.getElementById("disclaimer-checkbox"),
+  });
 }
 document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) => {
   (document.getElementById("disclaimer-accept") as HTMLButtonElement).disabled =
@@ -411,7 +413,7 @@ document.getElementById("disclaimer-checkbox")!.addEventListener("change", (e) =
 });
 document.getElementById("disclaimer-accept")!.addEventListener("click", () => {
   localStorage.setItem("disclaimerAccepted", "1");
-  document.getElementById("disclaimer-overlay")!.classList.add("hidden");
+  closeModal(document.getElementById("disclaimer-overlay")!);
 });
 
 // ── Active view (leverage | swap) ────────────────────────────────────────
@@ -483,7 +485,10 @@ function updateFreshnessDisplay() {
   if (secs < 5) { el.textContent = "Just now"; }
   else if (secs < 60) { el.textContent = `${secs}s ago`; }
   else { el.textContent = `${Math.floor(secs / 60)}m ago`; }
-  el.classList.toggle("stale", secs > 60);
+  const stale = secs > 60;
+  el.classList.toggle("stale", stale);
+  // Convey staleness textually, not by colour alone (#9)
+  el.setAttribute("title", `Data last updated ${el.textContent}${stale ? " — stale" : ""}`);
 }
 
 function startFreshnessTimer() {
@@ -847,7 +852,10 @@ function buildPoolTabs() {
     btn.dataset["poolId"] = pool.id;
     btn.textContent = pool.name;
     btn.setAttribute("role", "tab");
-    if (isFrozen) btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+    if (isFrozen) {
+      btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+      btn.setAttribute("aria-label", `${pool.name} \u2014 Admin Frozen, exploited Feb 2026`);
+    }
     btn.addEventListener("click", () => selectPool(pool));
     container.appendChild(btn);
   });
@@ -861,7 +869,10 @@ function buildPoolTabs() {
     btn.className = `pool-dropdown-item ${pool.id === selectedPool.id ? "active" : ""} ${isFrozen ? "pool-tab-frozen" : ""}`;
     btn.dataset["poolId"] = pool.id;
     btn.textContent = pool.name;
-    if (isFrozen) btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+    if (isFrozen) {
+      btn.setAttribute("data-tip", "Admin Frozen \u2014 exploited Feb 2026");
+      btn.setAttribute("aria-label", `${pool.name} \u2014 Admin Frozen, exploited Feb 2026`);
+    }
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       selectPool(pool);
@@ -1010,6 +1021,15 @@ async function refreshTabData() {
 }
 
 // ── HF Gauge (#7) ────────────────────────────────────────────────────────────
+
+/**
+ * Text zone word for a health factor — so risk is not signalled by colour
+ * alone (WCAG 1.4.1). Mirrors the colour thresholds used across the UI.
+ */
+function hfZoneWord(hf: number): string {
+  if (!Number.isFinite(hf)) return "Safe";
+  return hf > 1.1 ? "Safe" : hf > 1.03 ? "Caution" : "Danger";
+}
 
 function renderHFGauge(hf: number): string {
   const cx = 60, cy = 55, r = 45;
@@ -1325,11 +1345,11 @@ function renderPortfolioSummary() {
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
     card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
     card.innerHTML = `
-      <span class="portfolio-card-hf-dot" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
+      <span class="portfolio-card-hf-dot" aria-hidden="true" style="background:${hfColor};box-shadow:0 0 6px ${hfColor}"></span>
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)}</span>
+        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)} (${hfZoneWord(pos.hf)})</span>
       </span>`;
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
@@ -1419,15 +1439,21 @@ function renderPosition() {
   const hfDec = expertMode ? 5 : 3;
   hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
   hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
+  // Text zone word so risk isn't colour/icon-only (#9)
+  hfEl.setAttribute("aria-label", `Asset health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZoneWord(hf)}`);
   const barPct = Math.min(100, Math.max(0, (hf - 1) / 0.3 * 100));
   const bar = $("hf-bar");
   bar.style.width      = `${barPct}%`;
   bar.style.background = hf > 1.1 ? "var(--success)" : hf > 1.03 ? "var(--warning)" : "var(--danger)";
 
-  // ARIA on HF bar (#6)
+  // ARIA on HF bar (#8) — role="meter" with live valuetext incl. zone word
+  const hfZone = hfZoneWord(hf);
   const barWrap = $("hf-bar").parentElement!;
   barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
-  barWrap.setAttribute("aria-label", `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}`);
+  barWrap.setAttribute(
+    "aria-valuetext",
+    `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZone}`,
+  );
 
   // HF Gauge (#7)
   const gaugeEl = document.querySelector(".hf-gauge-container") as HTMLElement;
@@ -1455,6 +1481,8 @@ function renderPosition() {
   const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
   poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
   poolHFEl.className   = `metric-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
+  // Text zone word so risk isn't colour/icon-only (#9)
+  poolHFEl.setAttribute("aria-label", `Pool health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZoneWord(poolHF)}`);
 
   // Borrow headroom
   const rs = reserves.find(r => r.asset.id === selectedAsset.id);
@@ -1905,7 +1933,7 @@ async function loadAll() {
 let _confirmPosResolve: ((ok: boolean) => void) | null = null;
 
 function closeConfirmPosition(ok = false) {
-  $("confirm-position-overlay").classList.add("hidden");
+  closeModal($("confirm-position-overlay"));
   const r = _confirmPosResolve;
   _confirmPosResolve = null;
   if (r) r(ok);
@@ -1955,7 +1983,8 @@ function confirmPositionModal(
   chk.checked = false;
   ($("cp-confirm") as HTMLButtonElement).disabled = true;
 
-  $("confirm-position-overlay").classList.remove("hidden");
+  // Focus the close button first; the confirm button starts disabled.
+  openModal($("confirm-position-overlay"), { focus: $("confirm-position-close") });
   return new Promise<boolean>((resolve) => { _confirmPosResolve = resolve; });
 }
 
@@ -2382,6 +2411,9 @@ async function claimAndConvert() {
 function setLoading(btn: HTMLButtonElement, on: boolean) {
   btn.disabled = on;
   btn.classList.toggle("btn-loading", on);
+  // Announce busy state to assistive tech (#15)
+  if (on) btn.setAttribute("aria-busy", "true");
+  else btn.removeAttribute("aria-busy");
 }
 
 // ── Wallet connect / switch / disconnect ──────────────────────────────────────
@@ -2519,7 +2551,10 @@ function compareLevApy(rs: ReserveStats): { safeLev: number; levApy: number } {
 }
 
 function compareSparkline(series: SnapshotPoint[]): string {
-  if (series.length < 2) return `<span class="ct-spark-empty">—</span>`;
+  // Empty case: text "n/a" with a descriptive label, not colour-only (#9)
+  if (series.length < 2) {
+    return `<span class="ct-spark-empty" title="${compareWindowDays}-day trend: no data" aria-label="${compareWindowDays}-day trend: no data">—</span>`;
+  }
   const W = 88, H = 26, pad = 3;
   const vals = series.map((p) => p.val);
   const min = Math.min(...vals), max = Math.max(...vals);
@@ -2530,7 +2565,9 @@ function compareSparkline(series: SnapshotPoint[]): string {
   const pts = series.map((p, i) => `${x(i).toFixed(1)},${y(p.val).toFixed(1)}`).join(" ");
   const up = vals[n - 1] >= vals[0];
   const lastX = x(n - 1).toFixed(1), lastY = y(vals[n - 1]).toFixed(1);
-  return `<svg class="ct-spark ${up ? "ct-spark-up" : "ct-spark-down"}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none">
+  // Text/ARIA trend direction so it isn't conveyed by colour alone (#9)
+  const trendLabel = `${compareWindowDays}-day trend: ${up ? "up" : "down"}`;
+  return `<svg class="ct-spark ${up ? "ct-spark-up" : "ct-spark-down"}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" role="img" aria-label="${trendLabel}"><title>${trendLabel}</title>
     <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="${lastX}" cy="${lastY}" r="1.8" fill="currentColor"/>
   </svg>`;
@@ -2547,6 +2584,13 @@ function compareSortRows(): CompareRow[] {
 }
 
 function renderCompareTable(): void {
+  // Sync sort indicator (colour + aria-sort) with the active sort key (#9)
+  for (const h of document.querySelectorAll<HTMLElement>("#compare-table th[data-sort]")) {
+    const sorted = h.dataset.sort === compareSortKey;
+    h.classList.toggle("ct-sorted", sorted);
+    if (sorted) h.setAttribute("aria-sort", "descending");
+    else h.removeAttribute("aria-sort");
+  }
   const tbody = $("compare-tbody");
   const rows = compareSortRows();
   if (rows.length === 0) {
@@ -2559,7 +2603,7 @@ function renderCompareTable(): void {
     const best = i === 0 && compareSortKey === "lev";
     const rate = r.aquaPrice == null ? `<span class="ct-muted">n/a</span>` : r.aquaPrice.toFixed(4);
     return `<tr class="${best ? "ct-best-row" : ""}">
-      <td class="ct-rank">${best ? `<span class="ct-medal">&#9733;</span>` : i + 1}</td>
+      <td class="ct-rank">${best ? `<span class="ct-medal" aria-hidden="true">&#9733;</span><span class="sr-only">Rank 1</span>` : i + 1}</td>
       <td class="ct-asset">
         <div class="ct-asset-cell">
           <span class="ct-sym">${r.asset.symbol}</span>
@@ -2643,6 +2687,14 @@ function switchView(view: AppView) {
   swapBtn.classList.toggle("active", view === "swap");
   vaultBtn.classList.toggle("active", view === "vault");
   compareBtn.classList.toggle("active", view === "compare");
+  // Mark the active protocol-nav button for AT (#13)
+  const setCurrent = (btn: HTMLElement, on: boolean) =>
+    on ? btn.setAttribute("aria-current", "page") : btn.removeAttribute("aria-current");
+  setCurrent(overviewBtn, view === "overview");
+  setCurrent(blendBtn, view === "leverage");
+  setCurrent(swapBtn, view === "swap");
+  setCurrent(vaultBtn, view === "vault");
+  setCurrent(compareBtn, view === "compare");
 
   // Mobile sidebar active states
   document.getElementById("mobile-proto-overview")?.classList.toggle("active", view === "overview");
@@ -2701,6 +2753,7 @@ function switchView(view: AppView) {
 function closeDrawer() {
   document.querySelector(".sidebar")!.classList.remove("open");
   $("sidebar-backdrop").classList.add("hidden");
+  document.getElementById("hamburger-btn")?.setAttribute("aria-expanded", "false");
 }
 
 // ── Swap assets ──────────────────────────────────────────────────────────
@@ -2877,6 +2930,56 @@ function debounceQuote() {
   _quoteTimer = setTimeout(fetchSwapQuote, 500);
 }
 
+// ── Modal focus management (#10) ──────────────────────────────────────────────
+//
+// Shared helpers wired into the existing show/hide paths. openModal() reveals an
+// overlay, remembers the trigger, moves focus inside and traps Tab; closeModal()
+// hides it and returns focus to the trigger. Behaviour (which element opens/closes
+// the modal, Escape handling, backdrop clicks) is unchanged — these only add the
+// focus + ARIA layer on top.
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Per-overlay state: the element to restore focus to, and the active trap handler.
+const _modalState = new WeakMap<HTMLElement, { trigger: HTMLElement | null; trap: (e: KeyboardEvent) => void }>();
+
+function _focusable(overlay: HTMLElement): HTMLElement[] {
+  return Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE))
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+}
+
+function openModal(overlay: HTMLElement, opts: { focus?: HTMLElement | null } = {}): void {
+  overlay.classList.remove("hidden");
+  const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const trap = (e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const items = _focusable(overlay);
+    if (items.length === 0) return;
+    const first = items[0], last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  };
+  overlay.addEventListener("keydown", trap);
+  _modalState.set(overlay, { trigger, trap });
+  // Move focus inside: explicit target, else first focusable element.
+  const target = opts.focus ?? _focusable(overlay)[0] ?? null;
+  // Defer so the element is laid out (display toggled this frame).
+  requestAnimationFrame(() => target?.focus());
+}
+
+function closeModal(overlay: HTMLElement): void {
+  overlay.classList.add("hidden");
+  const state = _modalState.get(overlay);
+  if (state) {
+    overlay.removeEventListener("keydown", state.trap);
+    _modalState.delete(overlay);
+    // Return focus to the trigger if it's still in the document.
+    if (state.trigger && document.contains(state.trigger)) state.trigger.focus();
+  }
+}
+
 // ── Tooltip popovers (#1) ────────────────────────────────────────────────────
 
 function initTooltips() {
@@ -2893,9 +2996,19 @@ function initTooltips() {
       el.dataset.tip = el.getAttribute("title") || "";
       el.removeAttribute("title");
     }
+    // Keyboard/screen-reader access (#12): reachable + announces the tip text.
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", el.dataset.tip || "");
 
     el.addEventListener("mouseenter", () => { showTip(el); popover.classList.add("visible"); });
     el.addEventListener("mouseleave", () => popover.classList.remove("visible"));
+    // Keyboard focus mirrors hover; refresh aria-label in case the tip changed.
+    el.addEventListener("focus", () => {
+      el.setAttribute("aria-label", el.dataset.tip || "");
+      showTip(el); popover.classList.add("visible");
+    });
+    el.addEventListener("blur", () => popover.classList.remove("visible"));
     // Mobile: toggle on click
     el.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2923,12 +3036,12 @@ function showConfirm(opts: { title: string; body: string; confirmLabel?: string 
   $("confirm-modal-title").textContent = opts.title;
   $("confirm-modal-body").textContent = opts.body;
   $("confirm-modal-ok").textContent = opts.confirmLabel ?? t("common.confirm");
-  $("confirm-modal-overlay").classList.remove("hidden");
+  openModal($("confirm-modal-overlay"), { focus: $("confirm-modal-cancel") });
   return new Promise<boolean>((resolve) => { _confirmResolve = resolve; });
 }
 
 function closeConfirm(ok: boolean) {
-  $("confirm-modal-overlay").classList.add("hidden");
+  closeModal($("confirm-modal-overlay"));
   const r = _confirmResolve;
   _confirmResolve = null;
   if (r) r(ok);
@@ -3061,9 +3174,7 @@ $("compare-table").addEventListener("click", (e) => {
   const th = (e.target as HTMLElement).closest("th[data-sort]") as HTMLElement | null;
   if (!th) return;
   compareSortKey = th.dataset.sort as "lev" | "base" | "rate";
-  for (const h of document.querySelectorAll("#compare-table th[data-sort]")) {
-    h.classList.toggle("ct-sorted", h === th);
-  }
+  // ct-sorted + aria-sort are synced inside renderCompareTable() (#9)
   renderCompareTable();
 });
 // Compare view: manual refresh
@@ -3090,14 +3201,19 @@ document.addEventListener("click", () => {
 $("hamburger-btn").addEventListener("click", () => {
   document.querySelector(".sidebar")!.classList.add("open");
   $("sidebar-backdrop").classList.remove("hidden");
+  $("hamburger-btn").setAttribute("aria-expanded", "true");
 });
 $("sidebar-backdrop").addEventListener("click", closeDrawer);
 
 // Mobile card tabs (#12) — note: order is swapped in new layout (action=left=0, position=right=1)
 document.querySelectorAll<HTMLButtonElement>(".mobile-card-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".mobile-card-tab").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".mobile-card-tab").forEach(b => {
+      b.classList.remove("active");
+      b.setAttribute("aria-selected", "false");
+    });
     btn.classList.add("active");
+    btn.setAttribute("aria-selected", "true");
     const panel = btn.dataset.panel;
     const cards = document.querySelectorAll<HTMLElement>(".two-col > .card");
     if (window.innerWidth <= 900) {
@@ -3855,18 +3971,24 @@ document.addEventListener("keydown", (e) => {
       if (!closeBtn.disabled) closeBtn.click();
       break;
     }
-    case "Escape":
+    case "Escape": {
       $("pool-dropdown").classList.add("hidden");
       $("settings-dropdown").classList.add("hidden");
-      $("alert-modal-overlay").classList.add("hidden");
-      document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+      if (!$("alert-modal-overlay").classList.contains("hidden")) closeModal($("alert-modal-overlay"));
+      const shortcut = document.getElementById("shortcut-modal-overlay");
+      if (shortcut && !shortcut.classList.contains("hidden")) closeModal(shortcut);
       if (!$("confirm-modal-overlay").classList.contains("hidden")) closeConfirm(false);
       if (!$("confirm-position-overlay").classList.contains("hidden")) closeConfirmPosition();
       closeDrawer();
       break;
-    case "?":
-      document.getElementById("shortcut-modal-overlay")?.classList.toggle("hidden");
+    }
+    case "?": {
+      const shortcut = document.getElementById("shortcut-modal-overlay");
+      if (!shortcut) break;
+      if (shortcut.classList.contains("hidden")) openModal(shortcut, { focus: document.getElementById("shortcut-modal-close") });
+      else closeModal(shortcut);
       break;
+    }
   }
 });
 
@@ -3905,7 +4027,7 @@ function openAlertModal() {
   const closest = brackets.reduce((a, b) => Math.abs(b - curLev) < Math.abs(a - curLev) ? b : a);
   ($("alert-leverage") as HTMLSelectElement).value = String(closest);
 
-  $("alert-modal-overlay").classList.remove("hidden");
+  openModal($("alert-modal-overlay"), { focus: $("alert-email") });
 }
 
 $("alert-bell-btn").addEventListener("click", openAlertModal);
@@ -3917,12 +4039,12 @@ document.getElementById("alerts-menu-btn")?.addEventListener("click", () => {
 });
 
 $("alert-modal-close").addEventListener("click", () => {
-  $("alert-modal-overlay").classList.add("hidden");
+  closeModal($("alert-modal-overlay"));
 });
 
 $("alert-modal-overlay").addEventListener("click", (e) => {
   if (e.target === $("alert-modal-overlay")) {
-    $("alert-modal-overlay").classList.add("hidden");
+    closeModal($("alert-modal-overlay"));
   }
 });
 
@@ -3957,7 +4079,7 @@ $("alert-subscribe-btn").addEventListener("click", async () => {
 
     if (data.ok) {
       toast("Check your email to verify your alert subscription.", "success");
-      $("alert-modal-overlay").classList.add("hidden");
+      closeModal($("alert-modal-overlay"));
       ($("alert-email") as HTMLInputElement).value = "";
     } else {
       toast(data.error || "Subscription failed.", "error");
@@ -4023,7 +4145,7 @@ $("alert-push-btn").addEventListener("click", async () => {
     const data = await res.json() as { ok?: boolean; error?: string };
     if (data.ok) {
       toast("Push alerts enabled for this position.", "success");
-      $("alert-modal-overlay").classList.add("hidden");
+      closeModal($("alert-modal-overlay"));
     } else {
       toast(data.error || "Push subscription failed.", "error");
     }
@@ -4038,15 +4160,17 @@ $("alert-push-btn").addEventListener("click", async () => {
 // ── Shortcut help modal (A12) ─────────────────────────────────────────────────
 
 document.getElementById("shortcut-modal-close")?.addEventListener("click", () => {
-  document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay) closeModal(overlay);
 });
 document.getElementById("shortcut-modal-overlay")?.addEventListener("click", (e) => {
-  if (e.target === document.getElementById("shortcut-modal-overlay"))
-    document.getElementById("shortcut-modal-overlay")?.classList.add("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay && e.target === overlay) closeModal(overlay);
 });
 document.getElementById("shortcuts-help-btn")?.addEventListener("click", () => {
   document.getElementById("settings-dropdown")?.classList.add("hidden");
-  document.getElementById("shortcut-modal-overlay")?.classList.remove("hidden");
+  const overlay = document.getElementById("shortcut-modal-overlay");
+  if (overlay) openModal(overlay, { focus: document.getElementById("shortcut-modal-close") });
 });
 
 // ── i18n + onboarding tour (T3.5) ─────────────────────────────────────────────

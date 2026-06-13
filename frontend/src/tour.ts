@@ -29,11 +29,20 @@ function markSeen(): void {
 let overlay: HTMLDivElement | null = null;
 let step = 0;
 let dontShow = true;
+let trigger: HTMLElement | null = null;
+let trapHandler: ((e: KeyboardEvent) => void) | null = null;
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function close(): void {
   if (dontShow) markSeen();
+  if (trapHandler) { document.removeEventListener("keydown", trapHandler); trapHandler = null; }
   overlay?.remove();
   overlay = null;
+  // Return focus to whatever opened the tour (#10).
+  if (trigger && document.contains(trigger)) trigger.focus();
+  trigger = null;
 }
 
 function render(): void {
@@ -64,6 +73,11 @@ function render(): void {
   (overlay.querySelector("#tour-dontshow") as HTMLInputElement)?.addEventListener("change", (e) => {
     dontShow = (e.target as HTMLInputElement).checked;
   });
+
+  // Move focus into the card after each (re)render (#10).
+  const card = overlay.querySelector(".tour-card") as HTMLElement | null;
+  const first = card?.querySelector<HTMLElement>(FOCUSABLE);
+  requestAnimationFrame(() => first?.focus());
 }
 
 /** Open the tour (used by the help action and on first visit). */
@@ -71,10 +85,24 @@ export function startTour(): void {
   if (overlay) return;
   step = 0;
   dontShow = true;
+  // Remember the trigger so focus can return on close (#10).
+  trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   overlay = document.createElement("div");
   overlay.className = "tour-overlay";
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   document.body.appendChild(overlay);
+  // Trap Tab within the tour card and allow Escape to dismiss (#10).
+  trapHandler = (e: KeyboardEvent) => {
+    if (!overlay) return;
+    if (e.key === "Escape") { close(); return; }
+    if (e.key !== "Tab") return;
+    const items = Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE));
+    if (items.length === 0) return;
+    const firstEl = items[0], lastEl = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === firstEl) { e.preventDefault(); lastEl.focus(); }
+    else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
+  };
+  document.addEventListener("keydown", trapHandler);
   render();
 }
 
