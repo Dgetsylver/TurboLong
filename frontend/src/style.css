@@ -1276,7 +1276,7 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 /* ── Vault view ─────────────────────────────────────────────────────────── */
 
-.vault-card { max-width: 640px; margin: 0 auto; }
+.vault-card { max-width: 960px; margin: 0 auto; }
 
 .vault-badge {
   font-size: var(--tl-text-xs); font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
@@ -1284,11 +1284,31 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   border-radius: var(--r-pill); padding: 2px 9px;
 }
 
+/* Two-column vault layout: left info/stats/strategy/position, right actions card. */
+.vault-grid {
+  display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px; align-items: start;
+}
+.vault-main { min-width: 0; }
+.vault-side { min-width: 0; }
+.vault-side .vault-actions {
+  background: var(--metric-bg); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 16px; position: sticky; top: 16px;
+}
+
 .vault-stats { margin-bottom: 16px; }
 .vault-stats .stats-row {
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
   margin-bottom: 8px;
 }
+/* Render the stat tiles as MetricHero — centered big mono value over uppercase
+   label. Scoped to .vault-stats so main.ts className rewrites stay compatible. */
+.vault-stats .stat-card {
+  background: var(--metric-bg); text-align: center;
+  padding: 14px 16px;
+}
+.vault-stats .stat-label { margin-bottom: 6px; }
+.vault-stats .stat-value { font-size: var(--tl-text-2xl); }
 
 .vault-strategy-pos {
   border-top: 1px solid var(--border);
@@ -1381,6 +1401,8 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
   .sidebar-nav { display: flex; flex-direction: column; gap: 4px; }
   .sidebar-bottom { display: flex; gap: 8px; }
   .two-col { grid-template-columns: 1fr; }
+  .vault-grid { grid-template-columns: 1fr; }
+  .vault-side .vault-actions { position: static; }
   .stats-row { grid-template-columns: repeat(3, 1fr); }
   .apr-grid { grid-template-columns: 1fr; }
   .mobile-card-tabs { display: flex; }
@@ -1394,6 +1416,7 @@ main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 20px 24
 
 @media (max-width: 600px) {
   .stats-row { grid-template-columns: 1fr 1fr; }
+  .vault-stats .stats-row { grid-template-columns: 1fr 1fr; }
   .top-nav { padding: 0 12px; }
   header { padding: 0 12px; }
   main { padding: 14px 12px 40px; }
@@ -1675,11 +1698,18 @@ kbd {
 .status-dot-degraded { background: var(--warning); }
 .status-dot-down { background: var(--danger); }
 .status-dot-checking { background: var(--text-3); }
-.status-state { font-size: 12px; font-family: var(--mono); }
-.status-state-operational { color: var(--success); }
-.status-state-degraded { color: var(--warning); }
-.status-state-down { color: var(--danger); }
-.status-state-checking { color: var(--text-3); }
+/* Per-row state pill — token-colored tints matching the DS Badge tones. */
+.status-badge {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  padding: 2px 9px; border-radius: var(--r-pill);
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label); font-family: var(--sans);
+  border: 1px solid transparent;
+}
+.status-badge-operational { color: var(--success); background: rgba(45,232,163,.08); border-color: var(--success-border); }
+.status-badge-degraded { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-border); }
+.status-badge-down { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
+.status-badge-checking { color: var(--text-3); background: var(--surface2); border-color: transparent; }
 .status-footer {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border);

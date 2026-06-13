@@ -638,7 +638,13 @@ export interface ProjectedRates {
  * @param addBorrow Additional tokens borrowed (user's deposit × (leverage − 1))
  */
 export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: number): ProjectedRates {
-  const { rBase, rOne, rTwo, rThree, utilOpt, irMod, backstopFP } = rs.rateConfig;
+  // Default the IR-model config so projectRates is resilient to reserves that
+  // lack a rateConfig (e.g. demo/mock seeds) — destructuring an undefined
+  // rateConfig crashed demo mode. Real reserves always carry these values.
+  const {
+    rBase = 300_000, rOne = 400_000, rTwo = 1_200_000, rThree = 50_000_000,
+    utilOpt = 5_000_000, irMod = 1_000_000, backstopFP = 2_000_000,
+  } = rs.rateConfig ?? {};
   const FIXED_95PCT = 9_500_000;
 
   const projSupply = rs.totalSupply + addSupply;

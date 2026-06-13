@@ -715,7 +715,11 @@
               <span class="vault-badge" data-i18n="vault.strategyBadge">Strategy</span>
             </div>
 
-            <!-- Vault stats -->
+            <!-- Two-column layout: left = info/stats/strategy/position, right = deposit/withdraw -->
+            <div class="vault-grid">
+            <div class="vault-main">
+
+            <!-- Vault stats — MetricHero tiles (styled via .vault-stats scope) -->
             <div id="vault-stats" class="vault-stats">
               <div class="stats-row">
                 <div class="stat-card">
@@ -812,6 +816,10 @@
               </div>
             </div>
 
+            </div><!-- /.vault-main -->
+
+            <!-- Right column: deposit / withdraw actions card -->
+            <div class="vault-side">
             <!-- Deposit / Withdraw with tabs -->
             <div class="vault-actions">
               <div class="vault-tabs">
@@ -845,6 +853,9 @@
                 <button id="vault-withdraw-btn" class="btn btn-secondary btn-lg" disabled data-i18n="common.withdraw">Withdraw</button>
               </div>
             </div>
+
+            </div><!-- /.vault-side -->
+            </div><!-- /.vault-grid -->
 
             <div class="vault-contract-footer">
               <span class="vault-contract-label" data-i18n="vault.strategyLabel">Strategy:</span>

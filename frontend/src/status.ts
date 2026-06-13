@@ -59,7 +59,7 @@ function renderRow(svc: Service, state: State): string {
   return `<div class="status-row" id="status-row-${svc.id}">
     <span class="${dotClass(state)}"></span>
     <span class="status-name">${t(svc.labelKey)}</span>
-    <span class="status-state status-state-${state}">${stateLabel(state)}</span>
+    <span class="status-badge status-badge-${state}">${stateLabel(state)}</span>
   </div>`;
 }
 
