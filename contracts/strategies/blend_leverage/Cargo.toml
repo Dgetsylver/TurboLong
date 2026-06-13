@@ -16,6 +16,7 @@ blend-contract-sdk = "2.25.0"
 [dev-dependencies]
 soroban-sdk = { version = "25.3.0", features = ["testutils"] }
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+proptest = "1"
 
 [profile.release]
 opt-level = "z"
