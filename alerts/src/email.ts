@@ -100,3 +100,55 @@ export async function sendApyAlert(
     html,
   );
 }
+
+export async function sendHfAlert(
+  env: Env,
+  to: string,
+  opts: {
+    poolName: string;
+    assetSymbol: string;
+    leverage: number;
+    hf: number;
+    threshold: number;
+    liquidation: boolean;
+    unsubscribeUrl: string;
+    appUrl: string;
+  },
+): Promise<SendResult> {
+  const { poolName, assetSymbol, leverage, hf, threshold, liquidation, unsubscribeUrl, appUrl } = opts;
+  const title = liquidation ? "Liquidation Imminent" : "Health Factor Alert";
+  const hfStr = Number.isFinite(hf) ? hf.toFixed(3) : "∞";
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #1a1a2e;">
+  <h2 style="margin: 0 0 8px; color: #FF4D6A;">${title}</h2>
+  <p style="font-size: 14px; color: #555; margin: 0 0 20px;">${assetSymbol} at ${leverage}x on ${poolName}</p>
+
+  <div style="background: #f8f8fc; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+    <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+      <tr><td style="padding: 4px 0; color: #555;">Health factor</td><td style="padding: 4px 0; text-align: right; font-weight: 700; color: #FF4D6A;">${hfStr}</td></tr>
+      <tr><td style="padding: 4px 0; color: #555;">Threshold</td><td style="padding: 4px 0; text-align: right; font-weight: 600;">${threshold.toFixed(3)}</td></tr>
+    </table>
+  </div>
+
+  <p style="line-height: 1.6; color: #555;">${liquidation
+    ? "Your position is close to liquidation. Add collateral, repay debt, or reduce leverage now."
+    : "Your position’s health factor has dropped below your threshold. Consider reducing leverage."}</p>
+
+  <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
+
+  <p style="font-size: 12px; color: #aaa; margin-top: 32px;">
+    <a href="${unsubscribeUrl}" style="color: #aaa;">Unsubscribe</a> from this alert.
+  </p>
+</body>
+</html>`.trim();
+
+  const subject = liquidation
+    ? `\u{1F6A8} Liquidation imminent: ${assetSymbol} at ${leverage}x (HF ${hfStr})`
+    : `⚠ Health factor ${hfStr}: ${assetSymbol} at ${leverage}x on ${poolName}`;
+
+  return sendEmail(env, to, subject, html);
+}
