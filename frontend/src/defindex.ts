@@ -44,19 +44,57 @@ export interface VaultConfig {
   targetLoops: number;
   /** Minimum HF before rebalance triggers (1e7 scaled) */
   minHf: number;
+  /** SEP-41 vault-share token contract (set post-deploy; for share queries/trading) */
+  shareToken?: string;
 }
 
+// Mainnet vaults across the four Etherfuse-pool assets. vaultId/shareToken are
+// filled post-deploy from deployed-vaults.mainnet.json (see
+// scripts/wire_mainnet_vaults.ts). Config mirrors scripts/deploy_strategy_mainnet.ts.
 const MAINNET_VAULTS: VaultConfig[] = [
   {
-    vaultId: "", // TODO: set after mainnet deployment
+    vaultId: "", // filled post-deploy
     assetId: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", // USDC
     poolId: "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI",
     name: "Leveraged USDC (Etherfuse)",
     assetSymbol: "USDC",
     decimals: 7,
     cFactor: 0.90,
+    targetLoops: 4,
+    minHf: 1.05,
+  },
+  {
+    vaultId: "",
+    assetId: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", // USTRY
+    poolId: "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI",
+    name: "Leveraged USTRY (Etherfuse)",
+    assetSymbol: "USTRY",
+    decimals: 7,
+    cFactor: 0.85,
     targetLoops: 3,
     minHf: 1.05,
+  },
+  {
+    vaultId: "",
+    assetId: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", // CETES
+    poolId: "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI",
+    name: "Leveraged CETES (Etherfuse)",
+    assetSymbol: "CETES",
+    decimals: 7,
+    cFactor: 0.75,
+    targetLoops: 3,
+    minHf: 1.05,
+  },
+  {
+    vaultId: "",
+    assetId: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", // XLM
+    poolId: "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI",
+    name: "Leveraged XLM (Etherfuse)",
+    assetSymbol: "XLM",
+    decimals: 7,
+    cFactor: 0.70,
+    targetLoops: 2,
+    minHf: 1.10,
   },
 ];
 
