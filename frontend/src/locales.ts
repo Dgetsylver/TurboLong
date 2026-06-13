@@ -280,6 +280,10 @@ const en: Dict = {
   "dashboard.over10y": ">10 years",
   "dashboard.daysApprox": "~{n} days",
   "dashboard.interestSpread": "Interest spread: {pct}%/yr (borrow − supply). Claim & convert BLND to extend runway.",
+  // #294 — cross-collateralized / account-wide HF
+  "pos.crossCollat": "Cross-collateralized",
+  "pos.crossExplainer": "Cross-collateralized position — your collateral and borrows are in different assets. Liquidation is based on your Account Health above, not the individual rows.",
+  "pos.loopHf": "Loop HF",
   // P4 — toasts
   "toast.demoMode": "Demo mode — connect a real wallet to transact",
   "toast.demoExplore": "Demo mode — explore the UI without a wallet",
@@ -590,6 +594,10 @@ const es: Dict = {
   "dashboard.over10y": ">10 años",
   "dashboard.daysApprox": "~{n} días",
   "dashboard.interestSpread": "Diferencial de interés: {pct}%/año (préstamo − suministro). Reclama y convierte BLND para ampliar el margen.",
+  // #294 — cross-collateralized / account-wide HF
+  "pos.crossCollat": "Con garantía cruzada",
+  "pos.crossExplainer": "Posición con garantía cruzada — tu garantía y tus préstamos están en activos diferentes. La liquidación se basa en la Salud de tu Cuenta de arriba, no en las filas individuales.",
+  "pos.loopHf": "HF del bucle",
   // P4 — toasts
   "toast.demoMode": "Modo demo — conecta una billetera real para operar",
   "toast.demoExplore": "Modo demo — explora la interfaz sin billetera",
@@ -900,6 +908,10 @@ const pt: Dict = {
   "dashboard.over10y": ">10 anos",
   "dashboard.daysApprox": "~{n} dias",
   "dashboard.interestSpread": "Spread de juros: {pct}%/ano (empréstimo − fornecimento). Reivindique e converta BLND para estender a margem.",
+  // #294 — cross-collateralized / account-wide HF
+  "pos.crossCollat": "Com garantia cruzada",
+  "pos.crossExplainer": "Posição com garantia cruzada — sua garantia e seus empréstimos estão em ativos diferentes. A liquidação é baseada na Saúde da sua Conta acima, não nas linhas individuais.",
+  "pos.loopHf": "HF do loop",
   // P4 — toasts
   "toast.demoMode": "Modo demo — conecte uma carteira real para operar",
   "toast.demoExplore": "Modo demo — explore a interface sem carteira",

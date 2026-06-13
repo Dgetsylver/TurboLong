@@ -1337,6 +1337,23 @@ function computePoolHF(): number {
   return totalDebt > 0 ? weightedCollateral / totalDebt : Number.POSITIVE_INFINITY;
 }
 
+// A position is "single-sided" when it has only collateral or only debt in this
+// asset. The account is cross-collateralized when debt in one asset is backed by
+// collateral in another. For those, the PER-ASSET HF is misleading (0 or ∞) — the
+// pool-wide HF is the real liquidation trigger.
+function isSingleSided(pos: AssetPosition): boolean {
+  return (pos.collateral > 0 && pos.debt === 0) || (pos.debt > 0 && pos.collateral === 0);
+}
+function isCrossAssetAccount(): boolean {
+  let coll = false, debt = false, sided = false;
+  for (const p of positions.byAsset.values()) {
+    if (p.collateral > 0) coll = true;
+    if (p.debt > 0) debt = true;
+    if (isSingleSided(p)) sided = true;
+  }
+  return sided && coll && debt; // debt backed by collateral in a different asset
+}
+
 // ── Portfolio summary (#8) ───────────────────────────────────────────────────
 
 function renderPortfolioSummary() {
@@ -1348,7 +1365,15 @@ function renderPortfolioSummary() {
     const rs = reserves.find(r => r.asset.id === assetId);
     const cardNetApr = rs ? rs.netSupplyApr * pos.leverage - rs.netBorrowCost * (pos.leverage - 1) : 0;
     const netApy = aprToApy(cardNetApr);
-    const hfColor = pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
+    // Single-sided positions (cross-collateralized account) have a misleading
+    // per-asset HF — show a neutral tag and grey dot instead of a scary HF. (#294)
+    const sided = isSingleSided(pos);
+    const hfColor = sided
+      ? "var(--text-3)"
+      : pos.hf > 1.1 ? "var(--success)" : pos.hf > 1.03 ? "var(--warning)" : "var(--danger)";
+    const hfText = sided
+      ? t("pos.crossCollat")
+      : `HF ${fmt(pos.hf, 2)} (${hfZoneWord(pos.hf)})`;
     const card = document.createElement("div");
     card.className = `portfolio-card ${assetId === selectedAsset.id ? "active" : ""}`;
     card.title = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(cardNetApr, 2)}%`;
@@ -1357,7 +1382,7 @@ function renderPortfolioSummary() {
       <span class="portfolio-card-symbol">${pos.asset.symbol}</span>
       <span class="portfolio-card-details">
         <span>${fmt(pos.equity, 2)} equity \u00B7 ${fmt(pos.leverage, 1)}\u00D7</span>
-        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 HF ${fmt(pos.hf, 2)} (${hfZoneWord(pos.hf)})</span>
+        <span>APY ${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}% \u00B7 ${hfText}</span>
       </span>`;
     card.addEventListener("click", () => {
       const asset = assets.find(a => a.id === assetId);
@@ -1432,46 +1457,66 @@ function renderPosition() {
   // Animated leverage (#11)
   animateNumber($("pos-leverage"), pos.leverage, 200, n => `${fmt(n, 2)}\u00D7`);
 
-  // Hero metrics
-  const hf = pos.hf;
+  // Pool-wide health factor \u2014 Blend liquidates on the ACCOUNT-level (pool-wide)
+  // HF, not per-asset. Drive all the liquidation-relevant UI (hero, bar, gauge,
+  // warning, days-to-liq) off poolHF so a cross-collateralized account is not
+  // shown as "liquidation imminent" on a single-sided row. For a normal single
+  // self-contained loop, computePoolHF() === pos.hf, so the display is identical. (#294)
+  const hf     = pos.hf;
+  const poolHF = computePoolHF();
+  const sided  = isSingleSided(pos);
+
+  // Hero metrics \u2014 account-level HF
   const heroHf = $("hero-hf");
-  heroHf.textContent = Number.isFinite(hf) ? fmt(hf, 3) : "\u221E";
-  heroHf.className = `metric-hero-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
+  heroHf.textContent = Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E";
+  heroHf.className = `metric-hero-value ${poolHF > 1.1 ? "hf-ok" : poolHF > 1.03 ? "hf-warn" : "hf-bad"}`;
   $("hero-leverage").textContent = `${fmt(pos.leverage, 2)}\u00D7`;
 
-  // Per-asset health factor with icon (#22)
+  // Per-asset (loop) health factor with icon (#22). For single-sided positions the
+  // per-asset HF is misleading (0 or \u221E) \u2014 show a neutral cross-collat tag. (#294)
   const hfEl = $("pos-hf");
-  const hfIcon = hf > 1.1 ? "\u2713" : hf > 1.03 ? "\u26A0" : "\u2717";
-  const hfDec = expertMode ? 5 : 3;
-  hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
-  hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
-  // Text zone word so risk isn't colour/icon-only (#9)
-  hfEl.setAttribute("aria-label", `Asset health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZoneWord(hf)}`);
-  const barPct = Math.min(100, Math.max(0, (hf - 1) / 0.3 * 100));
+  if (sided) {
+    hfEl.textContent = t("pos.crossCollat");
+    hfEl.className   = "metric-value";
+    const crossTip = "This asset is part of a cross-collateralized account; liquidation is based on your Account Health.";
+    hfEl.setAttribute("aria-label", crossTip);
+    hfEl.setAttribute("title", crossTip);
+  } else {
+    const hfIcon = hf > 1.1 ? "\u2713" : hf > 1.03 ? "\u26A0" : "\u2717";
+    const hfDec = expertMode ? 5 : 3;
+    hfEl.textContent = `${hfIcon} ${Number.isFinite(hf) ? fmt(hf, hfDec) : "\u221E"}`;
+    hfEl.className   = `metric-value ${hf > 1.1 ? "hf-ok" : hf > 1.03 ? "hf-warn" : "hf-bad"}`;
+    // Text zone word so risk isn't colour/icon-only (#9)
+    hfEl.setAttribute("aria-label", `Loop health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZoneWord(hf)}`);
+    hfEl.removeAttribute("title");
+  }
+
+  // HF bar \u2014 driven off the account-level (pool-wide) HF (#294)
+  const barPct = Math.min(100, Math.max(0, (poolHF - 1) / 0.3 * 100));
   const bar = $("hf-bar");
   bar.style.width      = `${barPct}%`;
-  bar.style.background = hf > 1.1 ? "var(--success)" : hf > 1.03 ? "var(--warning)" : "var(--danger)";
+  bar.style.background = poolHF > 1.1 ? "var(--success)" : poolHF > 1.03 ? "var(--warning)" : "var(--danger)";
 
   // ARIA on HF bar (#8) — role="meter" with live valuetext incl. zone word
-  const hfZone = hfZoneWord(hf);
+  const hfZone = hfZoneWord(poolHF);
   const barWrap = $("hf-bar").parentElement!;
   barWrap.setAttribute("aria-valuenow", String(Math.round(barPct)));
   barWrap.setAttribute(
     "aria-valuetext",
-    `Health factor ${Number.isFinite(hf) ? fmt(hf, 3) : "infinity"}, ${hfZone}`,
+    `Account health factor ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "infinity"}, ${hfZone}`,
   );
 
   // HF Gauge (#7)
   const gaugeEl = document.querySelector(".hf-gauge-container") as HTMLElement;
-  if (gaugeEl) gaugeEl.innerHTML = renderHFGauge(hf);
+  if (gaugeEl) gaugeEl.innerHTML = renderHFGauge(poolHF);
 
-  // HF warning banner (#2) — only show below 1.01
+  // HF warning banner (#2) — keyed off the account-level HF, only below 1.01 (#294)
   const warnEl = $("hf-pos-warning");
-  if (Number.isFinite(hf) && hf < 1.01) {
-    const isDanger = hf < 1.003;
+  if (Number.isFinite(poolHF) && poolHF < 1.01) {
+    const isDanger = poolHF < 1.003;
     warnEl.className = `hf-pos-warning ${isDanger ? "hf-danger-level" : "hf-warn-level"}`;
     warnEl.innerHTML = `
-      <span>${isDanger ? "\u2717" : "\u26A0"} Health Factor is ${fmt(hf, 3)} \u2014 ${isDanger ? "liquidation imminent!" : "approaching liquidation"}</span>
+      <span>${isDanger ? "\u2717" : "\u26A0"} Health Factor is ${fmt(poolHF, 3)} \u2014 ${isDanger ? "liquidation imminent!" : "approaching liquidation"}</span>
       <div class="hf-warn-actions">
         <button class="btn btn-sm btn-secondary" onclick="document.getElementById('resupply-btn').click()">Resupply</button>
       </div>`;
@@ -1480,8 +1525,16 @@ function renderPosition() {
     warnEl.classList.add("hidden");
   }
 
+  // Cross-asset explainer note (#294)
+  const crossNote = $("cross-asset-note");
+  if (isCrossAssetAccount()) {
+    crossNote.textContent = t("pos.crossExplainer");
+    crossNote.classList.remove("hidden");
+  } else {
+    crossNote.classList.add("hidden");
+  }
+
   // Pool-wide health factor with icon (#22)
-  const poolHF   = computePoolHF();
   const poolHFEl = $("pos-pool-hf");
   const poolIcon = poolHF > 1.1 ? "\u2713" : poolHF > 1.03 ? "\u26A0" : "\u2717";
   poolHFEl.textContent = `${poolIcon} ${Number.isFinite(poolHF) ? fmt(poolHF, 3) : "\u221E"}`;
@@ -1531,14 +1584,14 @@ function renderPosition() {
   // Days until liquidation with ring (#18)
   const liqDaysEl  = $("pos-liq-days");
   const liqNoteEl  = $("pos-liq-note");
-  if (rs && pos.leverage > 0 && Number.isFinite(pos.hf) && pos.hf > 1) {
+  if (rs && pos.leverage > 0 && Number.isFinite(poolHF) && poolHF > 1) {
     const spreadPct = rs.interestBorrowApr - rs.interestSupplyApr;
     if (spreadPct <= 0) {
       liqDaysEl.textContent = t("dashboard.liqNever");
       liqDaysEl.className   = "metric-value hf-ok";
       liqNoteEl.textContent = "";
     } else {
-      const daysLeft = Math.log(pos.hf) / (spreadPct / 100) * 365;
+      const daysLeft = Math.log(poolHF) / (spreadPct / 100) * 365;
       if (daysLeft <= 365) {
         liqDaysEl.innerHTML = `<span class="liq-countdown-wrap">${renderLiqCountdownRing(daysLeft)} <span>${t("dashboard.daysApprox", { n: Math.round(daysLeft) })}</span></span>`;
       } else {
