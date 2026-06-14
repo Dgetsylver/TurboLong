@@ -1212,6 +1212,7 @@ export function tradeScreen(): HTMLElement {
     try {
       trustlineResult = await getMissingTrustlines(ts.pool, addr, liveAsset.id);
     } catch (e) {
+      console.error("[Turbolong] openPosition trustline check failed", { pool: ts.pool, asset: liveAsset }, e);
       toast(`Trustline check failed: ${((e as Error)?.message ?? String(e)).slice(0, 150)}`, "error");
       return;
     }
@@ -1562,6 +1563,7 @@ export function tradeScreen(): HTMLElement {
 
   /** Friendly message for Blend error codes (mirrors old-main mapping). */
   function txErr(e: unknown): string {
+    console.error("[Turbolong] transaction error", e);
     const msg = (e as Error)?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) return "Health factor too low — reduce leverage or deposit more.";
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) return "Pool utilization limit reached — not enough liquidity.";
