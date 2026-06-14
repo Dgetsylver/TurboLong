@@ -1,0 +1,221 @@
+/* ============================================================================
+   Turbolong — Webfonts
+   Inter (UI) + JetBrains Mono (numerics), served from Google Fonts.
+   NOTE: substituted from the live app's Google Fonts CDN links — the repo did
+   not ship local font binaries. Swap these @import lines for self-hosted
+   woff2 + @font-face if you need offline / pinned versions.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* ============================================================================
+   Turbolong — Color tokens
+   Dark-first DeFi palette. Neon-green primary, signal red/amber for risk,
+   violet for the BLND reward token. Light theme provided as an override.
+   ============================================================================ */
+
+:root,
+[data-theme="dark"] {
+  /* — Brand scalars (theme-independent) — */
+  --tl-danger:        #FF4D6A;   /* liquidation / loss / negative */
+  --tl-success:       #2DE8A3;   /* healthy / gain / positive     */
+  --tl-warning:       #FFB547;   /* caution / frozen / testnet    */
+  --tl-blnd:          #A78BFA;   /* BLND reward token (violet)    */
+
+  /* — Surfaces — */
+  --tl-bg:            #0B0E14;   /* app canvas            */
+  --tl-surface:       #141820;   /* cards / panels        */
+  --tl-surface-2:     #1A1F2B;   /* raised / dropdowns    */
+  --tl-surface-3:     #232A38;   /* hover-raised          */
+  --tl-input-bg:      #111621;   /* inputs / metric wells */
+
+  /* — Borders — */
+  --tl-border:        #1E2536;
+  --tl-border-hover:  #2A3348;
+
+  /* — Primary (neon mint) — */
+  --tl-primary:       #2DE8A3;
+  --tl-primary-hover: #5EEDB8;
+  --tl-primary-deep:  #20D99A;   /* gradient stop 2 */
+  --tl-primary-glow:  rgba(45,232,163,.15);
+
+  /* — Text — */
+  --tl-text:          #E8ECF4;   /* primary copy        */
+  --tl-text-2:        #8892A8;   /* secondary / labels  */
+  --tl-text-3:        #4A5568;   /* tertiary / hints    */
+
+  /* — Semantic tints (translucent fills + borders) — */
+  --tl-danger-bg:      rgba(255,77,106,.08);
+  --tl-danger-bg-h:    rgba(255,77,106,.15);
+  --tl-danger-border:  rgba(255,77,106,.20);
+  --tl-warning-bg:     rgba(255,181,71,.05);
+  --tl-warning-border: rgba(255,181,71,.20);
+  --tl-success-border: rgba(45,232,163,.40);
+  --tl-tab-hover-bg:   rgba(45,232,163,.06);
+  --tl-tab-active-bg:  rgba(45,232,163,.10);
+
+  /* — Effects — */
+  --tl-shadow:        0 8px 40px rgba(0,0,0,.5);
+  --tl-header-bg:     rgba(11,14,20,.95);
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --tl-danger:        #dc2626;
+  --tl-success:       #16a34a;
+  --tl-warning:       #d97706;
+  --tl-blnd:          #7c3aed;
+
+  --tl-bg:            #f4f5f9;
+  --tl-surface:       #ffffff;
+  --tl-surface-2:     #f0f1f5;
+  --tl-surface-3:     #e5e7ec;
+  --tl-input-bg:      #f4f5f9;
+
+  --tl-border:        #e0e3ea;
+  --tl-border-hover:  #c8cdd6;
+
+  --tl-primary:       #1aad7a;
+  --tl-primary-hover: #169966;
+  --tl-primary-deep:  #15a070;
+  --tl-primary-glow:  rgba(26,173,122,.10);
+
+  --tl-text:          #111827;
+  --tl-text-2:        #6b7280;
+  --tl-text-3:        #9ca3af;
+
+  --tl-danger-bg:      rgba(220,38,38,.06);
+  --tl-danger-bg-h:    rgba(220,38,38,.10);
+  --tl-danger-border:  rgba(220,38,38,.15);
+  --tl-warning-bg:     rgba(217,119,6,.04);
+  --tl-warning-border: rgba(217,119,6,.15);
+  --tl-success-border: rgba(22,163,74,.30);
+  --tl-tab-hover-bg:   rgba(26,173,122,.04);
+  --tl-tab-active-bg:  rgba(26,173,122,.08);
+
+  --tl-shadow:        0 8px 40px rgba(0,0,0,.06);
+  --tl-header-bg:     rgba(255,255,255,.95);
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   Turbolong — Typography tokens
+   Two families: Inter for UI text, JetBrains Mono for every number.
+   The mono/UI split is a hard brand rule — all financial figures are mono so
+   digits align in tables and update without reflow jitter.
+   ============================================================================ */
+
+:root {
+  --tl-font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --tl-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* Weights */
+  --tl-fw-regular:  400;  /* @kind font */
+  --tl-fw-medium:   500;  /* @kind font */
+  --tl-fw-semibold: 600;  /* @kind font */
+  --tl-fw-bold:     700;  /* @kind font */
+  --tl-fw-black:    800;  /* @kind font */
+
+  /* Type scale (px) — compact fintech rhythm */
+  --tl-text-xs:   11px;   /* uppercase labels, hints      */
+  --tl-text-sm:   12px;   /* meta, captions               */
+  --tl-text-base: 13px;   /* default body / controls      */
+  --tl-text-md:   14px;   /* card body                    */
+  --tl-text-lg:   15px;   /* card titles, inputs          */
+  --tl-text-xl:   17px;   /* stat values, logo            */
+  --tl-text-2xl:  24px;   /* hero metrics                 */
+  --tl-text-3xl:  42px;   /* landing headline             */
+
+  /* Line heights */
+  --tl-leading-tight: 1.15;
+  --tl-leading-snug:  1.4;
+  --tl-leading-body:  1.6;
+  --tl-leading-loose: 1.7;
+
+  /* Letter spacing */
+  --tl-tracking-tight: -0.5px;   /* display headings */
+  --tl-tracking-label:  0.5px;   /* uppercase micro-labels */
+}
+
+/* ============================================================================
+   Turbolong — Spacing, radius, elevation & motion tokens
+   ============================================================================ */
+
+:root {
+  /* Spacing scale (px) — the app lives on a 4px grid */
+  --tl-space-1:  4px;
+  --tl-space-2:  6px;
+  --tl-space-3:  8px;
+  --tl-space-4:  10px;
+  --tl-space-5:  12px;
+  --tl-space-6:  14px;
+  --tl-space-7:  16px;
+  --tl-space-8:  20px;
+  --tl-space-9:  24px;
+  --tl-space-10: 32px;
+
+  /* Radii */
+  --tl-radius-xs:  6px;    /* chips, small buttons, wells */
+  --tl-radius-sm:  8px;    /* buttons, tabs               */
+  --tl-radius:     12px;   /* cards, inputs, modals       */
+  --tl-radius-pill: 99px;  /* asset tabs, wallet pill     */
+
+  /* Elevation */
+  --tl-shadow-pop:   0 8px 40px rgba(0,0,0,.5);
+  --tl-glow-primary: 0 2px 12px rgba(45,232,163,.2);
+  --tl-glow-primary-h: 0 4px 20px rgba(45,232,163,.35);
+
+  /* Motion — quick, restrained. No bounce; springless ease. */
+  --tl-ease:        cubic-bezier(.4, 0, .2, 1);  /* @kind other */
+  --tl-dur-fast:    .15s;  /* @kind other */
+  --tl-dur:         .2s;   /* @kind other */
+  --tl-dur-slow:    .3s;   /* @kind other */
+
+  /* Layout */
+  --tl-nav-height:    56px;
+  --tl-content-max:   1200px;
+}
+
+/* ============================================================================
+   Turbolong — Base layer
+   Body canvas + the signature twin radial-glow backdrop, plus a couple of
+   primitive helper classes used across specimen cards.
+   ============================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--tl-bg);
+  color: var(--tl-text);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-md);
+  line-height: var(--tl-leading-body);
+  -webkit-font-smoothing: antialiased;
+  /* Signature backdrop: faint mint glow top-center, violet glow bottom-right */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45,232,163,.04), transparent),
+    radial-gradient(circle at 90% 80%, rgba(167,139,250,.02), transparent);
+  background-attachment: fixed;
+}
+
+/* Every financial figure is mono. */
+.tl-mono { font-family: var(--tl-font-mono); font-feature-settings: 'tnum' 1; }
+
+/* Uppercase micro-label — the workhorse caption style. */
+.tl-label {
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  color: var(--tl-text-3);
+}
+
+/* Bare card surface. */
+.tl-card {
+  background: var(--tl-surface);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius);
+}
