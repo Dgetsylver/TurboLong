@@ -5,6 +5,7 @@
  */
 import { el, Card, Badge } from "../ui";
 import type { View } from "./state";
+import { dashboardScreen } from "../views/dashboard.screen";
 
 const TITLES: Record<View, string> = {
   dashboard: "Dashboard",
@@ -28,6 +29,8 @@ function placeholder(view: View): HTMLElement {
 /** Build the screen for a view. Async so real screens can fetch on mount. */
 export async function renderScreen(view: View): Promise<HTMLElement> {
   switch (view) {
+    case "dashboard":
+      return dashboardScreen();
     default:
       return placeholder(view);
   }
