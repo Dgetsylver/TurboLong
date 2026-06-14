@@ -21,7 +21,7 @@ import { estimateSwap } from "@stellar-broker/client";
 import { aquariusBestRate } from "../aquarius";
 import { fetchAssetBalance } from "../blend";
 import { getState } from "../app/state";
-import { connect, signAndSubmitClassic } from "../app/wallet";
+import { signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { t } from "../i18n";
 
@@ -80,11 +80,10 @@ interface SwapUiState {
 export function swapScreen(): HTMLElement {
   const root = el("div", { class: "tl-swap" });
 
-  // Disconnected → connect-wallet empty state instead of actions.
-  if (!getState().userAddress) {
-    root.replaceChildren(renderConnect());
-    return root;
-  }
+  // The quote form renders and works whether or not a wallet is connected —
+  // estimateSwap / aquariusBestRate need no address. Only the sell-side balance
+  // hint and the (already quote-only) execute action gate on connect. Mirrors
+  // trade.ts: public data shows; wallet-specific bits gate.
 
   const list = getSwapAssetList();
   const defaultSell = "XLM";
@@ -100,25 +99,6 @@ export function swapScreen(): HTMLElement {
 
   root.replaceChildren(renderCard(ui, root));
   return root;
-}
-
-// ── Connect-wallet empty state ────────────────────────────────────────────────
-function renderConnect(): HTMLElement {
-  const btn = Button({
-    variant: "primary",
-    size: "lg",
-    children: [tx("nav.connect", "Connect Wallet")],
-    onClick: () => void connect(),
-  });
-  return el("div", { class: "tl-swap__wrap" }, [
-    el("div", { class: "tl-swap__empty" }, [
-      el("h2", { class: "tl-swap__empty-title" }, [tx("swap.title", "Swap")]),
-      el("p", { class: "tl-swap__empty-sub" }, [
-        "Connect your wallet to get a best-route quote via Stellar Broker.",
-      ]),
-      btn,
-    ]),
-  ]);
 }
 
 // ── Card ──────────────────────────────────────────────────────────────────────
@@ -276,18 +256,24 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   function updateButton() {
     const hasAmount = !!ui.amount && Number.parseFloat(ui.amount) > 0;
     const samePair = ui.sell === ui.buy;
-    if (!getState().userAddress) {
-      setBtn(tx("nav.connect", "Connect Wallet"), true);
-    } else if (samePair) {
+    // Get Quote works disconnected (estimateSwap needs no wallet). Only the
+    // execute action gates on connect, and it's already quote-only for now.
+    if (samePair) {
       setBtn(tx("swap.selectDifferent", "Select a different pair"), true);
     } else if (!hasAmount) {
       setBtn(tx("swap.enterAmount", "Enter an amount"), true);
     } else if (ui.quote && ui.quote.status === "success") {
       // EXECUTE TODO: enable only once the broker trade-XDR build lands.
-      setBtn(
-        SWAP_EXECUTE_ENABLED ? tx("swap.execute", "Swap") : tx("swap.comingSoon", "Execution coming soon"),
-        !SWAP_EXECUTE_ENABLED,
-      );
+      // When disconnected, prompt to connect before executing (execute is still
+      // disabled today regardless, so this is forward-looking).
+      if (!getState().userAddress) {
+        setBtn(tx("nav.connect", "Connect Wallet"), true);
+      } else {
+        setBtn(
+          SWAP_EXECUTE_ENABLED ? tx("swap.execute", "Swap") : tx("swap.comingSoon", "Execution coming soon"),
+          !SWAP_EXECUTE_ENABLED,
+        );
+      }
     } else {
       setBtn(tx("swap.getQuote", "Get Quote"), false);
     }

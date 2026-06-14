@@ -337,7 +337,7 @@ function yourPositionCard(
   on(wdBtn, "click", () => void runWithdraw());
 
   const walletHint = el("p", { class: "vault-wallet-hint" }, [
-    addr ? `Wallet: ${vs.userWalletBalance.toFixed(2)} ${sym}` : "Connect a wallet to deposit.",
+    addr ? `Wallet: ${vs.userWalletBalance.toFixed(2)} ${sym}` : "Connect your wallet to deposit.",
   ]);
 
   async function runDeposit() {
@@ -487,7 +487,6 @@ function selectorTile(
 /** Build the Vault view. Renders immediately; fills with live data async. */
 export function vaultScreen(): HTMLElement {
   const root = el("div", { class: "vault" });
-  const addr = getState().userAddress;
 
   // Intro header (always shown).
   const intro = el("div", { class: "vault__intro" }, [
@@ -507,21 +506,10 @@ export function vaultScreen(): HTMLElement {
     return root;
   }
 
-  // Disconnected → connect empty state (no actions).
-  if (!addr) {
-    root.append(
-      Card({
-        class: "vault-connect",
-        children: el("div", { class: "vault-connect__inner" }, [
-          el("p", { class: "vault-connect__msg" }, ["Connect your wallet to deposit into a leveraged vault."]),
-          el("p", { class: "vault-connect__sub" }, [
-            "Vaults run an automated, keeper-protected leverage loop. You receive a transferable SEP-41 receipt token.",
-          ]),
-        ]),
-      }),
-    );
-    return root;
-  }
+  // Public data (vault selector tiles, header metrics, Strategy Position, and the
+  // receipt-token / "Trade on Aquarius" row) renders whether or not a wallet is
+  // connected — fetchVaultStats needs no address. Only the "Your Position"
+  // sub-section gates on connect (see yourPositionCard). Mirrors trade.ts.
 
   // Per-screen mutable state. Prefer a deployed vault as the default selection.
   const vs: VaultViewState = {
@@ -590,6 +578,8 @@ export function vaultScreen(): HTMLElement {
   }
 
   async function loadDetail() {
+    // Read the connection state fresh each load (mirrors trade.ts loadAll).
+    const addr = getState().userAddress;
     const vault = selectedVault();
     renderDetail(!cache.has(vaultKey(vault)));
 
@@ -599,7 +589,8 @@ export function vaultScreen(): HTMLElement {
       return;
     }
 
-    // Pool reserves for the leveraged-APY calc (best-effort).
+    // Pool reserves for the leveraged-APY calc (best-effort). Uses the null
+    // account when disconnected so public strategy stats still load.
     let poolReserves: ReserveStats[] | undefined;
     try {
       const pool = getKnownPools().find((p) => p.id === vault.poolId);
