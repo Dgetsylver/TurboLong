@@ -25,9 +25,11 @@
 #swap-view .swap-input-row { display: flex; gap: 8px; }
 #swap-view .swap-input-row .input { flex: 1; }
 #swap-view .swap-asset-select {
-  min-width: 96px; background: var(--tl-input-bg); border: 1px solid var(--tl-border);
+  /* background-color (not the `background` shorthand) so the base caret SVG
+     background-image survives; keep right padding for the arrow. */
+  min-width: 96px; background-color: var(--tl-input-bg); border: 1px solid var(--tl-border);
   border-radius: var(--tl-radius-sm); color: var(--tl-text); font-family: var(--tl-font-mono);
-  font-weight: 600; padding: 0 10px; cursor: pointer;
+  font-weight: 600; padding: 0 28px 0 10px; cursor: pointer;
 }
 #swap-view .balance-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--tl-text-3); }
 #swap-view .balance-hint span { font-family: var(--tl-font-mono); color: var(--tl-text-2); }

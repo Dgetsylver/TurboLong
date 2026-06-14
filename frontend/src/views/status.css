@@ -32,8 +32,9 @@
 .status-overall-bad { color: var(--tl-warning); background: var(--tl-warning-bg); border-color: var(--tl-warning-border); }
 .status-overall-checking { color: var(--tl-text-3); background: var(--tl-input-bg); border-color: var(--tl-border); }
 
-/* Service list */
-.status-list { display: flex; flex-direction: column; }
+/* Service list — neutralize the base style.css box so rows divide via the
+   .status-row border-bottom only (flat design). */
+.status-list { display: flex; flex-direction: column; border: none; background: transparent; border-radius: 0; overflow: visible; }
 .status-row {
   display: flex; align-items: center; gap: 10px; padding: 12px 0;
   border-bottom: 1px solid var(--tl-border);
