@@ -135,6 +135,7 @@ const en: Dict = {
   "status.svc.aquarius": "Aquarius AMM API",
   "status.allGood": "All systems operational",
   "status.someIssues": "Some services are degraded",
+  "status.autoRefresh": "auto-refreshes every 60s",
   // remove funds (proportional partial close)
   "action.removeFunds": "Remove Funds",
   "removeFunds.disclaimer": "Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.",
@@ -464,6 +465,7 @@ const es: Dict = {
   "status.svc.aquarius": "API del AMM Aquarius",
   "status.allGood": "Todos los sistemas operativos",
   "status.someIssues": "Algunos servicios están degradados",
+  "status.autoRefresh": "se actualiza cada 60s",
   "action.removeFunds": "Retirar fondos",
   "removeFunds.disclaimer": "Retira parte de tu capital y deshace la posición de forma proporcional — tu apalancamiento y factor de salud no cambian.",
   "removeFunds.inPosition": "En posición",
@@ -792,6 +794,7 @@ const pt: Dict = {
   "status.svc.aquarius": "API do AMM Aquarius",
   "status.allGood": "Todos os sistemas operacionais",
   "status.someIssues": "Alguns serviços estão degradados",
+  "status.autoRefresh": "atualiza a cada 60s",
   "action.removeFunds": "Remover fundos",
   "removeFunds.disclaimer": "Saca parte do seu principal e desfaz a posição proporcionalmente — sua alavancagem e fator de saúde permanecem iguais.",
   "removeFunds.inPosition": "Na posição",
