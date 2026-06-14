@@ -105,6 +105,7 @@ import {
   type VaultHolding,
 } from "./views/dashboard.ts";
 import "./views/trade.css";
+import "./views/vault.css";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 

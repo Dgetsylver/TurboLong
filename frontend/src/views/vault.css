@@ -1,0 +1,161 @@
+/* ============================================================================
+   Turbolong — Vault screen restyle (in-place)
+   Aligns the existing #vault-view markup to the design-system language
+   (dashboard.css / trade.css). Pure presentation overlay scoped under
+   #vault-view — NO element ids or load-bearing classes (data-vault-action,
+   hidden, hf-*, …) are changed. Uses ONLY --tl-* tokens. Imported after
+   style.css so #vault-view .x specificity wins over the P3 bare-class rules.
+   ============================================================================ */
+
+#vault-view { font-family: var(--tl-font-sans); color: var(--tl-text); }
+#vault-view .mono,
+#vault-view .stat-value,
+#vault-view .metric-value { font-feature-settings: 'tnum' 1; }
+
+/* ── Card shell ─────────────────────────────────────────────────────────── */
+#vault-view .vault-card {
+  background: var(--tl-surface); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius); padding: 20px;
+  transition: border-color .3s var(--tl-ease);
+}
+#vault-view .vault-card:hover { border-color: var(--tl-border-hover); }
+#vault-view .card-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
+  padding-bottom: 0; border-bottom: none;
+}
+#vault-view .card-header h2 { font-size: 16px; font-weight: 700; letter-spacing: -.2px; margin: 0; }
+#vault-view .vault-badge {
+  display: inline-flex; align-items: center; padding: 2px 9px; border-radius: var(--tl-radius-pill);
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--tl-primary); background: var(--tl-tab-active-bg); border: 1px solid var(--tl-success-border);
+}
+
+/* ── Two-column grid ────────────────────────────────────────────────────── */
+#vault-view .vault-grid {
+  display: grid; grid-template-columns: 1fr minmax(300px, 360px); gap: 16px; align-items: start;
+}
+
+/* ── Header metrics (TVL / Share price / Net APY) as hero tiles ─────────── */
+#vault-view .vault-stats .stats-row {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;
+}
+#vault-view .vault-stats .stat-card {
+  background: var(--tl-input-bg); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-xs); padding: 12px 14px;
+}
+#vault-view .vault-stats .stats-row:first-child .stat-card { text-align: center; padding: 14px; }
+#vault-view .stat-label {
+  display: block; font-size: 10px; color: var(--tl-text-3); text-transform: uppercase;
+  letter-spacing: .4px; font-weight: 600; margin-bottom: 5px;
+}
+#vault-view .stat-value { font-family: var(--tl-font-mono); font-weight: 700; font-size: 15px; color: var(--tl-text); }
+#vault-view .vault-stats .stats-row:first-child .stat-value { font-size: 22px; line-height: 1.1; }
+
+/* ── Strategy / user position blocks ────────────────────────────────────── */
+#vault-view .vault-strategy-pos,
+#vault-view .vault-user-pos { margin-top: 16px; }
+#vault-view .vault-strategy-pos > h3,
+#vault-view .vault-user-pos > h3 {
+  font-size: 11px; color: var(--tl-text-3); text-transform: uppercase; letter-spacing: .5px;
+  font-weight: 600; margin: 0 0 10px;
+}
+#vault-view .position-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+#vault-view .vault-user-pos .position-grid { grid-template-columns: repeat(2, 1fr); }
+#vault-view .position-metric {
+  background: var(--tl-input-bg); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-xs); padding: 10px 12px;
+}
+#vault-view .position-metric .metric-label {
+  display: block; font-size: 10px; color: var(--tl-text-3); text-transform: uppercase;
+  letter-spacing: .4px; font-weight: 600; margin-bottom: 4px;
+}
+#vault-view .position-metric .metric-value { font-family: var(--tl-font-mono); font-weight: 700; font-size: 14px; color: var(--tl-text); }
+
+/* Rebalance row + keeper note */
+#vault-view .vault-rebalance-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px;
+}
+#vault-view .vault-rebalance-hint { font-size: 12px; color: var(--tl-text-2); }
+#vault-view .vault-rebalance-row .fee-hint { font-size: 11px; color: var(--tl-text-3); margin-left: auto; }
+#vault-view .keeper-note {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 12px;
+  font-size: 11px; line-height: 1.5; color: var(--tl-text-2);
+  background: rgba(45,232,163,.05); border: 1px solid var(--tl-success-border);
+  border-radius: var(--tl-radius-xs); padding: 10px 12px;
+}
+#vault-view .keeper-note-icon { flex-shrink: 0; }
+
+/* ── HF gradient bar ────────────────────────────────────────────────────── */
+#vault-view .vault-hf-bar-wrap { margin-top: 14px; }
+#vault-view .vault-hf-bar-wrap .hf-bar {
+  position: relative; height: 6px; border-radius: 3px; background: rgba(255,255,255,.06); overflow: visible;
+}
+#vault-view .vault-hf-bar-wrap .hf-bar::before {
+  content: ''; position: absolute; inset: 0; border-radius: 3px; opacity: .22;
+  background: linear-gradient(90deg, var(--tl-danger), var(--tl-warning) 45%, var(--tl-success));
+}
+#vault-view .hf-bar-fill { position: relative; height: 100%; border-radius: 3px; }
+#vault-view .hf-bar-marker {
+  position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%;
+  transform: translate(-50%, -50%); border: 2px solid var(--tl-surface); background: var(--tl-success);
+}
+#vault-view .hf-bar-labels {
+  display: flex; justify-content: space-between; margin-top: 8px;
+  font-size: 10px; color: var(--tl-text-3); font-family: var(--tl-font-mono);
+}
+
+/* ── Right side: deposit / withdraw card ────────────────────────────────── */
+#vault-view .vault-actions {
+  background: var(--tl-input-bg); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius); padding: 16px;
+}
+#vault-view .vault-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+#vault-view .vault-tab {
+  flex: 1; padding: 8px; border-radius: var(--tl-radius-sm); border: 1px solid var(--tl-border);
+  background: var(--tl-surface); color: var(--tl-text-2); font-weight: 600; font-size: 12px; cursor: pointer;
+  transition: all .15s var(--tl-ease);
+}
+#vault-view .vault-tab:hover { color: var(--tl-text); border-color: var(--tl-border-hover); }
+#vault-view .vault-tab.active {
+  color: var(--tl-primary); background: var(--tl-tab-active-bg); border-color: var(--tl-success-border);
+}
+#vault-view .vault-actions .form-group { margin-bottom: 12px; }
+#vault-view .vault-actions .form-group > label {
+  display: block; font-size: 11px; color: var(--tl-text-3); text-transform: uppercase;
+  letter-spacing: .5px; font-weight: 600; margin-bottom: 6px;
+}
+#vault-view .balance-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--tl-text-3); }
+#vault-view .balance-hint span { font-family: var(--tl-font-mono); color: var(--tl-text-2); }
+#vault-view .vault-actions .btn-lg { width: 100%; }
+
+/* ── Contract footer ────────────────────────────────────────────────────── */
+#vault-view .vault-contract-footer {
+  display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px;
+  border-top: 1px solid var(--tl-border); font-size: 11px; color: var(--tl-text-3);
+}
+#vault-view .vault-contract-addr { color: var(--tl-text-2); font-family: var(--tl-font-mono); }
+#vault-view .vault-contract-addr:hover { color: var(--tl-primary); }
+
+/* ── Aquarius receipt-token CTA ─────────────────────────────────────────── */
+#vault-view .aqua-trade-card {
+  margin-top: 16px; padding: 14px 16px;
+  background: rgba(167,139,250,.06); border: 1px solid rgba(167,139,250,.22);
+  border-radius: var(--tl-radius);
+}
+#vault-view .aqua-trade-head { display: flex; gap: 10px; align-items: flex-start; }
+#vault-view .aqua-trade-icon { font-size: 18px; color: var(--tl-blnd); flex-shrink: 0; }
+#vault-view .aqua-trade-title { font-size: 13px; font-weight: 700; margin: 0 0 4px; }
+#vault-view .aqua-trade-sub { font-size: 11px; color: var(--tl-text-3); line-height: 1.5; margin: 0; }
+#vault-view .aqua-trade-body { margin-top: 10px; }
+
+/* ── Disclaimer ─────────────────────────────────────────────────────────── */
+#vault-view .disclaimer { font-size: 11px; color: var(--tl-text-3); line-height: 1.5; margin-top: 16px; }
+
+/* ── Mobile ─────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  #vault-view .vault-grid { grid-template-columns: 1fr; }
+  #vault-view .vault-stats .stats-row { grid-template-columns: repeat(2, 1fr); }
+  #vault-view .position-grid { grid-template-columns: repeat(2, 1fr); }
+}
