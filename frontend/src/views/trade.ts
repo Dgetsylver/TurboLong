@@ -1127,15 +1127,10 @@ export function tradeScreen(): HTMLElement {
       compoundBtn,
     ]);
 
-    // Actions: Add / Close. (Remove Funds lives in the Adjust card's sub-tab.)
-    const addBtn = Button({ variant: "secondary", children: "Add Funds" });
-    on(addBtn, "click", () => {
-      ts.mode = "add-funds";
-      renderColumns();
-    });
+    // Action: Close only. (Add Funds / Remove Funds live in the Adjust card's sub-tabs.)
     const closeBtn = Button({ variant: "danger", children: "Close" });
     on(closeBtn, "click", () => askClose(pos));
-    const actions = el("div", { class: "trade-actions" }, [addBtn, closeBtn]);
+    const actions = el("div", { class: "trade-actions" }, [closeBtn]);
 
     return el("div", {}, [heroes, hfWell, detailRows, timeline, blndRow, actions]);
   }
