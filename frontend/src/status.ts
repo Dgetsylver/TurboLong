@@ -5,6 +5,7 @@
 // working even if the app fails to boot. Translated via the i18n runtime.
 
 import "./style.css";
+import "./views/status.css";
 import { initI18n, applyTranslations, t, cycleLang } from "./i18n.ts";
 
 const RPC_URL =

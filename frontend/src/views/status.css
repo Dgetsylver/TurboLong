@@ -1,0 +1,72 @@
+/* ============================================================================
+   Turbolong — Status page restyle (in-place)
+   Standalone status.html (own entry status.ts). Presentation overlay scoped
+   under .status-page; no ids/load-bearing classes (status-dot-*, status-badge-*,
+   status-overall-*, …) changed. --tl-* only. Imported after style.css.
+   ============================================================================ */
+
+.status-page {
+  min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 14px; padding: 32px 16px;
+  background: var(--tl-bg); font-family: var(--tl-font-sans); color: var(--tl-text);
+}
+.status-card {
+  width: 100%; max-width: 520px; background: var(--tl-surface);
+  border: 1px solid var(--tl-border); border-radius: var(--tl-radius); padding: 24px;
+}
+
+/* Header */
+.status-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.status-logo { width: 36px; height: 36px; }
+.status-title { font-size: 20px; font-weight: 800; letter-spacing: -.3px; margin: 0 0 4px; }
+.status-sub { font-size: 13px; color: var(--tl-text-2); margin: 0; }
+
+/* Overall banner */
+.status-overall {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px; border-radius: var(--tl-radius-sm); font-weight: 700; font-size: 14px;
+  margin-bottom: 18px; border: 1px solid transparent;
+}
+.status-overall::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.status-overall-good { color: var(--tl-success); background: rgba(45,232,163,.08); border-color: var(--tl-success-border); }
+.status-overall-bad { color: var(--tl-warning); background: var(--tl-warning-bg); border-color: var(--tl-warning-border); }
+.status-overall-checking { color: var(--tl-text-3); background: var(--tl-input-bg); border-color: var(--tl-border); }
+
+/* Service list */
+.status-list { display: flex; flex-direction: column; }
+.status-row {
+  display: flex; align-items: center; gap: 10px; padding: 12px 0;
+  border-bottom: 1px solid var(--tl-border);
+}
+.status-row:last-child { border-bottom: none; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.status-dot-operational { background: var(--tl-success); box-shadow: 0 0 6px var(--tl-success); }
+.status-dot-degraded { background: var(--tl-warning); box-shadow: 0 0 6px var(--tl-warning); }
+.status-dot-down { background: var(--tl-danger); box-shadow: 0 0 6px var(--tl-danger); }
+.status-dot-checking { background: var(--tl-text-3); animation: status-pulse 1.2s ease-in-out infinite; }
+@keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.status-name { flex: 1; font-size: 14px; color: var(--tl-text); }
+.status-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  padding: 3px 9px; border-radius: var(--tl-radius-pill); border: 1px solid transparent;
+}
+.status-badge-operational { color: var(--tl-success); background: rgba(45,232,163,.08); border-color: var(--tl-success-border); }
+.status-badge-degraded { color: var(--tl-warning); background: var(--tl-warning-bg); border-color: var(--tl-warning-border); }
+.status-badge-down { color: var(--tl-danger); background: var(--tl-danger-bg); border-color: var(--tl-danger-border); }
+.status-badge-checking { color: var(--tl-text-3); background: var(--tl-input-bg); border-color: var(--tl-border); }
+
+/* Footer */
+.status-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--tl-border);
+}
+.status-checked { font-size: 11px; color: var(--tl-text-3); font-family: var(--tl-font-mono); }
+.status-footer-actions { display: inline-flex; gap: 6px; }
+.status-btn {
+  padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: var(--tl-radius-sm);
+  border: 1px solid var(--tl-border); background: transparent; color: var(--tl-text-2); cursor: pointer;
+  transition: all .15s var(--tl-ease);
+}
+.status-btn:hover { color: var(--tl-text); border-color: var(--tl-border-hover); }
+.status-back { font-size: 12px; color: var(--tl-text-3); text-decoration: none; }
+.status-back:hover { color: var(--tl-primary); }
