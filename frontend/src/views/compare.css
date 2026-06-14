@@ -1,0 +1,75 @@
+/* ============================================================================
+   Turbolong — Compare Pools screen restyle (in-place)
+   Presentation overlay scoped under #compare-view. No ids/load-bearing classes
+   (data-window, data-sort, ct-best-row, ct-medal, …) changed. --tl-* only.
+   ============================================================================ */
+
+#compare-view { font-family: var(--tl-font-sans); color: var(--tl-text); }
+#compare-view .mono, #compare-view .compare-table td { font-feature-settings: 'tnum' 1; }
+
+/* Header */
+#compare-view .compare-header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap; margin-bottom: 16px;
+}
+#compare-view .compare-title { font-size: 20px; font-weight: 800; letter-spacing: -.3px; margin: 0 0 6px; }
+#compare-view .compare-sub { font-size: 13px; color: var(--tl-text-2); margin: 0; max-width: 640px; line-height: 1.5; }
+#compare-view .compare-controls { display: inline-flex; align-items: center; gap: 8px; }
+
+/* History-window toggle */
+#compare-view .compare-window-toggle { display: inline-flex; gap: 4px; }
+#compare-view .cw-btn {
+  padding: 5px 12px; font-size: 12px; font-weight: 600; border-radius: var(--tl-radius-pill);
+  border: 1px solid var(--tl-border); background: transparent; color: var(--tl-text-3); cursor: pointer;
+  transition: all .15s var(--tl-ease);
+}
+#compare-view .cw-btn:hover { color: var(--tl-text); border-color: var(--tl-border-hover); }
+#compare-view .cw-btn.active {
+  color: var(--tl-primary); background: var(--tl-tab-active-bg); border-color: var(--tl-success-border);
+}
+#compare-view .compare-refresh { padding: 6px 10px; }
+#compare-view .compare-scroll-hint { display: none; font-size: 11px; color: var(--tl-text-3); margin: 0 0 6px; }
+
+/* Table card */
+#compare-view .compare-table-wrap {
+  background: var(--tl-surface); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius); overflow-x: auto;
+}
+#compare-view .compare-table { width: 100%; border-collapse: collapse; min-width: 640px; }
+#compare-view .compare-table thead th {
+  text-align: right; font-size: 10px; color: var(--tl-text-3); text-transform: uppercase;
+  letter-spacing: .4px; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid var(--tl-border);
+  white-space: nowrap;
+}
+#compare-view .compare-table th.ct-rank, #compare-view .compare-table th.ct-asset { text-align: left; }
+#compare-view .compare-table th[data-sort] { cursor: pointer; user-select: none; }
+#compare-view .compare-table th[data-sort]:hover { color: var(--tl-text); }
+#compare-view .compare-table th.ct-sorted { color: var(--tl-primary); }
+#compare-view .compare-table td {
+  text-align: right; font-family: var(--tl-font-mono); font-size: 13px; padding: 12px 14px;
+  border-bottom: 1px solid var(--tl-border); color: var(--tl-text); white-space: nowrap;
+}
+#compare-view .compare-table tr:last-child td { border-bottom: none; }
+#compare-view .compare-table td.ct-rank { text-align: left; color: var(--tl-text-3); }
+#compare-view .compare-table td.ct-asset { text-align: left; }
+#compare-view .ct-asset-cell { display: inline-flex; align-items: center; gap: 8px; }
+#compare-view .ct-sym { font-weight: 700; font-family: var(--tl-font-sans); }
+#compare-view .ct-muted { color: var(--tl-text-3); }
+#compare-view .ct-medal { color: var(--tl-warning); }
+
+/* Best row highlight */
+#compare-view .ct-best-row td { background: rgba(45,232,163,.06); }
+#compare-view .ct-best-row td:first-child { box-shadow: inset 2px 0 0 var(--tl-primary); }
+#compare-view .best-rate-badge {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--tl-radius-pill);
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--tl-primary); background: var(--tl-tab-active-bg); border: 1px solid var(--tl-success-border);
+  font-family: var(--tl-font-sans);
+}
+
+#compare-view .compare-loading { text-align: center; color: var(--tl-text-3); padding: 32px 0; font-family: var(--tl-font-sans); }
+#compare-view .compare-foot { font-size: 11px; color: var(--tl-text-3); line-height: 1.5; margin: 12px 0 0; }
+
+@media (max-width: 720px) {
+  #compare-view .compare-scroll-hint { display: block; }
+}

@@ -106,6 +106,8 @@ import {
 } from "./views/dashboard.ts";
 import "./views/trade.css";
 import "./views/vault.css";
+import "./views/compare.css";
+import "./views/swap.css";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
