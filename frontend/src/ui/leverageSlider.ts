@@ -12,6 +12,8 @@ export interface LeverageSliderProps {
   max?: number;
   /** @default 0.1 */
   step?: number;
+  /** Show the expert-only "Maxi-degen" zone. @default false */
+  expert?: boolean;
   id?: string;
   title?: string;
 }
@@ -41,7 +43,10 @@ export function activeZone(v: number): LeverageZone {
  * all shift color through the five risk zones as you drag. Controlled.
  */
 export function LeverageSlider(props: LeverageSliderProps): HTMLDivElement {
-  const { value, onChange, min = 1, max = 12.9, step = 0.1, id, title } = props;
+  const { value, onChange, min = 1, max = 12.9, step = 0.1, expert = false, id, title } = props;
+  // "Maxi-degen" is expert-only — hide it for normal users so they don't read
+  // the missing top zone as a bug that's blocking more leverage.
+  const shownZones = expert ? ZONES : ZONES.filter((z) => z.key !== "maxi");
 
   const input = el("input", {
     type: "range",
@@ -58,7 +63,7 @@ export function LeverageSlider(props: LeverageSliderProps): HTMLDivElement {
   const labels = el(
     "div",
     { class: "tl-lev__zones" },
-    ZONES.map((zone) =>
+    shownZones.map((zone) =>
       el("span", { class: `tl-lev__zone tl-lev__zone--${zone.key}` }, [zone.label]),
     ),
   );

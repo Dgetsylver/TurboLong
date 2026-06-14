@@ -62,7 +62,7 @@ import {
   type PositionEvent,
 } from "../blend";
 import { fetchSnapshotSeries } from "../history";
-import { getState } from "../app/state";
+import { getState, subscribe } from "../app/state";
 import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 
@@ -690,6 +690,7 @@ export function tradeScreen(): HTMLElement {
         min: 1,
         max: maxLev,
         step: 0.1,
+        expert: getState().expert,
         onChange: (v) => {
           lev = v;
           refresh();
@@ -1126,20 +1127,15 @@ export function tradeScreen(): HTMLElement {
       compoundBtn,
     ]);
 
-    // Actions: Add / Remove / Close.
+    // Actions: Add / Close. (Remove Funds lives in the Adjust card's sub-tab.)
     const addBtn = Button({ variant: "secondary", children: "Add Funds" });
     on(addBtn, "click", () => {
       ts.mode = "add-funds";
       renderColumns();
     });
-    const removeBtn = Button({ variant: "ghost", children: "Remove Funds" });
-    on(removeBtn, "click", () => {
-      ts.mode = "remove-funds";
-      renderColumns();
-    });
     const closeBtn = Button({ variant: "danger", children: "Close" });
     on(closeBtn, "click", () => askClose(pos));
-    const actions = el("div", { class: "trade-actions" }, [addBtn, removeBtn, closeBtn]);
+    const actions = el("div", { class: "trade-actions" }, [addBtn, closeBtn]);
 
     return el("div", {}, [heroes, hfWell, detailRows, timeline, blndRow, actions]);
   }
@@ -1212,7 +1208,6 @@ export function tradeScreen(): HTMLElement {
     try {
       trustlineResult = await getMissingTrustlines(ts.pool, addr, liveAsset.id);
     } catch (e) {
-      console.error("[Turbolong] openPosition trustline check failed", { pool: ts.pool, asset: liveAsset }, e);
       toast(`Trustline check failed: ${((e as Error)?.message ?? String(e)).slice(0, 150)}`, "error");
       return;
     }
@@ -1563,12 +1558,26 @@ export function tradeScreen(): HTMLElement {
 
   /** Friendly message for Blend error codes (mirrors old-main mapping). */
   function txErr(e: unknown): string {
-    console.error("[Turbolong] transaction error", e);
     const msg = (e as Error)?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf")) return "Health factor too low — reduce leverage or deposit more.";
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) return "Pool utilization limit reached — not enough liquidity.";
     return msg.slice(0, 200);
   }
+
+  // React to Expert-mode toggles (changes min-HF → max leverage, the slider's
+  // Maxi-degen zone, HF precision). Self-unsubscribes once this screen unmounts.
+  let lastExpert = getState().expert;
+  let wasMounted = false;
+  const unsub = subscribe((s) => {
+    const inDoc = document.contains(root);
+    if (inDoc) wasMounted = true;
+    else if (wasMounted) { unsub(); return; } // mounted then removed → clean up
+    else return; // not mounted yet — ignore early state changes
+    if (s.expert !== lastExpert) {
+      lastExpert = s.expert;
+      renderAll();
+    }
+  });
 
   // Initial paint + async fill.
   renderAll();

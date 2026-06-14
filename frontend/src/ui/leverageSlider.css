@@ -77,18 +77,24 @@
 /* Zone labels. */
 .tl-lev__zones {
   display: flex;
-  justify-content: space-between;
-  padding: 0 var(--tl-space-1);
+  gap: var(--tl-space-2);
+  margin-top: var(--tl-space-2);
 }
 .tl-lev__zone {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
   font-family: var(--tl-font-sans);
-  font-size: var(--tl-text-xs);
+  font-size: 9px;
   font-weight: var(--tl-fw-semibold);
   text-transform: uppercase;
-  letter-spacing: var(--tl-tracking-label);
+  letter-spacing: 0;
+  white-space: nowrap;
   opacity: .4;
   transition: opacity var(--tl-dur) var(--tl-ease);
 }
+.tl-lev__zone:first-child { text-align: left; }
+.tl-lev__zone:last-child { text-align: right; }
 .tl-lev__zone--conservative { color: var(--tl-success); }
 .tl-lev__zone--moderate     { color: var(--tl-primary); }
 .tl-lev__zone--aggressive   { color: var(--tl-warning); }
