@@ -6,6 +6,7 @@
 import { el, Card, Badge } from "../ui";
 import type { View } from "./state";
 import { dashboardScreen } from "../views/dashboard.screen";
+import { tradeScreen } from "../views/trade";
 import { statusScreen } from "../views/status";
 import { vaultScreen } from "../views/vault";
 import { compareScreen } from "../views/compare";
@@ -35,6 +36,8 @@ export async function renderScreen(view: View): Promise<HTMLElement> {
   switch (view) {
     case "dashboard":
       return dashboardScreen();
+    case "trade":
+      return tradeScreen();
     case "status":
       return statusScreen();
     case "vault":
