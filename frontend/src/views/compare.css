@@ -1,0 +1,98 @@
+/* ============================================================================
+   Turbolong — Compare screen styles
+   Ranked table over every pool×asset, leveraged-net-APY first. Tokens only
+   (--tl-*); numbers are mono with tabular figures. Pairs with compare.ts.
+   ============================================================================ */
+
+.tl-cmp { font-family: var(--tl-font-sans); color: var(--tl-text); }
+.tl-cmp__mono { font-family: var(--tl-font-mono); font-feature-settings: 'tnum' 1; }
+
+/* Header */
+.tl-cmp__head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--tl-space-4); margin-bottom: var(--tl-space-5); flex-wrap: wrap;
+}
+.tl-cmp__h1 { font-size: var(--tl-text-2xl); font-weight: 800; letter-spacing: -.3px; margin: 0 0 var(--tl-space-2); }
+.tl-cmp__sub { font-size: var(--tl-text-sm); color: var(--tl-text-2); margin: 0; max-width: 640px; line-height: 1.6; }
+
+/* Window chips */
+.tl-cmp__win { display: flex; align-items: center; gap: var(--tl-space-2); }
+.tl-cmp__win-label {
+  font-size: var(--tl-text-xs); text-transform: uppercase; letter-spacing: .5px;
+  color: var(--tl-text-3); font-weight: 600;
+}
+.tl-cmp__chips { display: flex; gap: var(--tl-space-1); }
+.tl-cmp__chip {
+  background: transparent; color: var(--tl-text-2);
+  border: 1px solid var(--tl-border); border-radius: var(--tl-radius-xs);
+  padding: 4px 10px; font-size: var(--tl-text-xs); font-weight: 600;
+  cursor: pointer; font-family: var(--tl-font-mono);
+  transition: all .15s var(--tl-ease);
+}
+.tl-cmp__chip:hover { border-color: var(--tl-border-hover); color: var(--tl-text); }
+.tl-cmp__chip.is-active {
+  background: var(--tl-primary); color: var(--tl-bg);
+  border-color: var(--tl-primary);
+}
+
+/* Table shell */
+.tl-cmp__shell {
+  background: var(--tl-surface); border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius); overflow-x: auto;
+}
+.tl-cmp__table { width: 100%; border-collapse: collapse; }
+
+.tl-cmp__th {
+  font-size: var(--tl-text-xs); text-transform: uppercase; letter-spacing: .5px;
+  color: var(--tl-text-3); font-weight: 600;
+  padding: 12px 14px; border-bottom: 1px solid var(--tl-border-hover);
+  white-space: nowrap;
+}
+.tl-cmp__th--l { text-align: left; }
+.tl-cmp__th--r { text-align: right; }
+.tl-cmp__th--c { text-align: center; }
+.tl-cmp__th-inner { display: inline-flex; align-items: center; gap: 4px; }
+
+.tl-cmp__td {
+  font-size: var(--tl-text-sm);
+  padding: 12px 14px; border-bottom: 1px solid var(--tl-border);
+  white-space: nowrap;
+}
+.tl-cmp__td--r { text-align: right; }
+.tl-cmp__row:last-child .tl-cmp__td { border-bottom: none; }
+.tl-cmp__row { transition: background .12s var(--tl-ease); }
+.tl-cmp__row:hover { background: var(--tl-tab-hover-bg); }
+.tl-cmp__row.is-best { background: var(--tl-tab-active-bg); }
+.tl-cmp__row.is-best:hover { background: var(--tl-tab-active-bg); }
+
+/* Cells */
+.tl-cmp__rank { color: var(--tl-text-3); width: 40px; }
+.tl-cmp__star { color: var(--tl-primary); }
+.tl-cmp__asset-cell { display: flex; align-items: center; gap: var(--tl-space-2); }
+.tl-cmp__sym { font-family: var(--tl-font-mono); font-weight: 700; color: var(--tl-text); }
+.tl-cmp__pool { color: var(--tl-text-3); font-size: var(--tl-text-xs); }
+.tl-cmp__base { color: var(--tl-text-2); }
+.tl-cmp__lev { font-weight: 700; }
+.tl-cmp__lev--pos { color: var(--tl-success); }
+.tl-cmp__lev--neg { color: var(--tl-danger); }
+.tl-cmp__max { color: var(--tl-text); }
+.tl-cmp__rate { color: var(--tl-text-2); }
+.tl-cmp__muted { color: var(--tl-text-3); }
+
+.tl-cmp__trend-cell { display: flex; align-items: center; justify-content: flex-end; gap: var(--tl-space-2); }
+.tl-cmp__arrow { font-size: var(--tl-text-xs); width: 10px; text-align: right; font-family: var(--tl-font-mono); }
+.tl-cmp__arrow--up { color: var(--tl-success); }
+.tl-cmp__arrow--down { color: var(--tl-danger); }
+.tl-cmp__arrow--flat { color: var(--tl-text-3); }
+
+.tl-cmp__state { text-align: center; color: var(--tl-text-3); padding: 40px 0; }
+
+/* Footnote */
+.tl-cmp__foot {
+  font-size: var(--tl-text-xs); color: var(--tl-text-3);
+  margin-top: var(--tl-space-3); line-height: 1.6; max-width: 760px;
+}
+
+@media (max-width: 720px) {
+  .tl-cmp__table { min-width: 580px; }
+}

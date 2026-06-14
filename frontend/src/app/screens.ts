@@ -6,6 +6,10 @@
 import { el, Card, Badge } from "../ui";
 import type { View } from "./state";
 import { dashboardScreen } from "../views/dashboard.screen";
+import { statusScreen } from "../views/status";
+import { vaultScreen } from "../views/vault";
+import { compareScreen } from "../views/compare";
+import { swapScreen } from "../views/swap";
 
 const TITLES: Record<View, string> = {
   dashboard: "Dashboard",
@@ -31,6 +35,14 @@ export async function renderScreen(view: View): Promise<HTMLElement> {
   switch (view) {
     case "dashboard":
       return dashboardScreen();
+    case "status":
+      return statusScreen();
+    case "vault":
+      return vaultScreen();
+    case "compare":
+      return compareScreen();
+    case "swap":
+      return swapScreen();
     default:
       return placeholder(view);
   }
