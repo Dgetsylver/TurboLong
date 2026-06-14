@@ -247,33 +247,9 @@
           </div>
         </div>
 
-        <!-- Overview (cross-protocol dashboard) -->
+        <!-- Dashboard: pool-account view (ts-port renderDashboard mounts here) -->
         <div id="overview-view" class="hidden">
-          <div class="overview-header">
-            <h2>Portfolio Overview</h2>
-            <button id="overview-refresh-btn" class="btn btn-ghost btn-sm">&#8635;</button>
-          </div>
-
-          <!-- Aggregate totals -->
-          <div class="overview-totals">
-            <div class="stat-card">
-              <span class="stat-label">Total Equity</span>
-              <span class="stat-value mono" id="ov-total-equity">--</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Total Debt</span>
-              <span class="stat-value mono" id="ov-total-debt">--</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Positions</span>
-              <span class="stat-value mono" id="ov-total-count">0</span>
-            </div>
-          </div>
-
-          <!-- Protocol sections -->
-          <div id="ov-protocols"></div>
-
-          <p class="overview-empty hidden" id="ov-empty">No active positions across any protocol. Open a position to see it here.</p>
+          <div id="dash-root"></div>
         </div>
 
         <!-- Dashboard -->

@@ -96,6 +96,14 @@ import { getAquariusListing, AQUARIUS_SWAP_URL } from "./aquarius_listings.ts";
 import { initI18n, applyTranslations, t, setLang, getLang } from "./i18n.ts";
 import { LANG_NAMES, type Lang } from "./locales.ts";
 import { maybeAutoStartTour, startTour } from "./tour.ts";
+import {
+  renderDashboard,
+  type DashboardData,
+  type PoolAccount,
+  type Leg,
+  type Role,
+  type VaultHolding,
+} from "./views/dashboard.ts";
 
 // ── Wallet kit ────────────────────────────────────────────────────────────────
 
@@ -3618,128 +3626,73 @@ async function loadOverview() {
 }
 
 function renderOverview(blendPos: OverviewBlendPosition[], vaultPos: OverviewVaultPosition[]) {
-  const container = $("ov-protocols");
-  const emptyEl = $("ov-empty");
-  const totalPositions = blendPos.length + vaultPos.length;
-
-  // Aggregate totals (USD-denominated where possible)
-  let totalEquity = 0;
-  let totalDebt = 0;
-
-  for (const bp of blendPos) {
-    const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
-    const price = rs?.priceUsd ?? 0;
-    totalEquity += bp.pos.equity * price;
-    totalDebt += bp.pos.debt * price;
-  }
-  for (const vp of vaultPos) {
-    totalEquity += vp.userPos.underlyingValue; // USDC-denominated
-  }
-
-  $("ov-total-equity").textContent = totalEquity > 0 ? `$${fmt(totalEquity, 2)}` : "--";
-  $("ov-total-debt").textContent = totalDebt > 0 ? `$${fmt(totalDebt, 2)}` : "--";
-  $("ov-total-count").textContent = String(totalPositions);
-
-  if (totalPositions === 0) {
-    emptyEl.classList.remove("hidden");
-    container.innerHTML = "";
-    return;
-  }
-  emptyEl.classList.add("hidden");
-
-  let html = "";
-
-  // Blend positions as data table
-  if (blendPos.length > 0) {
-    html += `<div class="overview-protocol-section">
-      <div class="overview-protocol-header">
-        <span class="overview-protocol-dot overview-protocol-dot-blend"></span>
-        Blend Protocol
-      </div>
-      <table class="overview-table">
-        <thead><tr>
-          <th>Asset</th><th>Pool</th><th class="text-right">Equity</th>
-          <th class="text-right">Leverage</th><th class="text-right">HF</th>
-          <th class="text-right">Net APY</th><th class="text-right">Debt</th>
-        </tr></thead><tbody>`;
-
-    for (const bp of blendPos) {
-      const rs = bp.reserves.find(r => r.asset.id === bp.asset.id);
-      const price = rs?.priceUsd ?? 0;
-      const batchNetApr = rs ? rs.netSupplyApr * bp.pos.leverage - rs.netBorrowCost * (bp.pos.leverage - 1) : 0;
-      const netApy = aprToApy(batchNetApr);
-      const hfColor = bp.pos.hf > 1.1 ? "hf-ok" : bp.pos.hf > 1.03 ? "hf-warn" : "hf-bad";
-      const pool = getKnownPools().find(p => p.id === bp.pool.id)!;
-      const batchTip = `Approximate APY — Blend does not auto-compound. Actual net APR: ${fmt(batchNetApr, 2)}%`;
-
-      html += `<tr data-nav-pool="${bp.pool.id}" data-nav-asset="${bp.asset.id}">
-        <td class="text-label">${bp.asset.symbol}</td>
-        <td style="color:var(--text-2);font-family:var(--sans)">${pool.name}</td>
-        <td class="text-right">${fmt(bp.pos.equity, 2)} ${bp.asset.symbol}</td>
-        <td class="text-right">${fmt(bp.pos.leverage, 1)}&times;</td>
-        <td class="text-right ${hfColor}">${Number.isFinite(bp.pos.hf) ? fmt(bp.pos.hf, 3) : "\u221E"}</td>
-        <td class="text-right ${netApy > 0 ? "hf-ok" : "hf-bad"}" title="${batchTip}">${netApy >= 0 ? "+" : ""}${fmt(netApy, 2)}%</td>
-        <td class="text-right">${fmt(bp.pos.debt, 2)} ${bp.asset.symbol}</td>
-      </tr>`;
-    }
-    html += `</tbody></table></div>`;
-  }
-
-  // Vault positions (keep as cards since there's usually only 1)
-  if (vaultPos.length > 0) {
-    html += `<div class="overview-protocol-section">
-      <div class="overview-protocol-header">
-        <span class="overview-protocol-dot overview-protocol-dot-vault"></span>
-        DeFindex Vaults
-      </div>
-      <div class="overview-positions">`;
-
-    for (const vp of vaultPos) {
-      const hf = vp.stats ? formatHf(vp.stats.healthFactor) : { text: "--", cls: "" };
-      html += `<div class="overview-vault-card" data-nav-vault="${vp.vault.vaultId}">
-        <div class="overview-pos-card-top">
-          <span class="overview-pos-card-symbol">${vp.vault.name}</span>
-          <span class="overview-pos-card-pool">DeFindex</span>
-        </div>
-        <div class="overview-pos-card-grid">
-          <div class="overview-pos-card-metric">
-            <span class="overview-pos-card-label">Value</span>
-            <span class="overview-pos-card-value">${formatUsd(vp.userPos.underlyingValue)}</span>
-          </div>
-          <div class="overview-pos-card-metric">
-            <span class="overview-pos-card-label">Strategy HF</span>
-            <span class="overview-pos-card-value ${hf.cls}">${hf.text}</span>
-          </div>
-        </div>
-      </div>`;
-    }
-    html += `</div></div>`;
-  }
-
-  container.innerHTML = html;
-
-  // Wire up click navigation for Blend table rows
-  container.querySelectorAll<HTMLElement>("tr[data-nav-pool]").forEach(row => {
-    row.addEventListener("click", () => {
-      const poolId = row.dataset.navPool!;
-      const assetId = row.dataset.navAsset!;
-      const pool = getKnownPools().find(p => p.id === poolId);
-      if (pool) {
-        selectPool(pool);
-        const asset = getPoolAssets(pool).find(a => a.id === assetId);
-        if (asset) selectAsset(asset);
-        switchView("leverage");
-      }
-    });
-  });
-
-  // Wire up click navigation for vault cards
-  container.querySelectorAll<HTMLElement>(".overview-vault-card").forEach(card => {
-    card.addEventListener("click", () => switchView("vault"));
-  });
+  const root = $("dash-root");
+  root.replaceChildren(renderDashboard(buildDashboardData(blendPos, vaultPos), {
+    onNewPosition: () => switchView("leverage"),
+    onManagePool: (poolName: string) => {
+      const pool = getKnownPools().find(p => p.name === poolName);
+      if (pool) selectPool(pool);
+      switchView("leverage");
+    },
+    onGoVault: () => switchView("vault"),
+  }));
 }
 
-$("overview-refresh-btn").addEventListener("click", () => loadOverview());
+/**
+ * Map the cross-pool fetch results into the ts-port DashboardData model:
+ * one PoolAccount per pool (cross-margined Account Health via
+ * aggregatePoolAccount, PR #295), plus DeFindex vault holdings.
+ */
+function buildDashboardData(
+  blendPos: OverviewBlendPosition[],
+  vaultPos: OverviewVaultPosition[],
+): DashboardData {
+  // Group blend positions by pool — one PoolAccount per pool.
+  const byPool = new Map<string, OverviewBlendPosition[]>();
+  for (const bp of blendPos) {
+    const arr = byPool.get(bp.pool.id) ?? [];
+    arr.push(bp);
+    byPool.set(bp.pool.id, arr);
+  }
+
+  const poolAccounts: PoolAccount[] = [];
+  for (const group of byPool.values()) {
+    const pool = group[0].pool;
+    const reserves = group[0].reserves;
+    const agg = aggregatePoolAccount(group.map(g => g.pos), reserves);
+    const legs: Leg[] = agg.rows.map(r => {
+      const price = reserves.find(rs => rs.asset.symbol === r.symbol)?.priceUsd ?? 0;
+      const role: Role =
+        r.role === "loop" ? "Looped" : r.role === "collateral" ? "Collateral" : "Borrow";
+      const amountUsd = (r.role === "borrow" ? r.borrowed : r.supplied) * price;
+      const leg: Leg = { asset: r.symbol, role, amountUsd };
+      if (r.role === "loop") leg.loopX = r.leverage;
+      return leg;
+    });
+    poolAccounts.push({
+      pool: pool.name,
+      legs,
+      equityUsd: agg.equityUsd,
+      netApy: agg.netApy,
+      accountHealth: agg.poolHF,
+    });
+  }
+
+  const vaults: VaultHolding[] = vaultPos.map(vp => {
+    const share = vp.stats && vp.stats.totalShares > 0
+      ? `${(vp.userPos.shares / vp.stats.totalShares * 100).toFixed(2)}%`
+      : "—";
+    return {
+      name: vp.vault.name,
+      equityUsd: vp.userPos.underlyingValue,
+      share,
+      netApy: vp.stats?.netApy ?? 0,
+      strategyHealth: vp.stats?.healthFactor ?? 0,
+    };
+  });
+
+  return { connected: !!userAddress, poolAccounts, vaults };
+}
 
 // ── Vault view ───────────────────────────────────────────────────────────────
 
