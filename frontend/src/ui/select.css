@@ -1,0 +1,28 @@
+/* Select — styled native <select> with brand chevron + mono type. Tokens only. */
+.tl-select {
+  width: 100%;
+  padding: var(--tl-space-4) var(--tl-space-10) var(--tl-space-4) var(--tl-space-5);
+  border-radius: var(--tl-radius);
+  background-color: var(--tl-input-bg);
+  border: 1px solid var(--tl-border);
+  color: var(--tl-text);
+  font-size: var(--tl-text-base);
+  font-weight: var(--tl-fw-semibold);
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color var(--tl-dur) var(--tl-ease);
+
+  /* Brand chevron — color matches --tl-text-3 (#8892A8). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238892A8'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--tl-space-5) center;
+}
+
+.tl-select--mono { font-family: var(--tl-font-mono); font-feature-settings: "tnum" 1; }
+.tl-select--sans { font-family: var(--tl-font-sans); }
+
+.tl-select:hover:not(:disabled) { border-color: var(--tl-border-hover); }
+.tl-select:focus { border-color: var(--tl-primary); }
+.tl-select:disabled { opacity: .3; cursor: not-allowed; }

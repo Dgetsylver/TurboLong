@@ -1,0 +1,78 @@
+/* RiskBand — four-segment risk strip; active zone lights in its signal color. Tokens only. */
+.tl-riskband {
+  background: var(--tl-input-bg);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius);
+  padding: var(--tl-space-4) var(--tl-space-5);
+}
+
+.tl-riskband__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--tl-space-3);
+}
+
+.tl-riskband__title {
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  color: var(--tl-text-3);
+}
+
+.tl-riskband__value {
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--tl-text-base);
+  font-weight: var(--tl-fw-bold);
+  color: var(--tl-text);
+}
+.tl-riskband__value--safe { color: var(--tl-success); }
+.tl-riskband__value--caution,
+.tl-riskband__value--high { color: var(--tl-warning); }
+.tl-riskband__value--nearLiq { color: var(--tl-danger); }
+
+.tl-riskband__track {
+  display: flex;
+  gap: var(--tl-space-1);
+}
+
+.tl-riskband__seg {
+  flex: 1;
+  text-align: center;
+  padding: var(--tl-space-1) 2px;
+  border-radius: var(--tl-radius-xs);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  color: var(--tl-text-3);
+  border: 1px solid var(--tl-border);
+  background: transparent;
+  opacity: .45;
+  transition: all var(--tl-dur) var(--tl-ease);
+}
+
+.tl-riskband__seg.is-on {
+  opacity: 1;
+}
+
+.tl-riskband__seg--safe.is-on {
+  color: var(--tl-success);
+  border-color: var(--tl-success-border);
+  background: rgba(45, 232, 163, .08);
+}
+.tl-riskband__seg--caution.is-on,
+.tl-riskband__seg--high.is-on {
+  color: var(--tl-warning);
+  border-color: var(--tl-warning-border);
+  background: var(--tl-warning-bg);
+}
+.tl-riskband__seg--nearLiq.is-on {
+  color: var(--tl-danger);
+  border-color: var(--tl-danger-border);
+  background: var(--tl-danger-bg);
+}

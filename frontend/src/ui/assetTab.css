@@ -1,0 +1,42 @@
+/* AssetTab — pill asset selector beneath the nav. Active is solid mint with a glow; idle tints on hover. Tokens only. */
+.tl-asset-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tl-space-1);
+  padding: var(--tl-space-2) var(--tl-space-6);
+  border-radius: var(--tl-radius-pill);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tl-text-2);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-base);
+  font-weight: var(--tl-fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  outline: none;
+  transition: all var(--tl-dur-fast) var(--tl-ease);
+}
+.tl-asset-tab:hover {
+  background: var(--tl-tab-hover-bg);
+  color: var(--tl-text);
+}
+
+.tl-asset-tab__sym {
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-weight: var(--tl-fw-semibold);
+  font-size: var(--tl-text-sm);
+}
+.tl-asset-tab__label { opacity: .85; }
+
+/* Active — solid mint, dark text, glow */
+.tl-asset-tab.is-active {
+  background: var(--tl-primary);
+  color: var(--tl-bg);
+  box-shadow: var(--tl-glow-primary);
+}
+.tl-asset-tab.is-active:hover {
+  background: var(--tl-primary);
+  color: var(--tl-bg);
+}
+.tl-asset-tab.is-active .tl-asset-tab__label { opacity: .7; }

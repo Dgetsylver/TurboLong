@@ -1,0 +1,59 @@
+/* Badge — uppercase status / tag pill. Tone maps to the risk signal system. Tokens only. */
+.tl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tl-space-2);
+  padding: 2px var(--tl-space-3);
+  border-radius: var(--tl-radius-pill);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+/* Dot */
+.tl-badge__dot {
+  width: var(--tl-space-2);
+  height: var(--tl-space-2);
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.tl-badge:not(.tl-badge--neutral) .tl-badge__dot {
+  box-shadow: 0 0 6px currentColor;
+}
+
+/* Tones */
+.tl-badge--neutral {
+  color: var(--tl-text-3);
+  background: var(--tl-surface-2);
+  border-color: transparent;
+}
+.tl-badge--primary {
+  color: var(--tl-primary);
+  background: var(--tl-tab-active-bg);
+  border-color: var(--tl-success-border);
+}
+.tl-badge--success {
+  color: var(--tl-success);
+  background: rgba(45, 232, 163, .08);
+  border-color: var(--tl-success-border);
+}
+.tl-badge--warning {
+  color: var(--tl-warning);
+  background: var(--tl-warning-bg);
+  border-color: var(--tl-warning-border);
+}
+.tl-badge--danger {
+  color: var(--tl-danger);
+  background: var(--tl-danger-bg);
+  border-color: var(--tl-danger-border);
+}
+.tl-badge--blnd {
+  color: var(--tl-blnd);
+  background: rgba(167, 139, 250, .10);
+  border-color: rgba(167, 139, 250, .30);
+}

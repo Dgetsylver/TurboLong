@@ -1,0 +1,9 @@
+/* ============================================================================
+   Turbolong — Webfonts
+   Inter (UI) + JetBrains Mono (numerics), served from Google Fonts.
+   NOTE: substituted from the live app's Google Fonts CDN links — the repo did
+   not ship local font binaries. Swap these @import lines for self-hosted
+   woff2 + @font-face if you need offline / pinned versions.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');

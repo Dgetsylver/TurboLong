@@ -1,0 +1,26 @@
+/* Card — flat bordered surface, 12px radius, 1px hairline, no shadow at rest. Tokens only. */
+.tl-card {
+  background: var(--tl-surface);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius);
+  padding: var(--tl-space-8);
+  transition: border-color var(--tl-dur-slow) var(--tl-ease);
+}
+.tl-card--hoverable:hover {
+  border-color: var(--tl-border-hover);
+}
+
+.tl-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--tl-space-7);
+}
+.tl-card__title {
+  margin: 0;
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-lg);
+  font-weight: var(--tl-fw-bold);
+  letter-spacing: var(--tl-tracking-tight);
+  color: var(--tl-text);
+}

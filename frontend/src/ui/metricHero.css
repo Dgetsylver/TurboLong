@@ -1,0 +1,42 @@
+/* MetricHero — big mono value over an uppercase label, three-up in the summary row. Tokens only. */
+.tl-metric-hero {
+  background: var(--tl-surface);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius);
+  padding: var(--tl-space-7);
+  text-align: center;
+}
+
+.tl-metric-hero__label {
+  display: block;
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  color: var(--tl-text-3);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  margin-bottom: var(--tl-space-2);
+}
+
+.tl-metric-hero__value {
+  display: block;
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--tl-text-2xl);
+  font-weight: var(--tl-fw-bold);
+  line-height: 1.1;
+}
+
+.tl-metric-hero__value--default { color: var(--tl-text); }
+.tl-metric-hero__value--primary { color: var(--tl-primary); }
+.tl-metric-hero__value--success { color: var(--tl-success); }
+.tl-metric-hero__value--warning { color: var(--tl-warning); }
+.tl-metric-hero__value--danger { color: var(--tl-danger); }
+
+.tl-metric-hero__sub {
+  display: block;
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+  margin-top: 5px;
+}
