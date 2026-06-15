@@ -1,0 +1,91 @@
+/* ============================================================================
+   Turbolong — Color tokens
+   Dark-first DeFi palette. Neon-green primary, signal red/amber for risk,
+   violet for the BLND reward token. Light theme provided as an override.
+   ============================================================================ */
+
+:root,
+[data-theme="dark"] {
+  /* — Brand scalars (theme-independent) — */
+  --tl-danger:        #FF4D6A;   /* liquidation / loss / negative */
+  --tl-success:       #2DE8A3;   /* healthy / gain / positive     */
+  --tl-warning:       #FFB547;   /* caution / frozen / testnet    */
+  --tl-blnd:          #A78BFA;   /* BLND reward token (violet)    */
+
+  /* — Surfaces — */
+  --tl-bg:            #0B0E14;   /* app canvas            */
+  --tl-surface:       #141820;   /* cards / panels        */
+  --tl-surface-2:     #1A1F2B;   /* raised / dropdowns    */
+  --tl-surface-3:     #232A38;   /* hover-raised          */
+  --tl-input-bg:      #111621;   /* inputs / metric wells */
+
+  /* — Borders — */
+  --tl-border:        #1E2536;
+  --tl-border-hover:  #2A3348;
+
+  /* — Primary (neon mint) — */
+  --tl-primary:       #2DE8A3;
+  --tl-primary-hover: #5EEDB8;
+  --tl-primary-deep:  #20D99A;   /* gradient stop 2 */
+  --tl-primary-glow:  rgba(45,232,163,.15);
+
+  /* — Text — */
+  --tl-text:          #E8ECF4;   /* primary copy        */
+  --tl-text-2:        #8892A8;   /* secondary / labels  */
+  --tl-text-3:        #4A5568;   /* tertiary / hints    */
+
+  /* — Semantic tints (translucent fills + borders) — */
+  --tl-danger-bg:      rgba(255,77,106,.08);
+  --tl-danger-bg-h:    rgba(255,77,106,.15);
+  --tl-danger-border:  rgba(255,77,106,.20);
+  --tl-warning-bg:     rgba(255,181,71,.05);
+  --tl-warning-border: rgba(255,181,71,.20);
+  --tl-success-border: rgba(45,232,163,.40);
+  --tl-tab-hover-bg:   rgba(45,232,163,.06);
+  --tl-tab-active-bg:  rgba(45,232,163,.10);
+
+  /* — Effects — */
+  --tl-shadow:        0 8px 40px rgba(0,0,0,.5);
+  --tl-header-bg:     rgba(11,14,20,.95);
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --tl-danger:        #dc2626;
+  --tl-success:       #16a34a;
+  --tl-warning:       #d97706;
+  --tl-blnd:          #7c3aed;
+
+  --tl-bg:            #f4f5f9;
+  --tl-surface:       #ffffff;
+  --tl-surface-2:     #f0f1f5;
+  --tl-surface-3:     #e5e7ec;
+  --tl-input-bg:      #f4f5f9;
+
+  --tl-border:        #e0e3ea;
+  --tl-border-hover:  #c8cdd6;
+
+  --tl-primary:       #1aad7a;
+  --tl-primary-hover: #169966;
+  --tl-primary-deep:  #15a070;
+  --tl-primary-glow:  rgba(26,173,122,.10);
+
+  --tl-text:          #111827;
+  --tl-text-2:        #6b7280;
+  --tl-text-3:        #9ca3af;
+
+  --tl-danger-bg:      rgba(220,38,38,.06);
+  --tl-danger-bg-h:    rgba(220,38,38,.10);
+  --tl-danger-border:  rgba(220,38,38,.15);
+  --tl-warning-bg:     rgba(217,119,6,.04);
+  --tl-warning-border: rgba(217,119,6,.15);
+  --tl-success-border: rgba(22,163,74,.30);
+  --tl-tab-hover-bg:   rgba(26,173,122,.04);
+  --tl-tab-active-bg:  rgba(26,173,122,.08);
+
+  --tl-shadow:        0 8px 40px rgba(0,0,0,.06);
+  --tl-header-bg:     rgba(255,255,255,.95);
+
+  color-scheme: light;
+}

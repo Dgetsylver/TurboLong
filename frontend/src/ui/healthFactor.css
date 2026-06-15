@@ -1,0 +1,97 @@
+/* HealthFactor — primary risk readout: color-coded value over a liq→safe track. Tokens only. */
+.tl-hf {
+  font-family: var(--tl-font-sans);
+}
+
+.tl-hf__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--tl-space-2);
+}
+
+.tl-hf__label {
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  font-weight: var(--tl-fw-semibold);
+  cursor: help;
+}
+
+.tl-hf__readout {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tl-space-3);
+}
+
+.tl-hf__value {
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--tl-text-xl);
+  font-weight: var(--tl-fw-bold);
+}
+
+.tl-hf__zone {
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+}
+
+/* Track */
+.tl-hf__track {
+  position: relative;
+  height: 6px;
+  border-radius: var(--tl-radius-xs);
+  background: rgba(255, 255, 255, .06);
+  overflow: visible;
+}
+
+.tl-hf__gradient {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--tl-radius-xs);
+  background: linear-gradient(90deg, var(--tl-danger), var(--tl-warning) 45%, var(--tl-success));
+  opacity: .25;
+}
+
+.tl-hf__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--tl-radius-xs);
+  transition: width var(--tl-dur-slow) var(--tl-ease), background var(--tl-dur-slow) var(--tl-ease);
+}
+
+.tl-hf__marker {
+  position: absolute;
+  top: 50%;
+  width: var(--tl-space-5);
+  height: var(--tl-space-5);
+  border-radius: var(--tl-radius-pill);
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--tl-bg);
+  transition: left var(--tl-dur-slow) var(--tl-ease), background var(--tl-dur-slow) var(--tl-ease);
+}
+.tl-hf__marker.is-danger {
+  animation: tl-liq-pulse 1.5s ease-in-out infinite;
+}
+
+/* Scale */
+.tl-hf__scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--tl-space-1);
+  font-size: var(--tl-text-xs);
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  color: var(--tl-text-3);
+}
+.tl-hf__scale-liq {
+  color: var(--tl-danger);
+}
+
+@keyframes tl-liq-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}

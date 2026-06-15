@@ -1,0 +1,41 @@
+/* ============================================================================
+   Turbolong — Base layer
+   Body canvas + the signature twin radial-glow backdrop, plus a couple of
+   primitive helper classes used across specimen cards.
+   ============================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--tl-bg);
+  color: var(--tl-text);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-md);
+  line-height: var(--tl-leading-body);
+  -webkit-font-smoothing: antialiased;
+  /* Signature backdrop: faint mint glow top-center, violet glow bottom-right */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45,232,163,.04), transparent),
+    radial-gradient(circle at 90% 80%, rgba(167,139,250,.02), transparent);
+  background-attachment: fixed;
+}
+
+/* Every financial figure is mono. */
+.tl-mono { font-family: var(--tl-font-mono); font-feature-settings: 'tnum' 1; }
+
+/* Uppercase micro-label — the workhorse caption style. */
+.tl-label {
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  color: var(--tl-text-3);
+}
+
+/* Bare card surface. */
+.tl-card {
+  background: var(--tl-surface);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius);
+}

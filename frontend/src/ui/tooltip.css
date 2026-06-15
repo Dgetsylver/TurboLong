@@ -1,0 +1,67 @@
+/* Tooltip — inline "?" info mark with hover/focus popover. Tokens only. */
+.tl-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Default "?" trigger circle */
+.tl-tip__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tl-space-6);
+  height: var(--tl-space-6);
+  border-radius: var(--tl-radius-pill);
+  flex-shrink: 0;
+  margin-left: var(--tl-space-1);
+  background: rgba(255, 255, 255, .04);
+  color: var(--tl-text-3);
+  font-family: var(--tl-font-sans);
+  font-size: 9px;
+  font-weight: var(--tl-fw-bold);
+  cursor: help;
+  outline: none;
+  transition: background var(--tl-dur) var(--tl-ease), color var(--tl-dur) var(--tl-ease);
+}
+.tl-tip:hover .tl-tip__mark,
+.tl-tip__mark:focus-visible {
+  background: var(--tl-tab-active-bg);
+  color: var(--tl-text-2);
+}
+
+/* Popover */
+.tl-tip__pop {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  padding: 9px var(--tl-space-5);
+  background: var(--tl-surface-2);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-xs);
+  box-shadow: var(--tl-shadow-pop);
+  font-family: var(--tl-font-sans);
+  font-size: var(--tl-text-sm);
+  font-weight: var(--tl-fw-regular);
+  line-height: var(--tl-leading-body);
+  color: var(--tl-text-2);
+  text-transform: none;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+  z-index: 300;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--tl-dur) var(--tl-ease), visibility var(--tl-dur) var(--tl-ease);
+}
+.tl-tip__pop--top { bottom: calc(100% + var(--tl-space-3)); }
+.tl-tip__pop--bottom { top: calc(100% + var(--tl-space-3)); }
+
+.tl-tip:hover .tl-tip__pop,
+.tl-tip:focus-within .tl-tip__pop {
+  opacity: 1;
+  visibility: visible;
+}

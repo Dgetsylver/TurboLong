@@ -1699,21 +1699,25 @@ export async function getMissingTrustlines(
     throw new Error(`Failed to fetch reserve data for asset ${assetId} — cannot check trustlines.`);
   }
 
-  const bTokenId: string = reserveRaw.config.b_token;
-  const dTokenId: string = reserveRaw.config.d_token;
+  // The deployed Blend reserve tracks b/d positions as INTERNAL balances
+  // (config exposes c_factor/l_factor/rates only; data exposes b_supply/d_supply
+  // amounts) — there are no separate b_token/d_token SAC contracts to hold, so
+  // no trustline is required for them. Only derive b/d-token trustlines if a
+  // contract version actually exposes those addresses; otherwise skip safely.
+  const bTokenId: string | undefined = reserveRaw.config?.b_token;
+  const dTokenId: string | undefined = reserveRaw.config?.d_token;
 
-  // Derive classic Asset for b_token
-  const bSymbol: string | null = await simulate(new Contract(bTokenId).call("symbol"));
-  const bIssuer: string | null = await simulate(new Contract(bTokenId).call("issuer"));
-
-  // Derive classic Asset for d_token
-  const dSymbol: string | null = await simulate(new Contract(dTokenId).call("symbol"));
-  const dIssuer: string | null = await simulate(new Contract(dTokenId).call("issuer"));
-
-  // Build required asset list; skip native assets (no trustline needed for XLM)
   const required: Asset[] = [];
-  if (bSymbol && bIssuer) required.push(new Asset(bSymbol, bIssuer));
-  if (dSymbol && dIssuer) required.push(new Asset(dSymbol, dIssuer));
+  if (bTokenId) {
+    const bSymbol: string | null = await simulate(new Contract(bTokenId).call("symbol"));
+    const bIssuer: string | null = await simulate(new Contract(bTokenId).call("issuer"));
+    if (bSymbol && bIssuer) required.push(new Asset(bSymbol, bIssuer));
+  }
+  if (dTokenId) {
+    const dSymbol: string | null = await simulate(new Contract(dTokenId).call("symbol"));
+    const dIssuer: string | null = await simulate(new Contract(dTokenId).call("issuer"));
+    if (dSymbol && dIssuer) required.push(new Asset(dSymbol, dIssuer));
+  }
   if (!_cfg.blndClassic.isNative()) required.push(_cfg.blndClassic);
 
   // Load account from Horizon — propagate any error to the caller

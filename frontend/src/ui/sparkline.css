@@ -1,0 +1,17 @@
+/* Sparkline — tiny inline trend line for APY / rate history. Tokens only. */
+.tl-spark {
+  display: block;
+  overflow: visible;
+}
+
+/* Per-instance line color comes from --tl-spark-color (set by the builder). */
+.tl-spark__line {
+  fill: none;
+  stroke: var(--tl-spark-color, var(--tl-text-3));
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tl-spark__dot {
+  fill: var(--tl-spark-color, var(--tl-text-3));
+}

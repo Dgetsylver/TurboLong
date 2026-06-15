@@ -1,0 +1,115 @@
+/* LeverageSlider — mint-glow thumb, live mono value, five color-shifting risk zones. Tokens only. */
+.tl-lev {
+  /* --tl-lev-color is set per active zone below; --tl-lev-pct drives the fill. */
+  --tl-lev-color: var(--tl-primary);
+  --tl-lev-pct: 0%;
+}
+
+/* Active-zone color → drives fill, thumb, value text. */
+.tl-lev[data-zone="conservative"] { --tl-lev-color: var(--tl-success); }
+.tl-lev[data-zone="moderate"]     { --tl-lev-color: var(--tl-primary); }
+.tl-lev[data-zone="aggressive"]   { --tl-lev-color: var(--tl-warning); }
+.tl-lev[data-zone="degen"]        { --tl-lev-color: var(--tl-danger); }
+.tl-lev[data-zone="maxi"]         { --tl-lev-color: var(--tl-danger); }
+
+.tl-lev__row {
+  display: flex;
+  align-items: center;
+  gap: var(--tl-space-4);
+  margin-bottom: var(--tl-space-4);
+}
+
+/* Range track — fill is solid zone color up to --tl-lev-pct, faint groove after. */
+.tl-lev__input {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--tl-lev-color) var(--tl-lev-pct),
+    rgba(255, 255, 255, .06) var(--tl-lev-pct)
+  );
+  cursor: pointer;
+  outline: none;
+}
+
+/* Thumb — mint-glow disc that recolors with the active zone. */
+.tl-lev__input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--tl-lev-color);
+  cursor: pointer;
+  box-shadow: 0 0 0 var(--tl-space-1) color-mix(in srgb, var(--tl-lev-color) 20%, transparent);
+  transition: box-shadow var(--tl-dur-fast) var(--tl-ease);
+}
+.tl-lev__input::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 var(--tl-space-2) color-mix(in srgb, var(--tl-lev-color) 33%, transparent);
+}
+.tl-lev__input::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: var(--tl-lev-color);
+  cursor: pointer;
+  box-shadow: 0 0 0 var(--tl-space-1) color-mix(in srgb, var(--tl-lev-color) 20%, transparent);
+  transition: box-shadow var(--tl-dur-fast) var(--tl-ease);
+}
+.tl-lev__input::-moz-range-thumb:hover {
+  box-shadow: 0 0 0 var(--tl-space-2) color-mix(in srgb, var(--tl-lev-color) 33%, transparent);
+}
+
+/* Live mono value, recolors with zone. */
+.tl-lev__value {
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--tl-text-xl);
+  font-weight: var(--tl-fw-bold);
+  color: var(--tl-lev-color);
+  min-width: 52px;
+  text-align: right;
+}
+
+/* Zone labels. */
+.tl-lev__zones {
+  display: flex;
+  gap: var(--tl-space-2);
+  margin-top: var(--tl-space-2);
+}
+.tl-lev__zone {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-family: var(--tl-font-sans);
+  font-size: 9px;
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0;
+  white-space: nowrap;
+  opacity: .4;
+  transition: opacity var(--tl-dur) var(--tl-ease);
+}
+.tl-lev__zone:first-child { text-align: left; }
+.tl-lev__zone:last-child { text-align: right; }
+.tl-lev__zone--conservative { color: var(--tl-success); }
+.tl-lev__zone--moderate     { color: var(--tl-primary); }
+.tl-lev__zone--aggressive   { color: var(--tl-warning); }
+.tl-lev__zone--degen        { color: var(--tl-danger); }
+.tl-lev__zone--maxi         { color: var(--tl-danger); }
+
+/* Active zone label — bold, full opacity; maxi gets a red glow. */
+.tl-lev[data-zone="conservative"] .tl-lev__zone--conservative,
+.tl-lev[data-zone="moderate"] .tl-lev__zone--moderate,
+.tl-lev[data-zone="aggressive"] .tl-lev__zone--aggressive,
+.tl-lev[data-zone="degen"] .tl-lev__zone--degen,
+.tl-lev[data-zone="maxi"] .tl-lev__zone--maxi {
+  font-weight: var(--tl-fw-black);
+  opacity: 1;
+}
+.tl-lev[data-zone="maxi"] .tl-lev__zone--maxi {
+  text-shadow: 0 0 var(--tl-space-2) color-mix(in srgb, var(--tl-danger) 50%, transparent);
+}
