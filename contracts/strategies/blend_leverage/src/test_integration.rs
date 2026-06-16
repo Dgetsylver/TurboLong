@@ -18,7 +18,7 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
     vec, Address, BytesN, Env, IntoVal, String, Val, Vec,
 };
@@ -27,7 +27,9 @@ use crate::constants::{
     REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
     REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12, SCALAR_7,
 };
-use crate::leverage::{compute_health_factor, compute_loop_pairs, shares_to_underlying};
+use crate::leverage::{
+    compute_health_factor, compute_loop_pairs, compute_partial_unwind, shares_to_underlying,
+};
 use crate::storage::LeverageReserves;
 use crate::{blend_pool, reserves, storage};
 
@@ -914,6 +916,478 @@ fn test_split_harvest_rejects_non_keeper() {
             .try_harvest_reinvest(&stranger, &1_000, &true, &900)
             .is_err(),
         "harvest_reinvest: non-keeper rejected"
+    );
+}
+
+// ── Regression test: unwind must pay the correct equity after rates accrue ────
+//
+// Bug #1 (b/d-token ↔ underlying unit confusion). `reserves::withdraw` returns
+// proportional b/d-TOKEN quantities; `blend_pool::submit_unwind` feeds them
+// straight into Blend `Request.amount`, which Blend reads as UNDERLYING. Tokens
+// equal underlying ONLY when b_rate == d_rate == SCALAR_12 (what every other
+// test pins). Once Blend interest accrues, withdrawing X equity pays out the
+// WRONG amount of underlying, draining the vault.
+//
+// This test exercises the REAL production `submit_unwind` against the REAL Blend
+// pool after ~1 year of interest, and asserts the withdrawing user receives the
+// equity they are actually owed. It FAILS until `submit_unwind` converts token
+// amounts to underlying (× rate / SCALAR_12).
+#[test]
+fn test_unwind_pays_correct_equity_after_rates_accrue() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let user = Address::generate(&e);
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let token_client = TokenClient::new(&e, &token);
+
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // Build the leveraged position (3 loops at c=0.90).
+    let (b_tokens, d_tokens) = execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    // Seed reserves to match (1 share == 1 underlying at entry, rates 1.0).
+    e.as_contract(&strategy, || {
+        storage::set_strategy_reserves(
+            &e,
+            LeverageReserves {
+                total_shares: deposit,
+                total_b_tokens: b_tokens,
+                total_d_tokens: d_tokens,
+                b_rate: SCALAR_12,
+                d_rate: SCALAR_12,
+            },
+        );
+    });
+
+    // Advance ~1 year so Blend interest accrues (rates drift above 1.0).
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    // Poke the reserve so the accrual is materialised in the stored rates.
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(
+        d_rate > SCALAR_12,
+        "precondition: interest must accrue (d_rate={})",
+        d_rate
+    );
+
+    // Compute a 25%-equity withdrawal using the accrued rates, exactly like
+    // production: shares→(b_to_remove, d_to_remove) token quantities.
+    let (requested, b_to_remove, d_to_remove) = e.as_contract(&strategy, || {
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let equity = crate::leverage::compute_equity(&reserves).unwrap();
+        let requested = equity / 4;
+        let (_burned, b_rm, d_rm, _updated) =
+            reserves::withdraw(&e, reserves.total_shares, requested, &reserves).unwrap();
+        (requested, b_rm, d_rm)
+    });
+
+    let user_before = token_client.balance(&user);
+
+    // Run the REAL production unwind against the REAL pool.
+    e.as_contract(&strategy, || {
+        blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &user, &config).unwrap();
+    });
+
+    let received = token_client.balance(&user) - user_before;
+
+    std::println!(
+        "b_rate={} d_rate={} | requested(owed)={} received={} (b_rm={}, d_rm={})",
+        b_rate,
+        d_rate,
+        requested,
+        received,
+        b_to_remove,
+        d_to_remove
+    );
+
+    // The user must receive the equity they actually own — no more, no less.
+    // Allow 1% tolerance for pool/loop rounding. FAILS today because the unwind
+    // pays out ~ (b_to_remove - d_to_remove) of underlying, materially above the
+    // owed equity once rates have accrued.
+    let tolerance = requested / 100;
+    assert!(
+        (received - requested).abs() <= tolerance,
+        "withdrawing user should receive ~{} (owed equity) but got {} (diff {})",
+        requested,
+        received,
+        (received - requested).abs()
+    );
+}
+
+// Full-close sibling of the regression test above: withdrawing the ENTIRE
+// position after interest has accrued must (a) pay the user their full equity
+// and (b) leave no collateral/debt stranded in the pool. Before the unit-
+// confusion fix, the unwind under-withdrew collateral (token counts used as
+// underlying), leaving dust locked in the pool.
+#[test]
+fn test_full_close_returns_all_equity_after_rates_accrue() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let user = Address::generate(&e);
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let token_client = TokenClient::new(&e, &token);
+
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let (b_tokens, d_tokens) = execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    // Advance ~1 year and poke the reserve so interest is materialised.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
+
+    // Equity owed for a FULL close, in underlying.
+    let owed = b_tokens * b_rate / SCALAR_12 - d_tokens * d_rate / SCALAR_12;
+
+    let user_before = token_client.balance(&user);
+    e.as_contract(&strategy, || {
+        blend_pool::submit_unwind(&e, b_tokens, d_tokens, &user, &config).unwrap();
+    });
+    let received = token_client.balance(&user) - user_before;
+
+    // Position should be essentially emptied.
+    let end = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let end_b = end.collateral.get(config.reserve_id).unwrap_or(0);
+    let end_d = end.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    std::println!(
+        "owed={} received={} end_b={} end_d={}",
+        owed,
+        received,
+        end_b,
+        end_d
+    );
+
+    // User gets their full equity (1% tolerance for pool/loop rounding).
+    assert!(
+        (received - owed).abs() <= owed / 100,
+        "full close should return all equity ~{}, got {}",
+        owed,
+        received
+    );
+    // No material collateral left stranded (≤ 0.5% of the original collateral).
+    assert!(
+        end_b <= b_tokens / 200,
+        "collateral left stranded in pool: end_b={} (started {})",
+        end_b,
+        b_tokens
+    );
+    // All debt cleared.
+    assert!(end_d == 0, "debt not fully cleared: end_d={}", end_d);
+}
+
+// Coverage for the production `submit_deleverage` path (used by rebalance /
+// partial_unwind) at accrued rates — the third site of the unit-confusion fix.
+// Deleveraging must reduce both collateral and debt, improve the health factor,
+// and preserve equity (each layer withdraws == repays the same underlying).
+#[test]
+fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let token_admin = StellarAssetClient::new(&e, &token);
+
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    // Advance ~1 year and poke the reserve so interest is materialised.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
+
+    let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pre_b = pre.collateral.get(config.reserve_id).unwrap_or(0);
+    let pre_d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
+    let pre_equity = pre_b * b_rate / SCALAR_12 - pre_d * d_rate / SCALAR_12;
+    let pre_hf = compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor).unwrap();
+
+    // Unwind 2 loops through the REAL production deleverage path.
+    let (b_removed, d_removed) =
+        e.as_contract(&strategy, || blend_pool::submit_deleverage(&e, 2, &config).unwrap());
+
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let post_b = post.collateral.get(config.reserve_id).unwrap_or(0);
+    let post_d = post.liabilities.get(config.reserve_id).unwrap_or(0);
+    let post_equity = post_b * b_rate / SCALAR_12 - post_d * d_rate / SCALAR_12;
+    let post_hf = compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor).unwrap();
+
+    std::println!(
+        "b_removed={} d_removed={} pre_hf={} post_hf={} pre_eq={} post_eq={}",
+        b_removed,
+        d_removed,
+        pre_hf,
+        post_hf,
+        pre_equity,
+        post_equity
+    );
+
+    // Deleveraging reduces both sides of the position.
+    assert!(
+        b_removed > 0 && d_removed > 0,
+        "should remove collateral and debt: b_removed={}, d_removed={}",
+        b_removed,
+        d_removed
+    );
+    assert!(post_d < pre_d, "debt must decrease: pre={}, post={}", pre_d, post_d);
+
+    // Reducing leverage improves the health factor.
+    assert!(
+        post_hf > pre_hf,
+        "HF must improve after deleverage: pre={}, post={}",
+        pre_hf,
+        post_hf
+    );
+
+    // Equity is preserved (each layer withdraws == repays the same underlying);
+    // allow 1% for pool/loop rounding.
+    assert!(
+        (post_equity - pre_equity).abs() <= pre_equity / 100,
+        "equity must be preserved: pre={}, post={}",
+        pre_equity,
+        post_equity
+    );
+}
+
+// A single-loop deleverage must be a PARTIAL unwind, not a full close. With the
+// broken layer sizing, one "layer" exceeds the whole debt, so a 1-loop unwind
+// either reverts or repays the entire position — defeating partial protection.
+#[test]
+fn test_deleverage_one_loop_is_partial_not_full_close() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let token_admin = StellarAssetClient::new(&e, &token);
+
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pre_d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    // Unwind exactly ONE loop through the real production path.
+    e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, 1, &config).unwrap();
+    });
+
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let post_d = post.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    std::println!("pre_d={} post_d={}", pre_d, post_d);
+
+    // A single-loop unwind should clear only one layer (~debt × (1-c) ≈ 10%),
+    // so the bulk of the debt must remain. FAILS today: the oversized layer
+    // wipes (or over-shoots) the whole debt.
+    assert!(post_d > 0, "1-loop unwind should not fully close the position");
+    assert!(
+        post_d >= pre_d / 2,
+        "1-loop unwind must be partial: pre_d={}, post_d={} (over-unwound)",
+        pre_d,
+        post_d
+    );
+}
+
+// End-to-end protection round-trip (mirrors lib.rs::unwind_to): a position that
+// sits in the orange zone (HF < orange_hf) must be restored to >= orange_hf by
+// `compute_partial_unwind` → `submit_deleverage`. This proves the two pieces are
+// consistent: the loop count derived from the closed form actually achieves the
+// target HF on the real pool.
+#[test]
+fn test_rebalance_round_trip_restores_hf_to_target() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let mut config = make_config(&e, &pool_addr, &token, &blnd);
+    // High leverage so the freshly-built position starts inside the orange zone.
+    config.target_loops = 8;
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
+    let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    let target = config.orange_hf;
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    assert!(
+        before_hf < target,
+        "fixture must start in the orange zone: before_hf={}, target={}",
+        before_hf,
+        target
+    );
+
+    // Production logic: derive the loop count needed to restore HF to target.
+    let (_, loops) =
+        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    assert!(loops >= 1, "should need at least one unwind loop");
+
+    // Execute the real deleverage on the real pool.
+    e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, loops, &config).unwrap();
+    });
+
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b2 = post.collateral.get(config.reserve_id).unwrap_or(0);
+    let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
+    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+
+    std::println!(
+        "before_hf={} after_hf={} target={} loops={}",
+        before_hf,
+        after_hf,
+        target,
+        loops
+    );
+
+    // HF restored to at least the target …
+    assert!(
+        after_hf >= target,
+        "HF must be restored to >= target: after_hf={}, target={}",
+        after_hf,
+        target
+    );
+    // … without grossly over-unwinding (ceil rounding adds at most ~one layer).
+    assert!(
+        after_hf <= target + target * 30 / 100,
+        "over-unwound: after_hf={}, target={}",
+        after_hf,
+        target
     );
 }
 
