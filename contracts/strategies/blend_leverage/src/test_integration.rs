@@ -1408,3 +1408,204 @@ fn test_harvest_reinvest_soroswap_requires_min_out() {
         "soroswap path requires non-zero amount_out_min"
     );
 }
+
+// ── Finding ①: withdraw must keep stored reserves in sync with the pool ───────
+//
+// The strategy keeps TWO ledgers of the same position:
+//   A) stored `LeverageReserves.total_b/d_tokens`  — values shares (deposit /
+//      withdraw / balance / position)
+//   B) the real `pool.get_positions(strategy)`     — drives HF / rebalance
+//
+// `deposit`, `harvest` and `deleverage` all update A from the *measured* pool
+// delta, so A == B by construction. `withdraw` used to be the lone exception: it
+// subtracted the *intended* `b_to_remove`/`d_to_remove` (proportional token
+// counts) and DISCARDED the actual amounts `submit_unwind` removed, so A drifted
+// away from B and never reconciled. The fix routes the withdraw through
+// `reserves::commit_withdraw`, persisting the *measured* (b_removed, d_removed)
+// just like the other three paths.
+//
+// End-to-end guard for Finding ①, driven through the REAL `deposit`/`withdraw`
+// contract entrypoints (not the internal helpers). This is the test that
+// actually protects the production code path: it FAILS if lib.rs::withdraw is
+// reverted to subtract the intended deltas instead of committing the measured
+// ones. Uses the real strategy + real Blend pool + a mock share token.
+#[test]
+fn test_real_withdraw_entrypoint_keeps_reserves_in_sync() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Wire the share token (the strategy is its minter).
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    // Fund a user and deposit through the REAL entrypoint (runs the real
+    // submit_leverage_loop + reserves::deposit reconciliation).
+    let user = Address::generate(&e);
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&user, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    sclient.deposit(&deposit, &user);
+
+    // Post-deposit, stored reserves should already equal pool positions.
+    let after_dep = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let dep_b = after_dep.collateral.get(cfg.reserve_id).unwrap_or(0);
+    let dep_d = after_dep.liabilities.get(cfg.reserve_id).unwrap_or(0);
+    let stored_dep = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(stored_dep.total_b_tokens, dep_b, "post-deposit b in sync");
+    assert_eq!(stored_dep.total_d_tokens, dep_d, "post-deposit d in sync");
+
+    // Accrue ~1 year and poke the reserve so rates drift above 1.0.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    // Withdraw ~30% of the user's balance through the REAL entrypoint, twice.
+    for _ in 0..2 {
+        let bal = sclient.balance(&user);
+        let amount = bal * 3 / 10;
+        sclient.withdraw(&amount, &user, &user);
+    }
+
+    // The invariant must hold through the production withdraw path.
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pool_b = post.collateral.get(cfg.reserve_id).unwrap_or(0);
+    let pool_d = post.liabilities.get(cfg.reserve_id).unwrap_or(0);
+    let stored = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+
+    std::println!(
+        "e2e post-withdraw: stored_b={} pool_b={} (diff={}) | stored_d={} pool_d={} (diff={})",
+        stored.total_b_tokens,
+        pool_b,
+        stored.total_b_tokens - pool_b,
+        stored.total_d_tokens,
+        pool_d,
+        stored.total_d_tokens - pool_d,
+    );
+
+    assert_eq!(stored.total_b_tokens, pool_b, "post-withdraw b out of sync with pool");
+    assert_eq!(stored.total_d_tokens, pool_d, "post-withdraw d out of sync with pool");
+}
+
+// Full-close sibling of the e2e guard: a user withdrawing their ENTIRE balance
+// drives the near-full unwind (large repay + the `i64::MAX` dust sweep) and the
+// `commit_withdraw` `saturating_sub`. Asserts the stored==pool invariant still
+// holds, the user is paid ~their full balance, and only the inflation lockup is
+// left behind.
+#[test]
+fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+    let shclient = MockShareTokenClient::new(&e, &share);
+
+    let user = Address::generate(&e);
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let token_client = TokenClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&user, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    sclient.deposit(&deposit, &user);
+
+    // Accrue ~1 year and poke so rates drift above 1.0.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    // Withdraw the user's ENTIRE reported balance through the real entrypoint.
+    let bal = sclient.balance(&user);
+    let user_before = token_client.balance(&user);
+    sclient.withdraw(&bal, &user, &user);
+    let received = token_client.balance(&user) - user_before;
+
+    // Invariant still holds across the near-full unwind (saturating_sub path).
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pool_b = post.collateral.get(cfg.reserve_id).unwrap_or(0);
+    let pool_d = post.liabilities.get(cfg.reserve_id).unwrap_or(0);
+    let stored = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+
+    std::println!(
+        "full-close e2e: received={} (bal={}) | stored_b={} pool_b={} | stored_d={} pool_d={} | total_shares={} user_shares_left={}",
+        received,
+        bal,
+        stored.total_b_tokens,
+        pool_b,
+        stored.total_d_tokens,
+        pool_d,
+        stored.total_shares,
+        shclient.balance(&user),
+    );
+
+    assert_eq!(stored.total_b_tokens, pool_b, "full-close: stored b out of sync with pool");
+    assert_eq!(stored.total_d_tokens, pool_d, "full-close: stored d out of sync with pool");
+
+    // The user is paid ~their whole balance (1% tolerance for pool/loop rounding).
+    assert!(
+        (received - bal).abs() <= bal / 100,
+        "user should receive ~full balance: got {} want {}",
+        received,
+        bal
+    );
+
+    // Only the inflation lockup (held by the strategy) remains; the user's own
+    // shares are essentially gone (allow a few stroops of ceil/floor dust).
+    assert!(
+        shclient.balance(&user) <= 1_000,
+        "user shares should be ~fully burned, left {}",
+        shclient.balance(&user)
+    );
+    assert!(
+        (stored.total_shares - crate::constants::FIRST_DEPOSIT_LOCKUP).abs() <= 1_000,
+        "only the lockup should remain, total_shares={}",
+        stored.total_shares
+    );
+}
