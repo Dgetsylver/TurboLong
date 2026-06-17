@@ -71,7 +71,7 @@ export function HealthFactor(props: HealthFactorProps): HTMLDivElement {
         )
       : null,
     el("span", { class: "tl-hf__readout" }, [
-      el("span", { class: "tl-hf__value", style: `color:${z.tone}` }, [Number.isFinite(value) ? value.toFixed(5) : "∞"]),
+      el("span", { class: "tl-hf__value", style: `color:${z.tone}` }, [Number.isFinite(value) ? value.toFixed(4) : "∞"]),
       el("span", { class: "tl-hf__zone", style: `color:${z.tone}` }, [z.label]),
     ]),
   ]);
