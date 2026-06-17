@@ -114,7 +114,7 @@ function accountHealth(hf: number, title: string): HTMLElement {
   return el('div', { class: 'tl-hf' }, [
     el('div', { class: 'tl-hf__top' }, [
       el('span', { class: 'tl-hf__label', title }, ['Account Health']),
-      el('span', { class: 'tl-hf__val', style: `color:${color}` }, [hf.toFixed(2) + ' · ' + hfLabel(hf)]),
+      el('span', { class: 'tl-hf__val', style: `color:${color}` }, [(Number.isFinite(hf) ? hf.toFixed(5) : '∞') + ' · ' + hfLabel(hf)]),
     ]),
     el('div', { class: 'tl-hf__track' }, [
       el('div', { class: 'tl-hf__grad' }, []),
@@ -199,7 +199,7 @@ function vaultCard(v: VaultHolding, onManage: () => void): HTMLElement {
     el('div', { class: 'tl-strategy' }, [
       el('span', { class: 'tl-dot' }, []),
       'Strategy Health ',
-      el('span', { class: 'tl-mono tl-strategy__hf' }, [v.strategyHealth.toFixed(2)]),
+      el('span', { class: 'tl-mono tl-strategy__hf' }, [Number.isFinite(v.strategyHealth) ? v.strategyHealth.toFixed(5) : '∞']),
       ' · keeper-protected',
     ]),
     manage,
@@ -244,7 +244,7 @@ export function renderDashboard(data: DashboardData, h: DashboardHandlers): HTML
     metricHero('Total Equity', money(totalEquity), undefined, 'Your own capital across all pools and vaults — collateral value minus debt, summed.'),
     metricHero('Avg Net APY', pct(wAvgApy), wAvgApy >= 0 ? 'var(--tl-success)' : 'var(--tl-danger)'),
     metricHero('Positions', String(data.poolAccounts.length + data.vaults.length), undefined, 'Your active pool accounts plus passive vault positions.'),
-    metricHero('Lowest Account Health', lowestHf ? lowestHf.toFixed(2) : '—', hfColor(lowestHf || 99), 'The riskiest pool account. Below 1.0 the whole pool account is liquidated.'),
+    metricHero('Lowest Account Health', lowestHf ? (Number.isFinite(lowestHf) ? lowestHf.toFixed(5) : '∞') : '—', hfColor(lowestHf || 99), 'The riskiest pool account. Below 1.0 the whole pool account is liquidated.'),
   ]));
 
   // Group A — Pool Accounts
