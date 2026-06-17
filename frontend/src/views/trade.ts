@@ -1519,7 +1519,7 @@ export function tradeScreen(): HTMLElement {
           row("Total borrowed", `${fmt(borrow)} ${liveAsset.symbol}`),
           row(
             "Health Factor",
-            Number.isFinite(hf) ? fmt(hf, getState().expert ? 5 : 4) : "∞",
+            Number.isFinite(hf) ? fmt(hf, 4) : "∞",
             hf > 1.1 ? "trade-tone-up" : hf > 1.03 ? "trade-tone-warn" : "trade-tone-down",
           ),
           row(
