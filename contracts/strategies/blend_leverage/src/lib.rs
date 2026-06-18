@@ -289,15 +289,24 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
         let user_shares = token.balance(&from);
 
-        // Calculate shares to burn + proportional b/d tokens to unwind.
-        let (shares_to_burn, b_to_remove, d_to_remove, updated_reserves) =
+        // Calculate shares to burn + the intended proportional b/d tokens to
+        // unwind. This does NOT persist the position (see `commit_withdraw`).
+        let (shares_to_burn, b_to_remove, d_to_remove, _preview) =
             reserves::withdraw(&e, user_shares, amount, &reserves)?;
 
         // Burn the caller's shares (minter burn — from already authorized above).
         token.burn_by_minter(&from, &shares_to_burn);
 
-        // Execute unwind on the pool — net equity flows to `to`
-        blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+        // Execute unwind on the pool — net equity flows to `to`. The returned
+        // deltas are the b/d tokens the pool *actually* removed.
+        let (b_removed, d_removed) =
+            blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+
+        // Persist using the measured pool deltas so stored reserves stay in
+        // lock-step with the real pool position (Finding ①), matching the
+        // measured-delta discipline of deposit/harvest/deleverage.
+        let updated_reserves =
+            reserves::commit_withdraw(&e, shares_to_burn, b_removed, d_removed, &reserves)?;
 
         let remaining_shares = user_shares
             .checked_sub(shares_to_burn)

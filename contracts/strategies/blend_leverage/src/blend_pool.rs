@@ -9,7 +9,7 @@ use soroban_sdk::{
 use crate::{
     constants::{
         REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
-        REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
+        REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12, SCALAR_7,
     },
     leverage::{compute_step, loop_step_count},
     soroswap::internal_swap_exact_tokens_for_tokens,
@@ -153,15 +153,32 @@ pub fn submit_unwind(
 
     let pre_balance = token_client.balance(&strategy);
 
+    // Blend request amounts are denominated in the UNDERLYING asset, but the
+    // caller passes b/d-TOKEN quantities. Convert with the current pool rates
+    // (underlying = tokens × rate / SCALAR_12). The two are only equal while the
+    // rates sit at 1.0; once interest accrues they diverge, so skipping this
+    // conversion makes the unwind repay/withdraw the wrong amounts.
+    let reserve = pool_client.get_reserve(&config.asset);
+    let b_rate = reserve.data.b_rate;
+    let d_rate = reserve.data.d_rate;
+    let d_underlying = d_tokens_to_remove
+        .checked_mul(d_rate)
+        .ok_or(StrategyError::ArithmeticError)?
+        / SCALAR_12;
+    let b_underlying = b_tokens_to_remove
+        .checked_mul(b_rate)
+        .ok_or(StrategyError::ArithmeticError)?
+        / SCALAR_12;
+
     // Build atomic unwind: [withdraw, repay] × N steps + [withdraw equity].
-    // Split d_tokens_to_remove evenly across target_loops steps.
+    // Split the underlying debt evenly across target_loops steps.
     // Each step withdraws and repays the same amount, maintaining HF.
     // The final withdraw extracts the equity (b - d difference).
     let mut requests: Vec<Request> = Vec::new(e);
     let mut total_repay = 0i128;
 
     let n_steps = config.target_loops.max(1);
-    let repay_per_step = d_tokens_to_remove / n_steps as i128;
+    let repay_per_step = d_underlying / n_steps as i128;
 
     // Check if this is a full close (removing all debt)
     let pool_client_inner = BlendPoolClient::new(e, &config.pool);
@@ -180,18 +197,15 @@ pub fn submit_unwind(
         let repay_amount = if is_last && is_full_close {
             i64::MAX as i128
         } else if is_last {
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
+            d_underlying - repay_per_step * (n_steps as i128 - 1)
         } else {
             repay_per_step
         };
 
         // Withdraw same amount as repay in each pair — this frees collateral to cover repayment.
-        // The equity portion (b_tokens - d_tokens) is withdrawn separately at the end.
-        let withdraw_amount = if is_last && is_full_close {
-            // For full close, withdraw same as the repay dust-cleaning amount
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
-        } else if is_last {
-            d_tokens_to_remove - repay_per_step * (n_steps as i128 - 1)
+        // The equity portion (b - d, in underlying) is withdrawn separately at the end.
+        let withdraw_amount = if is_last {
+            d_underlying - repay_per_step * (n_steps as i128 - 1)
         } else {
             repay_per_step
         };
@@ -209,10 +223,9 @@ pub fn submit_unwind(
         total_repay += repay_amount;
     }
 
-    // Final: withdraw equity portion (collateral minus debt that was removed)
-    let equity_withdraw = b_tokens_to_remove
-        .checked_sub(d_tokens_to_remove)
-        .unwrap_or(0);
+    // Final: withdraw equity portion (collateral minus debt that was removed),
+    // in underlying.
+    let equity_withdraw = b_underlying.checked_sub(d_underlying).unwrap_or(0);
 
     if equity_withdraw > 0 {
         requests.push_back(Request {
@@ -314,44 +327,51 @@ pub fn submit_deleverage(
         return Ok((0, 0));
     }
 
-    // Build all (withdraw, repay) pairs for a single atomic submit.
-    // Each layer amount = the borrow amount of the corresponding leverage step.
-    // Unwind in reverse order (last leverage step unwound first).
-    let count = loop_step_count(config.target_loops);
-    let mut layers: Vec<i128> = Vec::new(e);
-    let mut orig_balance = pre_b; // approximate with total collateral
-    for i in 0..count {
-        let is_final = i == config.target_loops.min(20);
-        let (_, borrow) = compute_step(orig_balance, config.c_factor, is_final);
-        if borrow > 0 {
-            layers.push_back(borrow);
-        }
-        orig_balance = borrow;
+    // Size one unwind layer as `debt × (1 - c_factor)`, in UNDERLYING — the same
+    // definition `compute_partial_unwind` uses to derive `unwind_loops`, so that
+    // unwinding N loops repays ≈ the intended `repay_underlying`. (The previous
+    // implementation seeded the layers from total collateral, producing layers
+    // several times larger than the position, which over-unwound or reverted.)
+    // Blend request amounts are denominated in the underlying asset, so convert
+    // the d-token debt with the current d_rate.
+    let reserve = pool_client.get_reserve(&config.asset);
+    let debt_underlying = pre_d
+        .checked_mul(reserve.data.d_rate)
+        .ok_or(StrategyError::ArithmeticError)?
+        / SCALAR_12;
+    let layer = debt_underlying
+        .checked_mul(SCALAR_7 - config.c_factor)
+        .ok_or(StrategyError::ArithmeticError)?
+        / SCALAR_7;
+    if layer <= 0 {
+        return Ok((0, 0));
     }
 
+    // Build all (withdraw, repay) pairs for a single atomic submit, each step
+    // HF-neutral (withdraw == repay). Cap the cumulative repay at the outstanding
+    // debt so we never over-repay or withdraw more collateral than exists.
     let mut requests: Vec<Request> = Vec::new(e);
     let mut total_repay = 0i128;
-    let n_layers = layers.len();
-    let loops_to_unwind = unwind_loops.min(n_layers);
+    let mut remaining_debt = debt_underlying;
 
-    for i in 0..loops_to_unwind {
-        let idx = n_layers - 1 - i;
-        let layer_amount = layers.get(idx).unwrap_or(0);
-        if layer_amount == 0 {
-            continue;
+    for _ in 0..unwind_loops.min(20) {
+        let amount = layer.min(remaining_debt);
+        if amount <= 0 {
+            break;
         }
 
         requests.push_back(Request {
             address: config.asset.clone(),
-            amount: layer_amount,
+            amount,
             request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
         });
         requests.push_back(Request {
             address: config.asset.clone(),
-            amount: layer_amount,
+            amount,
             request_type: REQUEST_TYPE_REPAY,
         });
-        total_repay += layer_amount;
+        total_repay += amount;
+        remaining_debt -= amount;
     }
 
     if total_repay > 0 {
