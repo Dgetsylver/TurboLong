@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 340" width="860" height="340" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6b7280"/>
+    </marker>
+    <style>
+      .box       { rx:8; ry:8; stroke-width:1.5 }
+      .user      { fill:#dbeafe; stroke:#3b82f6 }
+      .wallet    { fill:#ede9fe; stroke:#7c3aed }
+      .frontend  { fill:#dcfce7; stroke:#16a34a }
+      .rpc       { fill:#fef9c3; stroke:#ca8a04 }
+      .pool      { fill:#fee2e2; stroke:#dc2626 }
+      .token     { fill:#f3f4f6; stroke:#6b7280 }
+      .label     { fill:#111827; font-weight:600 }
+      .sub       { fill:#6b7280; font-size:11px }
+      .edge      { stroke:#6b7280; stroke-width:1.5; fill:none; marker-end:url(#arrow) }
+      .edgelabel { fill:#6b7280; font-size:11px }
+    </style>
+  </defs>
+
+  <!-- User -->
+  <rect class="box user" x="20" y="130" width="100" height="60"/>
+  <text class="label" x="70" y="156" text-anchor="middle">User</text>
+  <text class="sub"   x="70" y="174" text-anchor="middle">browser</text>
+
+  <!-- Wallet -->
+  <rect class="box wallet" x="170" y="130" width="110" height="60"/>
+  <text class="label" x="225" y="156" text-anchor="middle">Wallet</text>
+  <text class="sub"   x="225" y="174" text-anchor="middle">Freighter / xBull</text>
+
+  <!-- Frontend -->
+  <rect class="box frontend" x="335" y="100" width="130" height="120"/>
+  <text class="label" x="400" y="130" text-anchor="middle">Frontend</text>
+  <text class="sub"   x="400" y="148" text-anchor="middle">blend.ts</text>
+  <text class="sub"   x="400" y="164" text-anchor="middle">main.ts</text>
+  <text class="sub"   x="400" y="180" text-anchor="middle">rate-limit + retry</text>
+  <text class="sub"   x="400" y="196" text-anchor="middle">exp. backoff + jitter</text>
+
+  <!-- Soroban RPC -->
+  <rect class="box rpc" x="530" y="60" width="130" height="60"/>
+  <text class="label" x="595" y="86" text-anchor="middle">Soroban RPC</text>
+  <text class="sub"   x="595" y="104" text-anchor="middle">simulate / send</text>
+
+  <!-- Blend Pool -->
+  <rect class="box pool" x="530" y="180" width="130" height="60"/>
+  <text class="label" x="595" y="206" text-anchor="middle">Blend Pool</text>
+  <text class="sub"   x="595" y="224" text-anchor="middle">submit_with_allowance</text>
+
+  <!-- b/d tokens -->
+  <rect class="box token" x="720" y="130" width="120" height="80"/>
+  <text class="label" x="780" y="162" text-anchor="middle">b / d Tokens</text>
+  <text class="sub"   x="780" y="180" text-anchor="middle">bToken = collateral</text>
+  <text class="sub"   x="780" y="196" text-anchor="middle">dToken = debt</text>
+
+  <!-- Edges -->
+  <!-- User → Wallet -->
+  <line class="edge" x1="120" y1="160" x2="168" y2="160"/>
+  <text class="edgelabel" x="144" y="153" text-anchor="middle">sign</text>
+
+  <!-- Wallet → Frontend -->
+  <line class="edge" x1="280" y1="160" x2="333" y2="160"/>
+  <text class="edgelabel" x="306" y="153" text-anchor="middle">XDR</text>
+
+  <!-- Frontend → Soroban RPC -->
+  <path class="edge" d="M465,130 Q500,90 528,90"/>
+  <text class="edgelabel" x="494" y="100" text-anchor="middle">simulate</text>
+
+  <!-- Frontend → Blend Pool -->
+  <path class="edge" d="M465,190 Q500,210 528,210"/>
+  <text class="edgelabel" x="494" y="225" text-anchor="middle">submit</text>
+
+  <!-- Soroban RPC → Blend Pool (on-chain) -->
+  <line class="edge" x1="595" y1="120" x2="595" y2="178"/>
+  <text class="edgelabel" x="600" y="153" text-anchor="start">on-chain</text>
+
+  <!-- Blend Pool → b/d tokens -->
+  <line class="edge" x1="660" y1="210" x2="718" y2="185"/>
+  <text class="edgelabel" x="686" y="193" text-anchor="middle">mint/burn</text>
+</svg>

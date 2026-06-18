@@ -346,14 +346,21 @@ function buildRequestsVec(items: xdr.ScVal[]): xdr.ScVal {
 
 // ── RPC retry helper ──────────────────────────────────────────────────────────
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 4, baseDelayMs = 500): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
-    } catch (e) {
+    } catch (e: any) {
       if (attempt >= retries) throw e;
-      console.warn(`RPC call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${delayMs}ms...`);
-      await new Promise(r => setTimeout(r, delayMs));
+      const is429 = e?.status === 429 || e?.response?.status === 429 ||
+                    String(e?.message ?? e).includes("429");
+      const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 300;
+      if (is429) {
+        console.warn(`[rpc] 429 rate-limited — backing off ${Math.round(delay)}ms (attempt ${attempt + 1}/${retries + 1})`);
+      } else {
+        console.warn(`[rpc] call failed (attempt ${attempt + 1}/${retries + 1}), retrying in ${Math.round(delay)}ms...`);
+      }
+      await new Promise(r => setTimeout(r, delay));
     }
   }
 }
@@ -1042,10 +1049,10 @@ export async function buildApproveXdr(
   const token     = new Contract(assetId);
   const addrScVal = new Address(userAddress).toScVal();
   const poolScVal = new Address(pool.id).toScVal();
-  const ledger    = await server.getLatestLedger();
+  const ledger    = await withRetry(() => server.getLatestLedger());
   const expiry    = ledger.sequence + 120;
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await withRetry(() => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1059,7 +1066,7 @@ export async function buildApproveXdr(
     ))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Approve simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1077,7 +1084,7 @@ export async function buildOpenPositionXdr(
   const addrScVal    = new Address(userAddress).toScVal();
   const requests     = buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await withRetry(() => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1085,7 +1092,7 @@ export async function buildOpenPositionXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Open position simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1124,7 +1131,7 @@ export async function buildCloseSubmitXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1132,7 +1139,7 @@ export async function buildCloseSubmitXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Close simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1161,7 +1168,7 @@ export async function buildRepayXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1169,7 +1176,7 @@ export async function buildRepayXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Repay simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1192,7 +1199,7 @@ export async function buildWithdrawXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1200,7 +1207,7 @@ export async function buildWithdrawXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Withdraw simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1248,7 +1255,7 @@ export async function buildClaimXdr(
     tokenIds.map(id => nativeToScVal(id, { type: "u32" }))
   );
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await withRetry(() => server.getAccount(userAddress));
   const tx  = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1256,7 +1263,7 @@ export async function buildClaimXdr(
     .addOperation(poolContract.call("claim", addrScVal, tokenIds_scv, addrScVal))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Claim simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1312,7 +1319,7 @@ export async function buildIncreaseLeverageXdr(
   const requests = buildRequestsVec(items);
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1320,7 +1327,7 @@ export async function buildIncreaseLeverageXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Increase leverage simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1354,7 +1361,7 @@ export async function buildDecreaseLeverageXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1362,7 +1369,7 @@ export async function buildDecreaseLeverageXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Decrease leverage simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
@@ -1481,7 +1488,7 @@ export async function buildResupplyXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal    = new Address(userAddress).toScVal();
-  const acc          = await server.getAccount(userAddress);
+  const acc          = await withRetry(() => server.getAccount(userAddress));
   const tx           = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1489,7 +1496,7 @@ export async function buildResupplyXdr(
     .addOperation(poolContract.call("submit_with_allowance", addrScVal, addrScVal, addrScVal, requests))
     .setTimeout(60).build();
 
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRetry(() => server.simulateTransaction(tx));
   if (!SorobanRpc.Api.isSimulationSuccess(sim))
     throw new Error(`Resupply simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
   return SorobanRpc.assembleTransaction(tx, sim).build().toXDR();
