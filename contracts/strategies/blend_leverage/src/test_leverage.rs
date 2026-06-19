@@ -977,3 +977,109 @@ fn test_partial_unwind_with_accrued_rates_is_sane() {
         assert!(repay > 0, "positive repay: {}", repay);
     }
 }
+
+// -- Property tests ------------------------------------------------------------
+
+mod leverage_property_tests {
+    use super::*;
+    use crate::leverage::compute_step;
+    use proptest::prelude::*;
+
+    const PROPTEST_CASES: u32 = 1_000;
+    const MAX_FORMULA_INITIAL: i128 = i128::MAX / SCALAR_7 / 32;
+    const MAX_TOKEN_AMOUNT: i128 = 1_000_000_000_000_000_000;
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: PROPTEST_CASES,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn step_borrow_is_bounded_by_balance(
+            balance in 0i128..=MAX_FORMULA_INITIAL,
+            c_factor in 0i128..=SCALAR_7,
+        ) {
+            let (supply, borrow) = compute_step(balance, c_factor, false);
+
+            prop_assert_eq!(supply, balance);
+            prop_assert!(borrow >= 0);
+            prop_assert!(borrow <= balance);
+        }
+
+        #[test]
+        fn final_step_never_borrows(
+            balance in 0i128..=MAX_FORMULA_INITIAL,
+            c_factor in 0i128..=SCALAR_7,
+        ) {
+            let (supply, borrow) = compute_step(balance, c_factor, true);
+
+            prop_assert_eq!(supply, balance);
+            prop_assert_eq!(borrow, 0);
+        }
+
+        #[test]
+        fn totals_keep_supply_above_borrow_and_preserve_equity(
+            initial in 0i128..=MAX_FORMULA_INITIAL,
+            c_factor in 0i128..=SCALAR_7,
+            n_loops in 0u32..=20,
+        ) {
+            let (total_supply, total_borrow) = compute_totals(initial, c_factor, n_loops);
+
+            prop_assert!(total_supply >= total_borrow);
+            prop_assert_eq!(total_supply - total_borrow, initial);
+        }
+
+        #[test]
+        fn leverage_stays_below_theoretical_bound(
+            initial in 1i128..=MAX_FORMULA_INITIAL,
+            c_factor in 0i128..SCALAR_7,
+            n_loops in 0u32..=20,
+        ) {
+            let (total_supply, _) = compute_totals(initial, c_factor, n_loops);
+
+            let distance_to_one = SCALAR_7 - c_factor;
+            let bounded_supply = total_supply * distance_to_one;
+            let theoretical_bound = initial * SCALAR_7;
+
+            prop_assert!(bounded_supply <= theoretical_bound);
+        }
+
+        #[test]
+        fn health_factor_is_monotone_in_collateral_factor(
+            b_tokens in 1i128..=MAX_TOKEN_AMOUNT,
+            d_tokens in 1i128..=MAX_TOKEN_AMOUNT,
+            b_rate in SCALAR_12..=(SCALAR_12 * 2),
+            d_rate in SCALAR_12..=(SCALAR_12 * 2),
+            c_a in 0i128..=SCALAR_7,
+            c_b in 0i128..=SCALAR_7,
+        ) {
+            let c_low = c_a.min(c_b);
+            let c_high = c_a.max(c_b);
+
+            let hf_low =
+                compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_low).unwrap();
+            let hf_high =
+                compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_high).unwrap();
+
+            prop_assert!(hf_high >= hf_low);
+        }
+
+        #[test]
+        fn extreme_inputs_do_not_panic(
+            initial in 0i128..=i128::MAX,
+            c_factor in 0i128..=i128::MAX,
+            n_loops in any::<u32>(),
+        ) {
+            let step_result = std::panic::catch_unwind(|| {
+                let _ = compute_step(initial, c_factor, false);
+            });
+            let totals_result = std::panic::catch_unwind(|| {
+                let _ = compute_totals(initial, c_factor, n_loops);
+            });
+
+            prop_assert!(step_result.is_ok());
+            prop_assert!(totals_result.is_ok());
+        }
+    }
+}

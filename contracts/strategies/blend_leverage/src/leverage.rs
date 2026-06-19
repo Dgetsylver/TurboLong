@@ -35,7 +35,7 @@ pub fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i12
 /// Total number of steps in a leverage loop (n_loops supply+borrow pairs + 1 final supply).
 #[inline]
 pub fn loop_step_count(n_loops: u32) -> u32 {
-    (n_loops + 1).min(21)
+    n_loops.saturating_add(1).min(21)
 }
 
 /// Compute supply and borrow amounts for each loop iteration.
