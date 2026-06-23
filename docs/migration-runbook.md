@@ -60,10 +60,14 @@ admin is set at construction (`init_args[9]`). A `version()` counter starts at
    - each sampled `balance(depositor)` identical within **1e-7** (expected:
      exactly equal — storage is untouched)
 
-   The same invariant is asserted in unit tests
-   (`test_upgrade_preserves_hf_and_balance_parity` in `src/test_leverage.rs`):
-   the same stored reserves yield byte-identical equity, HF, and per-share
-   underlying. The on-chain step above is the live-pool-state confirmation.
+   The same invariant is asserted in tests at two levels: a seeded-reserves unit
+   test (`test_upgrade_preserves_hf_and_balance_parity` in `src/test_leverage.rs`)
+   and a **live `BlendFixture` pool-state** integration test
+   (`test_upgrade_preserves_hf_and_balance_on_live_pool_state` in
+   `src/test_integration.rs`) that builds a real leveraged position with drifted
+   rates, calls the real admin-gated `upgrade()` entrypoint (version bump), and
+   asserts equity, HF, and per-user balance are identical **within 1e-7** pre/post.
+   The on-chain step above is the mainnet confirmation of the same invariant.
 
 ## Testnet rehearsal (do this before any mainnet upgrade)
 

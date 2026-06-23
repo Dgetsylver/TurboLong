@@ -13,7 +13,7 @@ rollback, comms, and the post-launch watch.
 
 ## 0. Pre-launch checklist (gate — all must be true)
 
-- [ ] **Release gate green** — see `docs/testing-programme.md` (71 contract tests,
+- [ ] **Release gate green** — see `docs/testing-programme.md` (80 contract tests,
       parity, lint/build, e2e, audit, gitleaks).
 - [ ] Final mainnet WASM built (`cargo build --target wasm32v1-none --release`),
       hash recorded — includes D2 receipt token + D3 admin/upgrade.

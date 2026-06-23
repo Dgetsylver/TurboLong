@@ -19,15 +19,16 @@
 |---|-----------------|--------|----------|
 | D1 | 4-asset mainnet vault deployment ($7k) | ⛔ Prepped, not deployed | Deploy script `scripts/deploy_strategy_mainnet.ts` (4 strategy + 4 `vault_share`, `set_share_token` + `set_swap_account`, writes `deployed-vaults.mainnet.json`) — PR #271. Frontend wiring + `MAINNET_VAULTS` — PR #272. `docs/mainnet-go-live-runbook.md`. Config sourced (Soroswap router, live pool c_factors). ⛔ Deploy + per-asset deposit→loop→withdraw verification + DeFindex co-sign pending. |
 | D2 | Full SEP-41 receipt token ($4k) | ✅ Done | Separate `vault_share` SEP-41 contract (resolves the trait-`balance` vs SEP-41-`balance` collision). `transfer`/`approve`/`allowance`/`transfer_from`, `total_supply == Σ balances`. **15 unit tests** (`contracts/tokens/vault_share/src/test.rs`). Mainnet address captured at D1 deploy. |
-| D3 | In-place WASM upgrade + admin ($2k) | ✅ Done | `upgrade()` + admin role + `version()`; storage/positions preserved. Upgrade-parity tests assert Config, every `VaultPos`, `total_shares`, recomputed HF identical **within 1e-7** pre/post (`test_integration.rs`, **13 tests**). Runbook: `docs/migration-runbook.md`. |
+| D3 | In-place WASM upgrade + admin ($2k) | ✅ Done | `upgrade()` + admin role + `version()`; storage/positions preserved. Upgrade-parity asserted at two levels: a seeded-reserves unit test (`test_upgrade_preserves_hf_and_balance_parity`, `test_leverage.rs`) and a **live `BlendFixture` pool-state** integration test (`test_upgrade_preserves_hf_and_balance_on_live_pool_state`, `test_integration.rs`) that drives a real deposit + drifted rates through the real `upgrade()` entrypoint — equity, HF, and per-user balance identical **within 1e-7** pre/post. Runbook: `docs/migration-runbook.md`. |
 | D4 | Wallets Kit mobile + Ledger + E2E ($5k) | ✅ Code done / ⛔ device sign-off | Ledger module + WalletConnect mobile deep-link + Playwright e2e (5 wallets × {classic, Soroban}, mock seam) — PR #259. ⛔ Physical Ledger run + iOS/Android device runs (Lobstr/xBull) + wallet-team sign-off pending (external). |
 | D5 | CI / supply-chain hygiene ($2k) | ✅ Done | `dependabot.yml`, `cargo-audit.yml`, Clippy `-D warnings` + `cargo fmt --check` (`contracts.yml`), Biome + build + e2e (`frontend-ci.yml`), `secret-scan.yml` (gitleaks) + `.gitleaks.toml` + pre-commit. Dependabot actively opening PRs. ✅ gitleaks blocks a planted Stellar key (rule `stellar-secret-key`, exit 1) — local proof captured in `docs/evidence/gitleaks-block-demo.md`. |
 
 ## Verifiable now (on `main`)
 
-- **Contracts:** 71 tests green (43 `test_leverage.rs`, 13 `test_integration.rs`
-  incl. upgrade-parity 1e-7, 15 `vault_share/test.rs`); clippy `-D warnings` +
-  `cargo fmt --check` enforced; wasm builds.
+- **Contracts:** 80 tests green (43 `test_leverage.rs`, 22 `test_integration.rs`,
+  15 `vault_share/test.rs`); upgrade-parity within 1e-7 on a seeded fixture
+  (`test_leverage.rs`) and a live Blend pool-state fixture (`test_integration.rs`);
+  clippy `-D warnings` + `cargo fmt --check` enforced; wasm builds.
 - **Rate parity:** TS `projectRates` ↔ Rust `rate_calc` over ≥20 IR-kink
   fixtures (`parity.yml`).
 - **Frontend/Worker:** Biome + Vite build + Playwright e2e (`frontend-ci.yml`).
