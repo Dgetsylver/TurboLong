@@ -826,11 +826,32 @@ fn test_safety_allows_healthy_pool() {
 
 #[test]
 fn test_admin_storage_roundtrip() {
+    use admin_sep::Administratable;
     let e = Env::default();
+    e.mock_all_auths();
     with_contract(&e, |e, _| {
         let admin = Address::generate(e);
-        storage::set_admin(e, &admin);
-        assert_eq!(storage::get_admin(e), admin);
+        crate::BlendLeverageStrategy::set_admin(e, &admin);
+        assert_eq!(crate::BlendLeverageStrategy::admin(e), admin);
+    });
+}
+
+// Proves the admin-sep gating is real: once an admin exists, rotating it via
+// `set_admin` requires the *current* admin's authorization. The existing
+// integration tests run under `mock_all_auths`, so this is the test that
+// actually exercises the `require_auth` path (no auth mocked → must panic).
+#[test]
+#[should_panic]
+fn test_set_admin_requires_current_admin_auth() {
+    use admin_sep::Administratable;
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        // First assignment: no prior admin, so no auth needed.
+        let admin1 = Address::generate(e);
+        crate::BlendLeverageStrategy::set_admin(e, &admin1);
+        // Rotation: admin1's auth is NOT mocked → require_auth must reject.
+        let admin2 = Address::generate(e);
+        crate::BlendLeverageStrategy::set_admin(e, &admin2);
     });
 }
 

@@ -184,7 +184,12 @@ impl VaultShareToken {
         from.require_auth();
         check_nonnegative(amount)?;
         Self::spend(&e, &from, amount)?;
-        storage::set_total_supply(&e, storage::get_total_supply(&e) - amount);
+        storage::set_total_supply(
+            &e,
+            storage::get_total_supply(&e)
+                .checked_sub(amount)
+                .ok_or(TokenError::InsufficientBalance)?,
+        );
         storage::extend_instance(&e);
         e.events().publish((symbol_short!("burn"), from), amount);
         Ok(())
@@ -200,7 +205,12 @@ impl VaultShareToken {
         check_nonnegative(amount)?;
         Self::spend_allowance(&e, &from, &spender, amount)?;
         Self::spend(&e, &from, amount)?;
-        storage::set_total_supply(&e, storage::get_total_supply(&e) - amount);
+        storage::set_total_supply(
+            &e,
+            storage::get_total_supply(&e)
+                .checked_sub(amount)
+                .ok_or(TokenError::InsufficientBalance)?,
+        );
         storage::extend_instance(&e);
         e.events().publish((symbol_short!("burn"), from), amount);
         Ok(())
@@ -226,7 +236,12 @@ impl VaultShareToken {
         minter.require_auth();
         check_nonnegative(amount)?;
         Self::receive(&e, &to, amount)?;
-        storage::set_total_supply(&e, storage::get_total_supply(&e) + amount);
+        storage::set_total_supply(
+            &e,
+            storage::get_total_supply(&e)
+                .checked_add(amount)
+                .ok_or(TokenError::NegativeAmount)?,
+        );
         storage::extend_instance(&e);
         e.events()
             .publish((symbol_short!("mint"), minter, to), amount);
@@ -240,7 +255,12 @@ impl VaultShareToken {
         minter.require_auth();
         check_nonnegative(amount)?;
         Self::spend(&e, &from, amount)?;
-        storage::set_total_supply(&e, storage::get_total_supply(&e) - amount);
+        storage::set_total_supply(
+            &e,
+            storage::get_total_supply(&e)
+                .checked_sub(amount)
+                .ok_or(TokenError::InsufficientBalance)?,
+        );
         storage::extend_instance(&e);
         e.events().publish((symbol_short!("burn"), from), amount);
         Ok(())
