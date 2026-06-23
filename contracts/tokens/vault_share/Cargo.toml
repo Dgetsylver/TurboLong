@@ -5,7 +5,10 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+# `rlib` in addition to `cdylib` so other contract crates (e.g. the strategy's
+# integration tests) can register this token natively; the wasm artifact is
+# still produced from the `cdylib` output.
+crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]

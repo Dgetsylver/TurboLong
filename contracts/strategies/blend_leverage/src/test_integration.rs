@@ -1609,3 +1609,130 @@ fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
         stored.total_shares
     );
 }
+
+// ── D2: a transferred receipt token carries the underlying claim ──────────────
+//
+// The vault-share token is a standard SEP-41 — holding it *is* holding the
+// position. This drives the full chain through the REAL token contract (not the
+// MockShareToken): real SEP-41 `transfer` semantics + real strategy + real
+// Blend pool. Alice deposits, transfers her entire share balance to Bob, then
+// Bob — who never touched the strategy — withdraws and is paid the underlying,
+// while Alice is paid nothing. This is the integration guarantee the Aquarius
+// listing (T3) relies on: the strategy attributes equity by *current* token
+// ownership, and the token supply stays equal to the strategy's `total_shares`.
+#[test]
+fn test_transferred_shares_let_recipient_withdraw() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    // Config must exist for the pool reserve, but this test reads claims through
+    // the public strategy entrypoints rather than stored reserves directly.
+    let _cfg = make_config(&e, &pool_addr, &token, &blnd);
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Wire the REAL SEP-41 share token, with the strategy as its sole minter.
+    let share = e.register(
+        vault_share_token::VaultShareToken,
+        (
+            Address::generate(&e), // admin
+            strategy.clone(),      // minter = the strategy
+            7u32,
+            String::from_str(&e, "BlendLeverage USDC Share"),
+            String::from_str(&e, "blvUSDC"),
+        ),
+    );
+    sclient.set_share_token(&share);
+    let shclient = vault_share_token::VaultShareTokenClient::new(&e, &share);
+
+    // Alice deposits through the real entrypoint (mints her shares on the token).
+    let alice = Address::generate(&e);
+    let bob = Address::generate(&e);
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let token_client = TokenClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&alice, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    sclient.deposit(&deposit, &alice);
+
+    let alice_shares = shclient.balance(&alice);
+    assert!(alice_shares > 0, "alice should hold shares after deposit");
+    assert_eq!(shclient.balance(&bob), 0, "bob starts with no shares");
+
+    // Accrue ~1 year and poke the reserve so rates drift above 1.0 (equity grows
+    // beyond principal — the post-transfer claim is non-trivial).
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    // Alice transfers her ENTIRE share balance to Bob via the SEP-41 `transfer`.
+    shclient.transfer(&alice, &bob, &alice_shares);
+    assert_eq!(shclient.balance(&alice), 0, "alice fully transferred out");
+    assert_eq!(shclient.balance(&bob), alice_shares, "bob now holds the shares");
+
+    // The strategy must now attribute the position to BOB, not Alice.
+    assert_eq!(sclient.balance(&alice), 0, "alice has no claim post-transfer");
+    let bob_claim = sclient.balance(&bob);
+    assert!(bob_claim > 0, "bob's transferred shares carry the underlying claim");
+
+    // Bob — who never deposited — withdraws his full balance and is paid.
+    let bob_before = token_client.balance(&bob);
+    sclient.withdraw(&bob_claim, &bob, &bob);
+    let bob_received = token_client.balance(&bob) - bob_before;
+    let alice_received = token_client.balance(&alice);
+
+    std::println!(
+        "transfer-then-withdraw: alice_shares={} bob_claim={} bob_received={} alice_received={}",
+        alice_shares,
+        bob_claim,
+        bob_received,
+        alice_received,
+    );
+
+    // Bob receives ~his claim (1% tolerance for pool/loop rounding); Alice none.
+    assert!(
+        (bob_received - bob_claim).abs() <= bob_claim / 100,
+        "bob should receive ~his claim: got {} want {}",
+        bob_received,
+        bob_claim
+    );
+    assert_eq!(
+        alice_received, 0,
+        "alice must not be paid after transferring her shares away"
+    );
+
+    // Bob's shares are ~fully burned; the token supply still equals the
+    // strategy's accounting (`total_supply == total_shares`), with only the
+    // inflation lockup left behind.
+    assert!(
+        shclient.balance(&bob) <= 1_000,
+        "bob shares should be ~fully burned, left {}",
+        shclient.balance(&bob)
+    );
+    let stored = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(
+        shclient.total_supply(),
+        stored.total_shares,
+        "token supply must stay equal to strategy total_shares"
+    );
+}
