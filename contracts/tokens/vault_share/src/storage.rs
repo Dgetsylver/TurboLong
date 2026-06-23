@@ -43,8 +43,6 @@ pub enum DataKey {
     Balance(Address),
     /// Per (owner, spender) allowance.
     Allowance(AllowanceKey),
-    /// Account allowed to upgrade / set the minter.
-    Admin,
     /// Account allowed to mint and burn (the strategy contract).
     Minter,
     /// Total tokens outstanding.
@@ -62,17 +60,9 @@ pub fn extend_instance(e: &Env) {
 }
 
 // ── Admin / minter / metadata ────────────────────────────────────────────────
-
-pub fn set_admin(e: &Env, admin: &Address) {
-    e.storage().instance().set(&DataKey::Admin, admin);
-}
-
-pub fn get_admin(e: &Env) -> Address {
-    e.storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .expect("admin not set")
-}
+//
+// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// under the SEP's canonical instance-storage key — there is no local Admin key.
 
 pub fn set_minter(e: &Env, minter: &Address) {
     e.storage().instance().set(&DataKey::Minter, minter);

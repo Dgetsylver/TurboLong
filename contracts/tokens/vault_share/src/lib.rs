@@ -20,6 +20,7 @@ mod storage;
 #[cfg(test)]
 mod test;
 
+use admin_sep::{Administratable, AdministratableExtension};
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Address, Env, String};
 use storage::TokenMetadata;
 
@@ -49,7 +50,8 @@ pub struct VaultShareToken;
 impl VaultShareToken {
     /// Initialize the token.
     ///
-    /// - `admin`   — may set the minter and upgrade the contract.
+    /// - `admin`   — may rotate the minter and rotate the admin (no upgrade:
+    ///   the share-ledger code is immutable).
     /// - `minter`  — the only account allowed to mint/burn (the strategy).
     /// - `decimals`/`name`/`symbol` — token metadata.
     pub fn __constructor(
@@ -60,7 +62,7 @@ impl VaultShareToken {
         name: String,
         symbol: String,
     ) {
-        storage::set_admin(&e, &admin);
+        Self::set_admin(&e, &admin);
         storage::set_minter(&e, &minter);
         storage::set_metadata(
             &e,
@@ -274,15 +276,25 @@ impl VaultShareToken {
         storage::get_minter(&e)
     }
 
-    pub fn admin(e: Env) -> Address {
-        storage::get_admin(&e)
-    }
-
     /// Rotate the minter (admin only) — e.g. when the strategy is redeployed.
     pub fn set_minter(e: Env, new_minter: Address) -> Result<(), TokenError> {
-        storage::get_admin(&e).require_auth();
+        Self::require_admin(&e);
         storage::set_minter(&e, &new_minter);
         storage::extend_instance(&e);
         Ok(())
     }
 }
+
+// ── Administration (admin-sep SEP) ───────────────────────────────────────────
+//
+// Admin storage and the `admin` / `set_admin` entrypoints come from the
+// `admin-sep` Administratable trait (admin lives in instance storage under the
+// SEP's canonical key). `set_admin` is current-admin-gated, giving the token a
+// real admin-rotation path. The constructor seeds the admin via `Self::set_admin`.
+//
+// Deliberately NOT `Upgradable`: the share ledger is immutable code, so holders
+// can trust their balances can never be rewritten by an admin upgrade. The only
+// admin powers are rotating the minter and rotating the admin itself.
+
+#[contractimpl(contracttrait)]
+impl Administratable for VaultShareToken {}
