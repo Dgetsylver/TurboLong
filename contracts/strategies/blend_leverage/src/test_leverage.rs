@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Unit tests for leverage math, equity calculation, share accounting, and safety checks.
 
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12, SCALAR_7};

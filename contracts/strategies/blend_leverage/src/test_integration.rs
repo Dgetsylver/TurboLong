@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 //! Integration tests against a real mock Blend pool using BlendFixture.
 //!
 //! Tests pool interactions (supply, borrow, repay, withdraw) individually,
@@ -1206,8 +1204,9 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
     let pre_hf = compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor).unwrap();
 
     // Unwind 2 loops through the REAL production deleverage path.
-    let (b_removed, d_removed) =
-        e.as_contract(&strategy, || blend_pool::submit_deleverage(&e, 2, &config).unwrap());
+    let (b_removed, d_removed) = e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, 2, &config).unwrap()
+    });
 
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let post_b = post.collateral.get(config.reserve_id).unwrap_or(0);
@@ -1232,7 +1231,12 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
         b_removed,
         d_removed
     );
-    assert!(post_d < pre_d, "debt must decrease: pre={}, post={}", pre_d, post_d);
+    assert!(
+        post_d < pre_d,
+        "debt must decrease: pre={}, post={}",
+        pre_d,
+        post_d
+    );
 
     // Reducing leverage improves the health factor.
     assert!(
@@ -1297,7 +1301,10 @@ fn test_deleverage_one_loop_is_partial_not_full_close() {
     // A single-loop unwind should clear only one layer (~debt × (1-c) ≈ 10%),
     // so the bulk of the debt must remain. FAILS today: the oversized layer
     // wipes (or over-shoots) the whole debt.
-    assert!(post_d > 0, "1-loop unwind should not fully close the position");
+    assert!(
+        post_d > 0,
+        "1-loop unwind should not fully close the position"
+    );
     assert!(
         post_d >= pre_d / 2,
         "1-loop unwind must be partial: pre_d={}, post_d={} (over-unwound)",
@@ -1353,8 +1360,7 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     );
 
     // Production logic: derive the loop count needed to restore HF to target.
-    let (_, loops) =
-        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
     assert!(loops >= 1, "should need at least one unwind loop");
 
     // Execute the real deleverage on the real pool.
@@ -1507,8 +1513,14 @@ fn test_real_withdraw_entrypoint_keeps_reserves_in_sync() {
         stored.total_d_tokens - pool_d,
     );
 
-    assert_eq!(stored.total_b_tokens, pool_b, "post-withdraw b out of sync with pool");
-    assert_eq!(stored.total_d_tokens, pool_d, "post-withdraw d out of sync with pool");
+    assert_eq!(
+        stored.total_b_tokens, pool_b,
+        "post-withdraw b out of sync with pool"
+    );
+    assert_eq!(
+        stored.total_d_tokens, pool_d,
+        "post-withdraw d out of sync with pool"
+    );
 }
 
 // Full-close sibling of the e2e guard: a user withdrawing their ENTIRE balance
@@ -1585,8 +1597,14 @@ fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
         shclient.balance(&user),
     );
 
-    assert_eq!(stored.total_b_tokens, pool_b, "full-close: stored b out of sync with pool");
-    assert_eq!(stored.total_d_tokens, pool_d, "full-close: stored d out of sync with pool");
+    assert_eq!(
+        stored.total_b_tokens, pool_b,
+        "full-close: stored b out of sync with pool"
+    );
+    assert_eq!(
+        stored.total_d_tokens, pool_d,
+        "full-close: stored d out of sync with pool"
+    );
 
     // The user is paid ~their whole balance (1% tolerance for pool/loop rounding).
     assert!(
@@ -1688,12 +1706,23 @@ fn test_transferred_shares_let_recipient_withdraw() {
     // Alice transfers her ENTIRE share balance to Bob via the SEP-41 `transfer`.
     shclient.transfer(&alice, &bob, &alice_shares);
     assert_eq!(shclient.balance(&alice), 0, "alice fully transferred out");
-    assert_eq!(shclient.balance(&bob), alice_shares, "bob now holds the shares");
+    assert_eq!(
+        shclient.balance(&bob),
+        alice_shares,
+        "bob now holds the shares"
+    );
 
     // The strategy must now attribute the position to BOB, not Alice.
-    assert_eq!(sclient.balance(&alice), 0, "alice has no claim post-transfer");
+    assert_eq!(
+        sclient.balance(&alice),
+        0,
+        "alice has no claim post-transfer"
+    );
     let bob_claim = sclient.balance(&bob);
-    assert!(bob_claim > 0, "bob's transferred shares carry the underlying claim");
+    assert!(
+        bob_claim > 0,
+        "bob's transferred shares carry the underlying claim"
+    );
 
     // Bob — who never deposited — withdraws his full balance and is paid.
     let bob_before = token_client.balance(&bob);
