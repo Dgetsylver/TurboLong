@@ -852,6 +852,25 @@ fn test_share_token_wiring_set_migrate_balance() {
     assert!(bal > 0, "balance via token should be positive, got {}", bal);
 }
 
+// Admin recovery path: the admin can rotate the keeper via `admin_set_keeper`
+// without the old keeper's cooperation (second of the two rotation routes).
+#[test]
+fn test_admin_set_keeper_rotates_keeper() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    let new_keeper = Address::generate(&e);
+    sclient.admin_set_keeper(&new_keeper);
+    assert_eq!(
+        sclient.get_keeper(),
+        new_keeper,
+        "admin must be able to recover/rotate the keeper"
+    );
+}
+
 // ── Auto-rebalance keeper auth & rate-limit (T2.3) ────────────────────────────
 
 #[test]
