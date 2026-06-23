@@ -130,7 +130,7 @@ pub fn deposit(
 /// committed by `commit_withdraw` from the pool's *measured* deltas, so stored
 /// reserves stay in lock-step with the actual pool position (Finding ①).
 pub fn withdraw(
-    e: &Env,
+    _e: &Env,
     user_shares: i128,
     amount: i128, // underlying amount requested
     reserves: &LeverageReserves,

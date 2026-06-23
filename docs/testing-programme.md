@@ -19,7 +19,7 @@ relies on to quote positions.
               ┌─ E2E wallet flows (Playwright, mock seam) ─┐               Layer 4
             ┌─ Frontend lint + build (Biome, Vite) ─┐                      Layer 3
           ┌─ Rate-model parity (TS ↔ Rust, ≥20 fixtures) ─┐                Layer 2
-        ┌─ Contract unit + integration (Rust, 71 tests) ───────┐          Layer 1
+        ┌─ Contract unit + integration (Rust, 80 tests) ───────┐          Layer 1
         └────────── Supply-chain / secret scanning (always-on) ─┘          Layer 0
 ```
 
@@ -37,12 +37,12 @@ relies on to quote positions.
 
 ## Layer 1 — Contract unit & integration (Rust) — *primary*
 
-The fund-holding logic. **71 tests** across:
+The fund-holding logic. **80 tests** across:
 
 | Crate / file | Tests | Covers |
 |--------------|-------|--------|
-| `contracts/strategies/blend_leverage/src/test_leverage.rs` | 43 | leverage-loop open/close, health-factor math, partial unwind, `orange_hf` band, rebalance keeper, BLND harvest split (`harvest_claim` / `harvest_reinvest`), interest-rate kink, utilization-cap panics (e.g. `#[should_panic("Error(Contract, #422)")]` at >95% util) |
-| `contracts/strategies/blend_leverage/src/test_integration.rs` | 13 | in-place WASM `upgrade()` parity — Config, every `VaultPos`, `total_shares`, recomputed HF identical **within 1e-7** pre/post upgrade; admin auth; degenerate cases (zero positions, single user, post-harvest rates) |
+| `contracts/strategies/blend_leverage/src/test_leverage.rs` | 43 | leverage-loop open/close, health-factor math, partial unwind, `orange_hf` band, rebalance keeper, BLND harvest split (`harvest_claim` / `harvest_reinvest`), interest-rate kink, utilization-cap panics (e.g. `#[should_panic("Error(Contract, #422)")]` at >95% util); **version counter** (`test_version_defaults_to_one_then_bumps`) and **upgrade-parity on a seeded fixture** (`test_upgrade_preserves_hf_and_balance_parity`) — equity/HF/per-share underlying identical **within 1e-7** |
+| `contracts/strategies/blend_leverage/src/test_integration.rs` | 22 | integration against a real Blend pool (`BlendFixture`): supply/borrow, leverage-loop build, full deposit→withdraw cycle, two-user proportionality, deleverage/partial-unwind, rebalance round-trip, harvest, real `deposit`/`withdraw` entrypoints keep reserves in sync, share-token wiring + `migrate_position`, transferred-share withdraw; **live pool-state `upgrade()` parity** (`test_upgrade_preserves_hf_and_balance_on_live_pool_state`) — real deposit + drifted rates, the real `upgrade()` entrypoint (admin-gated, version bump), equity/HF/per-user balance identical **within 1e-7** pre/post |
 | `contracts/tokens/vault_share/src/test.rs` | 15 | SEP-41 receipt token: `transfer` moves shares + proportional claim (no pool interaction), insufficient-balance/non-positive guards, `approve`/`allowance`/`transfer_from` happy + expiry + over-allowance, `total_supply == Σ balances` |
 
 **Run:** `cd contracts/strategies/blend_leverage && cargo test`;
@@ -118,7 +118,7 @@ Executed at/after deploy; evidence captured for the SCF completion report.
 
 ## Release gate — must be green before any mainnet change
 
-- [ ] `cargo test` (all 71 contract tests) green.
+- [ ] `cargo test` (all 80 contract tests) green.
 - [ ] `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` clean.
 - [ ] `cargo build --target wasm32v1-none --release` produces the final WASM.
 - [ ] Parity suite green (`rate_calc` ↔ `projectRates`, ≥20 fixtures).
@@ -131,7 +131,10 @@ Executed at/after deploy; evidence captured for the SCF completion report.
 ## Test data & fixtures
 
 - Rate-model fixtures: `tests/fixtures/rates.json` (IR-kink scenarios for parity).
-- Live pool-state fixtures for upgrade-parity: in `test_integration.rs`.
+- Upgrade-parity fixtures: a seeded reserves fixture in `test_leverage.rs`
+  (`test_upgrade_preserves_hf_and_balance_parity`) and a live `BlendFixture`
+  pool-state fixture in `test_integration.rs`
+  (`test_upgrade_preserves_hf_and_balance_on_live_pool_state`).
 
 ## Cadence & ownership
 
