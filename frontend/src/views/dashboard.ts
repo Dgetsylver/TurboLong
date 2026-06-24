@@ -19,6 +19,7 @@ export type Role = 'Looped' | 'Collateral' | 'Borrow';
 
 export interface Leg {
   asset: string;        // e.g. "USDC"
+  assetId?: string;     // asset contract ID — lets Manage deep-link to this exact leg
   role: Role;
   amountUsd: number;    // USD value of this leg
   loopX?: number;       // present for Looped legs, e.g. 5.0
@@ -26,7 +27,8 @@ export interface Leg {
 }
 
 export interface PoolAccount {
-  pool: string;         // e.g. "YieldBlox"
+  pool: string;         // e.g. "YieldBlox" (display name)
+  poolId?: string;      // pool contract ID — lets Manage / Add leg deep-link to this pool
   legs: Leg[];
   equityUsd: number;    // collateral − debt, summed for this pool
   netApy: number;       // %, can be negative
@@ -208,8 +210,12 @@ function vaultCard(v: VaultHolding, onManage: () => void): HTMLElement {
 
 // ── Screen ──────────────────────────────────────────────────────────────────
 export interface DashboardHandlers {
+  /** "+ New Position" header button — open Trade with no preset. */
   onNewPosition: () => void;
-  onManagePool: (pool: string) => void;
+  /** "Manage" — open Trade focused on this pool + the account's primary leg. */
+  onManagePool: (poolId: string | undefined, assetId: string | undefined) => void;
+  /** "Add leg" — open Trade focused on this pool so the user can add another asset. */
+  onAddLeg: (poolId: string | undefined) => void;
   onGoVault: () => void;
 }
 
@@ -251,7 +257,18 @@ export function renderDashboard(data: DashboardData, h: DashboardHandlers): HTML
   if (data.poolAccounts.length) {
     root.append(el('h2', { class: 'tl-group' }, ['Pool Accounts ', el('span', { class: 'tl-group__sub' }, ['active · self-managed'])]));
     root.append(el('div', { class: 'tl-grid tl-grid--2' },
-      data.poolAccounts.map((acc) => poolCard(acc, () => h.onManagePool(acc.pool), h.onNewPosition))));
+      data.poolAccounts.map((acc) => {
+        // Manage targets the account's primary leg: the looped one if present,
+        // else the largest leg by USD — so a single-asset account lands exactly
+        // on that asset rather than the pool's default tab.
+        const primary = acc.legs.find((l) => l.role === 'Looped')
+          ?? [...acc.legs].sort((a, b) => b.amountUsd - a.amountUsd)[0];
+        return poolCard(
+          acc,
+          () => h.onManagePool(acc.poolId, primary?.assetId),
+          () => h.onAddLeg(acc.poolId),
+        );
+      })));
   }
 
   // Group B — Vaults
@@ -290,7 +307,8 @@ export const SEED_DASHBOARD: DashboardData = {
    import { renderDashboard, SEED_DASHBOARD } from './dashboard';
    const view = renderDashboard(SEED_DASHBOARD, {
      onNewPosition: () => router.go('trade'),
-     onManagePool: (pool) => router.go('trade', { pool }),
+     onManagePool: (poolId, assetId) => router.go('trade', { poolId, assetId }),
+     onAddLeg: (poolId) => router.go('trade', { poolId }),
      onGoVault: () => router.go('vault'),
    });
    document.getElementById('app')!.replaceChildren(view);

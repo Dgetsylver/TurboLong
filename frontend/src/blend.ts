@@ -761,6 +761,7 @@ export type PoolAccountRole = "loop" | "borrow" | "collateral";
 
 export interface PoolAccountRow {
   symbol:   string;
+  assetId:  string;   // asset contract ID — lets the dashboard deep-link to this leg
   supplied: number;   // full tokens supplied (collateral) in this asset, 0 if none
   borrowed: number;   // full tokens borrowed (debt) in this asset, 0 if none
   role:     PoolAccountRole;
@@ -829,6 +830,7 @@ export function aggregatePoolAccount(
 
     rows.push({
       symbol:   pos.asset.symbol,
+      assetId:  pos.asset.id,
       supplied: pos.collateral,
       borrowed: pos.debt,
       role,

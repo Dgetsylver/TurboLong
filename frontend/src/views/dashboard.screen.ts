@@ -29,7 +29,7 @@ function legsFromRows(
     const price = priceBySymbol.get(r.symbol) ?? 0;
     const role: Role = r.role === "loop" ? "Looped" : r.role === "collateral" ? "Collateral" : "Borrow";
     const amountUsd = (r.role === "borrow" ? r.borrowed : r.supplied) * price;
-    const leg: Leg = { asset: r.symbol, role, amountUsd };
+    const leg: Leg = { asset: r.symbol, assetId: r.assetId, role, amountUsd };
     if (r.role === "loop") leg.loopX = r.leverage;
     return leg;
   });
@@ -52,6 +52,7 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
         const priceBySymbol = new Map(reserves.map((rs) => [rs.asset.symbol, rs.priceUsd]));
         poolAccounts.push({
           pool: pool.name,
+          poolId: pool.id,
           legs: legsFromRows(agg.rows, priceBySymbol),
           equityUsd: agg.equityUsd,
           netApy: agg.netApy,
@@ -94,8 +95,11 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
 }
 
 const handlers = {
-  onNewPosition: () => setState({ view: "trade" }),
-  onManagePool: () => setState({ view: "trade" }),
+  onNewPosition: () => setState({ view: "trade", tradeTarget: null }),
+  onManagePool: (poolId: string | undefined, assetId: string | undefined) =>
+    setState({ view: "trade", tradeTarget: poolId ? { poolId, assetId } : null }),
+  onAddLeg: (poolId: string | undefined) =>
+    setState({ view: "trade", tradeTarget: poolId ? { poolId } : null }),
   onGoVault: () => setState({ view: "vault" }),
 };
 
