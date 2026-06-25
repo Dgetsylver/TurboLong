@@ -3,20 +3,15 @@ import "./swap.css";
  * Swap screen — best-rate token swap routed via Stellar Broker, with a DEX Rate
  * (Aquarius) cross-check.
  *
- * Data wiring ported 1:1 from /tmp/old-main.ts:
- *   - SWAP_ASSETS / getSwapAssetList()   → the broker-id asset list (classic CODE-ISSUER)
- *   - populateSwapAssets()               → Select option seeding + XLM→USDC defaults
- *   - fetchSwapQuote() + debounce        → estimateSwap() from @stellar-broker/client
- *   - compareAquariusRate()              → aquariusBestRate() from ../aquarius (DEX Rate well)
- *   - BROKER_TO_CONTRACT / updateSwapBalance() → fetchAssetBalance() from ../blend
+ * Asset universe comes from the LOBSTR curated feed (see ./swapAssets), not a
+ * hardcoded list: users browse or search (by code / name / domain / contract id)
+ * to pick the sell + buy assets, with token logos. Slippage offers the three
+ * presets plus a custom numeric input (0 < x ≤ 50, warned above 5%).
  *
- * EXECUTE: the original never implemented an execute path — its swap button shows
- * "coming soon" and stays disabled. There is no swap-build/sign/submit XDR in
- * old-main.ts. So per the brief the quote is wired fully and execute is marked
- * TODO: the TxStepper + signAndSubmit scaffold is in place behind SWAP_EXECUTE_ENABLED
- * but the broker trade-XDR build is not yet available. See executeSwap() below.
+ * EXECUTE: the broker trade-XDR builder is still unavailable, so the action
+ * stays "coming soon" behind SWAP_EXECUTE_ENABLED — unchanged from before.
  */
-import { el, on, Button, Select, Tooltip } from "../ui";
+import { el, on, Button, Tooltip, Modal } from "../ui";
 import { estimateSwap } from "@stellar-broker/client";
 import { aquariusBestRate } from "../aquarius";
 import { fetchAssetBalance } from "../blend";
@@ -24,6 +19,16 @@ import { getState } from "../app/state";
 import { signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { t } from "../i18n";
+import {
+  loadSwapAssets,
+  swapAssetsSync,
+  searchSwapAssets,
+  assetByBroker,
+  symbolForBroker,
+  contractForBroker,
+  looksLikeContractId,
+  type SwapAsset,
+} from "./swapAssets";
 
 // ── i18n helper: fall back to the literal when the key isn't translated ───────
 const tx = (key: string, fallback: string) => {
@@ -31,40 +36,20 @@ const tx = (key: string, fallback: string) => {
   return v === key ? fallback : v;
 };
 
-// ── Asset list (classic CODE-ISSUER broker IDs, not Soroban contracts) ────────
-const SWAP_ASSETS: { symbol: string; brokerId: string }[] = [
-  { symbol: "XLM", brokerId: "XLM" },
-  { symbol: "USDC", brokerId: "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
-  { symbol: "EURC", brokerId: "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2" },
-  { symbol: "AQUA", brokerId: "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA" },
-  { symbol: "BLND", brokerId: "BLND-GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY" },
-  { symbol: "yXLM", brokerId: "yXLM-GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55" },
-  { symbol: "USDGLO", brokerId: "USDGLO-GBBS25EGYQPGEZCGCFBKG4OAGFXU6DSOQBGTHELLJT3HZXZJ34HWS6XV" },
-];
-
-function getSwapAssetList(): { symbol: string; brokerId: string }[] {
-  return [...SWAP_ASSETS];
+// Mount a modal overlay on <body>; returns a closer. Mirrors app/modals.ts.
+function mountModal(node: HTMLElement | null): () => void {
+  if (!node) return () => {};
+  document.body.appendChild(node);
+  return () => node.remove();
 }
-
-const symbolFor = (brokerId: string) =>
-  SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ?? brokerId;
-
-// Map broker asset ID → Soroban contract ID for balance + Aquarius lookups.
-const BROKER_TO_CONTRACT: Record<string, string> = {
-  XLM: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
-  "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN":
-    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
-  "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IBER":
-    "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
-  "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA":
-    "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
-};
 
 // EXECUTE TODO: gate the on-chain execute path. The broker trade-XDR build is not
 // yet available (old-main.ts left it as "coming soon"); flip on once it lands.
 const SWAP_EXECUTE_ENABLED = false;
 
-const SLIPPAGE_CHIPS = ["0.1", "0.5", "1.0"];
+const SLIPPAGE_PRESETS = ["0.1", "0.5", "1.0"];
+const SLIP_MAX = 50; // hard cap (%)
+const SLIP_WARN = 5; // warn above this (%)
 
 type QuoteResult = Awaited<ReturnType<typeof estimateSwap>>;
 
@@ -72,8 +57,36 @@ interface SwapUiState {
   sell: string; // broker id
   buy: string; // broker id
   amount: string;
-  slipPct: string; // "0.1" | "0.5" | "1.0"
+  slipPct: string; // effective slippage %, e.g. "0.5" or a custom "2.4"
+  customSlip: boolean; // true when the Custom chip is selected
   quote: QuoteResult | null;
+}
+
+// ── Logo with a letter-avatar fallback ───────────────────────────────────────
+function assetLogo(a: SwapAsset, size: number): HTMLElement {
+  const wrap = el("span", {
+    class: "tl-asset-logo",
+    style: `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px`,
+  });
+  const fallback = () => {
+    wrap.textContent = (a.symbol[0] ?? "?").toUpperCase();
+    wrap.classList.add("tl-asset-logo--text");
+  };
+  if (a.icon) {
+    const img = el("img", {
+      class: "tl-asset-logo__img",
+      src: a.icon,
+      alt: "",
+      loading: "lazy",
+      width: String(size),
+      height: String(size),
+    }) as HTMLImageElement;
+    on(img, "error", fallback);
+    wrap.appendChild(img);
+  } else {
+    fallback();
+  }
+  return wrap;
 }
 
 /** Build the Swap view. Renders immediately; quotes are fetched async on input. */
@@ -82,34 +95,40 @@ export function swapScreen(): HTMLElement {
 
   // The quote form renders and works whether or not a wallet is connected —
   // estimateSwap / aquariusBestRate need no address. Only the sell-side balance
-  // hint and the (already quote-only) execute action gate on connect. Mirrors
-  // trade.ts: public data shows; wallet-specific bits gate.
+  // hint and the (already quote-only) execute action gate on connect.
 
-  const list = getSwapAssetList();
+  const list = swapAssetsSync();
   const defaultSell = "XLM";
-  const defaultBuy = list.find((a) => a.symbol === "USDC")?.brokerId ?? list[1].brokerId;
+  const defaultBuy =
+    list.find((a) => a.symbol === "USDC")?.brokerId ??
+    list.find((a) => a.brokerId !== defaultSell)?.brokerId ??
+    defaultSell;
 
   const ui: SwapUiState = {
     sell: defaultSell,
     buy: defaultBuy,
     amount: "",
     slipPct: "0.5",
+    customSlip: false,
     quote: null,
   };
 
-  root.replaceChildren(renderCard(ui, root));
+  root.replaceChildren(renderCard(ui));
   return root;
 }
 
 // ── Card ──────────────────────────────────────────────────────────────────────
-function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
+function renderCard(ui: SwapUiState): HTMLElement {
   const slip = () => Number.parseFloat(ui.slipPct) / 100; // 0.5% → 0.005
+  const slipOk = () => {
+    const n = Number.parseFloat(ui.slipPct);
+    return Number.isFinite(n) && n > 0 && n <= SLIP_MAX;
+  };
 
   // Field refs we mutate in place (no React; imperative DOM updates).
   const receiveEl = el("div", { class: "tl-swap__receive tl-swap__receive--ph" }, ["0.0"]);
   const sellBalEl = el("span", { class: "tl-swap__bal" }, ["—"]);
   const well = el("div", { class: "tl-swap__well", style: "display:none" });
-  const slipChips: HTMLButtonElement[] = [];
 
   let quoteTimer: ReturnType<typeof setTimeout> | null = null;
   let aqSeq = 0; // guards out-of-order Aquarius responses
@@ -133,29 +152,123 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     onClick: () => void onAction(),
   });
 
-  // ── Asset selects ──────────────────────────────────────────────────────────
-  const assetOptions = SWAP_ASSETS.map((a) => ({ value: a.brokerId, label: a.symbol }));
-  const sellSelect = Select({
-    options: assetOptions,
-    value: ui.sell,
-    width: 120,
-    onChange: (v) => {
-      ui.sell = v;
-      ui.quote = null;
-      void refreshBalance();
-      scheduleQuote();
-    },
-  });
-  const buySelect = Select({
-    options: assetOptions,
-    value: ui.buy,
-    width: 120,
-    onChange: (v) => {
-      ui.buy = v;
-      ui.quote = null;
-      scheduleQuote();
-    },
-  });
+  // ── Asset pills (open the searchable picker) ────────────────────────────────
+  const sellPill = assetPill("sell");
+  const buyPill = assetPill("buy");
+
+  function assetPill(side: "sell" | "buy"): HTMLButtonElement {
+    const btn = el("button", {
+      class: "tl-swap__pill",
+      type: "button",
+      "aria-haspopup": "dialog",
+    }) as HTMLButtonElement;
+    on(btn, "click", () => openAssetPicker(side));
+    paintPill(btn, side);
+    return btn;
+  }
+
+  function paintPill(btn: HTMLButtonElement, side: "sell" | "buy"): void {
+    const brokerId = side === "sell" ? ui.sell : ui.buy;
+    const a = assetByBroker(brokerId);
+    btn.replaceChildren(
+      a ? assetLogo(a, 22) : el("span", { class: "tl-asset-logo tl-asset-logo--text", style: "width:22px;height:22px" }, ["?"]),
+      el("span", { class: "tl-swap__pill-code" }, [symbolForBroker(brokerId)]),
+      el("span", { class: "tl-swap__caret", "aria-hidden": "true" }, ["▾"]),
+    );
+  }
+
+  function repaintPills(): void {
+    paintPill(sellPill, "sell");
+    paintPill(buyPill, "buy");
+  }
+
+  // ── Searchable asset picker (modal) ─────────────────────────────────────────
+  function openAssetPicker(side: "sell" | "buy"): void {
+    let close = () => {};
+    const input = el("input", {
+      class: "tl-ap__input",
+      type: "text",
+      placeholder: tx("swap.searchAssets", "Search name, code, or contract id…"),
+      spellcheck: "false",
+      autocomplete: "off",
+    }) as HTMLInputElement;
+    const listEl = el("div", { class: "tl-ap__list" });
+
+    const renderList = (q: string) => {
+      const items = searchSwapAssets(swapAssetsSync(), q);
+      if (!items.length) {
+        listEl.replaceChildren(
+          el("div", { class: "tl-ap__empty" }, [
+            looksLikeContractId(q)
+              ? tx("swap.noContract", "That contract id isn’t in the curated list.")
+              : tx("swap.noMatch", "No assets match your search."),
+          ]),
+        );
+        return;
+      }
+      listEl.replaceChildren(
+        ...items.slice(0, 200).map((a) => assetRow(a, side, () => {
+          pickAsset(side, a.brokerId);
+          close();
+        })),
+      );
+    };
+
+    on(input, "input", () => renderList(input.value));
+    renderList("");
+
+    const node = Modal({
+      open: true,
+      title: side === "sell" ? tx("swap.selectSell", "Select asset to sell") : tx("swap.selectBuy", "Select asset to receive"),
+      width: 440,
+      onClose: () => close(),
+      children: el("div", { class: "tl-ap" }, [
+        el("div", { class: "tl-ap__search" }, [input]),
+        listEl,
+      ]),
+    });
+    close = mountModal(node);
+    input.focus();
+    // The fetch may still be resolving — refresh the list once it lands.
+    void loadSwapAssets().then(() => {
+      if (node?.isConnected) {
+        repaintPills();
+        renderList(input.value);
+      }
+    });
+  }
+
+  function assetRow(a: SwapAsset, side: "sell" | "buy", onPick: () => void): HTMLElement {
+    const otherId = side === "sell" ? ui.buy : ui.sell;
+    const selectedId = side === "sell" ? ui.sell : ui.buy;
+    const row = el("button", {
+      class: "tl-ap__row" + (a.brokerId === selectedId ? " is-selected" : ""),
+      type: "button",
+    }, [
+      assetLogo(a, 30),
+      el("span", { class: "tl-ap__meta" }, [
+        el("span", { class: "tl-ap__code" }, [a.symbol, a.brokerId === otherId ? el("span", { class: "tl-ap__tag" }, ["other side"]) : null]),
+        el("span", { class: "tl-ap__name" }, [a.name + (a.domain ? ` · ${a.domain}` : "")]),
+      ]),
+    ]) as HTMLButtonElement;
+    on(row, "click", onPick);
+    return row;
+  }
+
+  function pickAsset(side: "sell" | "buy", brokerId: string): void {
+    // Picking the asset already on the other side swaps the pair (no dupes).
+    if (side === "sell") {
+      if (brokerId === ui.buy) ui.buy = ui.sell;
+      ui.sell = brokerId;
+    } else {
+      if (brokerId === ui.sell) ui.sell = ui.buy;
+      ui.buy = brokerId;
+    }
+    ui.quote = null;
+    repaintPills();
+    void refreshBalance();
+    scheduleQuote();
+  }
 
   // ── Reverse ─────────────────────────────────────────────────────────────────
   const reverseBtn = el(
@@ -167,9 +280,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     const tmp = ui.sell;
     ui.sell = ui.buy;
     ui.buy = tmp;
-    sellSelect.value = ui.sell;
-    buySelect.value = ui.buy;
     ui.quote = null;
+    repaintPills();
     void refreshBalance();
     scheduleQuote();
   });
@@ -184,21 +296,73 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     scheduleQuote();
   });
 
-  // ── Slippage chips ──────────────────────────────────────────────────────────
-  for (const s of SLIPPAGE_CHIPS) {
-    const chip = el(
-      "button",
-      { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" },
-      [`${s}%`],
-    ) as HTMLButtonElement;
+  // ── Slippage: presets + Custom ──────────────────────────────────────────────
+  const slipChips: HTMLButtonElement[] = [];
+  const customChip = el("button", { class: "tl-swap__chip", type: "button" }, [tx("swap.custom", "Custom")]) as HTMLButtonElement;
+  const customInput = el("input", {
+    class: "tl-swap__slip-input",
+    type: "text",
+    inputmode: "decimal",
+    placeholder: "2.5",
+    "aria-label": tx("swap.customSlippage", "Custom slippage %"),
+  }) as HTMLInputElement;
+  const customPctSign = el("span", { class: "tl-swap__slip-pct" }, ["%"]);
+  const customWrap = el("div", { class: "tl-swap__slip-custom", style: "display:none" }, [customInput, customPctSign]);
+  const slipWarn = el("div", { class: "tl-swap__slip-warn", style: "display:none" }, []);
+
+  for (const s of SLIPPAGE_PRESETS) {
+    const chip = el("button", { class: "tl-swap__chip", type: "button" }, [`${s}%`]) as HTMLButtonElement;
     on(chip, "click", () => {
+      ui.customSlip = false;
       ui.slipPct = s;
-      slipChips.forEach((c) => c.classList.toggle("is-active", c === chip));
-      updateWellSlip();
+      customWrap.style.display = "none";
+      paintSlip();
       ui.quote = null;
       scheduleQuote();
     });
     slipChips.push(chip);
+  }
+
+  on(customChip, "click", () => {
+    ui.customSlip = true;
+    if (!customInput.value) customInput.value = ui.slipPct;
+    ui.slipPct = customInput.value;
+    customWrap.style.display = "";
+    paintSlip();
+    customInput.focus();
+    customInput.select();
+    ui.quote = null;
+    scheduleQuote();
+  });
+
+  on(customInput, "input", () => {
+    const cleaned = customInput.value.replace(/[^\d.]/g, "");
+    if (cleaned !== customInput.value) customInput.value = cleaned;
+    ui.slipPct = cleaned;
+    ui.quote = null;
+    paintSlip();
+    scheduleQuote();
+  });
+
+  function paintSlip(): void {
+    slipChips.forEach((c, i) => c.classList.toggle("is-active", !ui.customSlip && ui.slipPct === SLIPPAGE_PRESETS[i]));
+    customChip.classList.toggle("is-active", ui.customSlip);
+    const n = Number.parseFloat(ui.slipPct);
+    let warn = "";
+    let bad = false;
+    if (ui.customSlip) {
+      if (!ui.slipPct || !Number.isFinite(n) || n <= 0 || n > SLIP_MAX) {
+        bad = true;
+        warn = tx("swap.slipRange", `Enter a slippage between 0 and ${SLIP_MAX}%.`);
+      } else if (n > SLIP_WARN) {
+        warn = tx("swap.slipHigh", "High slippage — you may receive significantly less than quoted.");
+      }
+    }
+    customInput.classList.toggle("is-invalid", bad);
+    slipWarn.textContent = warn;
+    slipWarn.classList.toggle("is-error", bad);
+    slipWarn.style.display = warn ? "" : "none";
+    updateWellSlip();
   }
 
   // ── Quote well rows ──────────────────────────────────────────────────────────
@@ -208,64 +372,43 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const slipVal = el("span", { class: "tl-swap__qrow-v" }, [`${ui.slipPct}%`]);
 
   well.replaceChildren(
-    qrow(
-      tx("swap.rate", "Rate"),
-      "The effective price you get for this swap via the best routed path.",
-      rateVal,
-    ),
-    qrow(
-      "DEX Rate",
-      "For comparison: the direct quote on the Stellar DEX (Aquarius), without broker routing.",
-      dexVal,
-      true,
-    ),
-    qrow(
-      tx("swap.brokerAdvantage", "Broker advantage"),
-      "How much better the broker’s routed rate is versus a direct DEX trade.",
-      advVal,
-    ),
-    qrow(
-      tx("swap.slippage", "Slippage tolerance"),
-      "The maximum price movement you’ll accept before the swap fails. Lower is stricter but more likely to revert in volatile markets.",
-      slipVal,
-      true,
-    ),
+    qrow(tx("swap.rate", "Rate"), "The effective price you get for this swap via the best routed path.", rateVal),
+    qrow("DEX Rate", "For comparison: the direct quote on the Stellar DEX (Aquarius), without broker routing.", dexVal, true),
+    qrow(tx("swap.brokerAdvantage", "Broker advantage"), "How much better the broker’s routed rate is versus a direct DEX trade.", advVal),
+    qrow(tx("swap.slippage", "Slippage tolerance"), "The maximum price movement you’ll accept before the swap fails. Lower is stricter but more likely to revert in volatile markets.", slipVal, true),
   );
 
   function updateWellSlip() {
-    slipVal.textContent = `${ui.slipPct}%`;
+    slipVal.textContent = `${ui.slipPct || "0"}%`;
   }
 
   // ── Balance ──────────────────────────────────────────────────────────────────
   async function refreshBalance() {
     const addr = getState().userAddress;
-    const contractId = BROKER_TO_CONTRACT[ui.sell];
+    const contractId = contractForBroker(ui.sell);
     if (!addr || !contractId) {
       sellBalEl.textContent = "—";
       return;
     }
     try {
       const bal = await fetchAssetBalance(addr, contractId);
-      sellBalEl.textContent = `${bal.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${symbolFor(ui.sell)}`;
+      sellBalEl.textContent = `${bal.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${symbolForBroker(ui.sell)}`;
     } catch {
       sellBalEl.textContent = "—";
     }
   }
 
-  // ── Button state machine (ported from updateSwapBtn) ─────────────────────────
+  // ── Button state machine ─────────────────────────────────────────────────────
   function updateButton() {
     const hasAmount = !!ui.amount && Number.parseFloat(ui.amount) > 0;
     const samePair = ui.sell === ui.buy;
-    // Get Quote works disconnected (estimateSwap needs no wallet). Only the
-    // execute action gates on connect, and it's already quote-only for now.
     if (samePair) {
       setBtn(tx("swap.selectDifferent", "Select a different pair"), true);
     } else if (!hasAmount) {
       setBtn(tx("swap.enterAmount", "Enter an amount"), true);
+    } else if (ui.customSlip && !slipOk()) {
+      setBtn(tx("swap.slipRange", `Enter a slippage between 0 and ${SLIP_MAX}%.`), true);
     } else if (ui.quote && ui.quote.status === "success") {
-      // EXECUTE TODO: enable only once the broker trade-XDR build lands.
-      // When disconnected, prompt to connect before executing (execute is still
-      // disabled today regardless, so this is forward-looking).
       if (!getState().userAddress) {
         setBtn(tx("nav.connect", "Connect Wallet"), true);
       } else {
@@ -292,7 +435,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   async function fetchQuote() {
     const { sell, buy, amount } = ui;
-    if (!amount || Number.parseFloat(amount) <= 0 || sell === buy) {
+    if (!amount || Number.parseFloat(amount) <= 0 || sell === buy || !slipOk()) {
       ui.quote = null;
       hideWell();
       setReceive("0.0", true);
@@ -313,8 +456,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       if (quote.status === "success" && quote.estimatedBuyingAmount) {
         const sellNum = Number.parseFloat(amount);
         const buyNum = Number.parseFloat(quote.estimatedBuyingAmount);
-        const sellSym = symbolFor(sell);
-        const buySym = symbolFor(buy);
+        const sellSym = symbolForBroker(sell);
+        const buySym = symbolForBroker(buy);
 
         setReceive(buyNum.toLocaleString("en-US", { maximumFractionDigits: 4 }), false);
         rateVal.textContent = `1 ${sellSym} ≈ ${(buyNum / sellNum).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
@@ -322,7 +465,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
           ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
           : "—";
         showWell();
-        // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
         void compareDexRate(sell, buy, sellNum, buySym);
       } else {
         ui.quote = null;
@@ -330,7 +472,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
         hideWell();
       }
     } catch (e) {
-      // Discard stale failures too.
       if (ui.sell !== sell || ui.buy !== buy || ui.amount !== amount) return;
       ui.quote = null;
       setReceive("Quote unavailable", true);
@@ -341,15 +482,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── DEX (Aquarius) comparison ────────────────────────────────────────────────
-  async function compareDexRate(
-    sellBrokerId: string,
-    buyBrokerId: string,
-    sellNum: number,
-    buySym: string,
-  ) {
+  async function compareDexRate(sellBrokerId: string, buyBrokerId: string, sellNum: number, buySym: string) {
     const seq = ++aqSeq;
-    const sellC = BROKER_TO_CONTRACT[sellBrokerId];
-    const buyC = BROKER_TO_CONTRACT[buyBrokerId];
+    const sellC = contractForBroker(sellBrokerId);
+    const buyC = contractForBroker(buyBrokerId);
     if (!sellC || !buyC) {
       if (seq === aqSeq) {
         dexVal.textContent = tx("common.na", "N/A");
@@ -384,7 +520,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   // ── Primary action: Get Quote OR (TODO) execute ──────────────────────────────
   async function onAction() {
-    // If we have no live success quote yet, the click means "Get Quote".
     if (!ui.quote || ui.quote.status !== "success") {
       if (quoteTimer) clearTimeout(quoteTimer);
       await fetchQuote();
@@ -394,11 +529,9 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── EXECUTE (TODO) ───────────────────────────────────────────────────────────
-  // old-main.ts never built a broker trade-XDR — the button was permanently
-  // "coming soon". The TxStepper + sign/submit scaffold below is ready; the
-  // missing piece is a broker (or Aquarius router) trade-XDR builder that returns
-  // a signable transaction. Until SWAP_EXECUTE_ENABLED is flipped on with a real
-  // builder, this is unreachable (button stays disabled on a success quote).
+  // The broker trade-XDR builder is not available yet; the button stays disabled
+  // on a success quote until SWAP_EXECUTE_ENABLED is flipped on with a real
+  // builder. The TxStepper + sign/submit scaffold below is ready for that.
   async function executeSwap() {
     if (!SWAP_EXECUTE_ENABLED) {
       toast(tx("swap.comingSoon", "Swap execution is coming soon."), "info");
@@ -416,17 +549,14 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     txShow(steps);
     try {
       txStep(0);
-      // TODO: build the broker trade XDR for ui.quote here.
-      //   const xdr = await buildBrokerTradeXdr(ui.quote, addr);
       const xdr = ""; // placeholder — no builder available yet
       if (!xdr) throw new Error("Swap execution not yet implemented");
 
       txStep(1);
-      const hash = await signAndSubmitClassic(xdr, `Swap ${symbolFor(ui.sell)} → ${symbolFor(ui.buy)}`);
+      const hash = await signAndSubmitClassic(xdr, `Swap ${symbolForBroker(ui.sell)} → ${symbolForBroker(ui.buy)}`);
       txStep(steps.length);
       toast(tx("swap.done", "Swap submitted."), "success", hash);
       txHide();
-      // Refresh the sell-side balance after a successful swap.
       void refreshBalance();
     } catch (e) {
       txStep(steps.length - 1, true);
@@ -442,9 +572,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       el("h2", { class: "tl-swap__title" }, [tx("swap.title", "Swap")]),
       el("span", { class: "tl-swap__via" }, [
         tx("swap.via", "via Stellar Broker"),
-        Tooltip({
-          text: "Swaps route through Stellar Broker, which aggregates the best path across Stellar DEXes (including Aquarius) for the best execution.",
-        }),
+        Tooltip({ text: "Swaps route through Stellar Broker, which aggregates the best path across Stellar DEXes (including Aquarius) for the best execution." }),
       ]),
     ]),
 
@@ -453,23 +581,26 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       el("label", { class: "tl-swap__label" }, [tx("swap.youSell", "You sell")]),
       sellBalEl,
     ]),
-    el("div", { class: "tl-swap__row" }, [amountField, sellSelect]),
+    el("div", { class: "tl-swap__row" }, [amountField, sellPill]),
 
     // Reverse
     el("div", { class: "tl-swap__reverse-wrap" }, [reverseBtn]),
 
     // You receive
     el("label", { class: "tl-swap__label" }, [tx("swap.youReceive", "You receive (estimated)")]),
-    el("div", { class: "tl-swap__row" }, [receiveEl, buySelect]),
+    el("div", { class: "tl-swap__row" }, [receiveEl, buyPill]),
 
     // Quote well
     well,
 
-    // Slippage chips
+    // Slippage presets + Custom
     el("div", { class: "tl-swap__slip" }, [
       el("span", { class: "tl-swap__slip-label" }, [tx("swap.slippageShort", "Slippage")]),
       ...slipChips,
+      customChip,
+      customWrap,
     ]),
+    slipWarn,
 
     // Primary action
     actionBtn,
@@ -478,13 +609,18 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     el("p", { class: "tl-swap__foot" }, [
       "Swaps are executed through ",
       el("strong", {}, ["Stellar Broker"]),
-      " for best-route aggregation across Stellar DEXes.",
+      " for best-route aggregation across Stellar DEXes. Asset list curated by ",
+      el("strong", {}, ["LOBSTR"]),
+      ".",
     ]),
   ]);
 
   // Initial async fills.
+  paintSlip();
   void refreshBalance();
   updateButton();
+  // Pull the curated list; repaint pills (logos) once it lands.
+  void loadSwapAssets().then(() => repaintPills());
 
   return el("div", { class: "tl-swap__wrap" }, [card]);
 }
