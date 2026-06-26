@@ -272,8 +272,8 @@ export function compareScreen(): HTMLElement {
           "r",
         ),
         th(
-          "DEX Rate",
-          "Indicative DEX quote for swapping 1 unit of this asset → USDC, routed across Stellar DEXes.",
+          tx("compare.col.aquaRate", "Aqua Rate"),
+          "Indicative DEX quote for swapping 1 unit of this asset → USDC via the Aquarius AMM router.",
           "r",
         ),
         th(

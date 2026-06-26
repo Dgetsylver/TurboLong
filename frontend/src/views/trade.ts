@@ -394,7 +394,10 @@ export function tradeScreen(): HTMLElement {
           el("span", { class: "trade-rate__k trade-rate__k--net" }, [net[0]]),
           skel
             ? Skeleton({ width: 64, height: 15 })
-            : el("span", { class: `trade-mono trade-rate__v trade-rate__v--net ${net[2]}` }, [net[1]]),
+            : el("span", { class: `trade-mono trade-rate__v trade-rate__v--net ${net[2]}` }, [
+                net[1],
+                el("span", { class: "rate-trend-slot" }),
+              ]),
         ]),
       ]);
 

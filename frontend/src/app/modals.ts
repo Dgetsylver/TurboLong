@@ -86,6 +86,14 @@ export function openAlerts(): void {
     el("p", { style: "margin:0;color:var(--tl-text-2);font-size:var(--tl-text-base)" }, [
       "Get notified when your Health Factor drops or pool APY moves. Email alerts via the Turbolong alerts service.",
     ]),
+    el("label", { style: "display:flex;gap:var(--tl-space-3);align-items:center;font-size:var(--tl-text-base);color:var(--tl-text);cursor:pointer" }, [
+      el("input", { type: "checkbox", checked: true }),
+      el("span", {}, ["Health Factor (Liquidation) Alerts"]),
+    ]),
+    el("label", { style: "display:flex;gap:var(--tl-space-3);align-items:center;font-size:var(--tl-text-base);color:var(--tl-text);cursor:pointer" }, [
+      el("input", { type: "checkbox", checked: true }),
+      el("span", {}, ["APY Alerts"]),
+    ]),
     email,
     submit,
   ]);

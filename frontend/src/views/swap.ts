@@ -205,6 +205,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const rateVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const dexVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const advVal = el("span", { class: "tl-swap__qrow-v tl-swap__qrow-v--good" }, ["—"]);
+  const routeVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const slipVal = el("span", { class: "tl-swap__qrow-v" }, [`${ui.slipPct}%`]);
 
   well.replaceChildren(
@@ -223,6 +224,11 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       tx("swap.brokerAdvantage", "Broker advantage"),
       "How much better the broker’s routed rate is versus a direct DEX trade.",
       advVal,
+    ),
+    qrow(
+      tx("swap.route", "Route"),
+      "The venue routing this swap (e.g., Soroswap or direct DEX).",
+      routeVal,
     ),
     qrow(
       tx("swap.slippage", "Slippage tolerance"),
@@ -321,12 +327,14 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
         advVal.textContent = quote.profit && Number.parseFloat(quote.profit) > 0
           ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
           : "—";
+        routeVal.textContent = quote.route || "Soroswap";
         showWell();
         // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
         void compareDexRate(sell, buy, sellNum, buySym);
       } else {
         ui.quote = null;
         setReceive(quote.status === "unfeasible" ? "No route" : "—", true);
+        routeVal.textContent = "—";
         hideWell();
       }
     } catch (e) {
@@ -334,6 +342,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       if (ui.sell !== sell || ui.buy !== buy || ui.amount !== amount) return;
       ui.quote = null;
       setReceive("Quote unavailable", true);
+      routeVal.textContent = "—";
       hideWell();
       console.warn("Swap quote:", e instanceof Error ? e.message : String(e));
     }
