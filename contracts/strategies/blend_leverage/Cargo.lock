@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "admin-sep"
+version = "0.0.1"
+source = "git+https://github.com/theahaco/admin-sep?rev=46ed159ff38ee81f4b61b5ddb8ca4b6bdf972028#46ed159ff38ee81f4b61b5ddb8ca4b6bdf972028"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -198,10 +206,12 @@ dependencies = [
 name = "blend_leverage_strategy"
 version = "0.1.0"
 dependencies = [
+ "admin-sep",
  "blend-contract-sdk",
  "defindex-strategy-core",
  "soroban-fixed-point-math",
  "soroban-sdk",
+ "vault_share_token",
 ]
 
 [[package]]
@@ -1636,6 +1646,14 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "vault_share_token"
+version = "0.1.0"
+dependencies = [
+ "admin-sep",
+ "soroban-sdk",
+]
 
 [[package]]
 name = "version_check"

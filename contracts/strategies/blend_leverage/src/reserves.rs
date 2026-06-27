@@ -117,13 +117,20 @@ pub fn deposit(
 /// 2. Calculate proportional b/d tokens
 /// 3. Update totals
 ///
-/// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove, updated_reserves)`.
+/// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove, preview_reserves)`.
 ///
 /// `user_shares` is the caller's current token balance (read by `lib.rs` from
 /// the share token, not from strategy storage). This no longer writes
 /// `VaultPos`: the caller burns `shares_to_burn` from the token.
+///
+/// IMPORTANT: this function does **not** persist the position. The returned
+/// `b/d_tokens_to_remove` are the *intended* unwind amounts (fed to
+/// `submit_unwind`); the `preview_reserves` are the corresponding projected
+/// state and are exact only when token≈underlying. The real reserves are
+/// committed by `commit_withdraw` from the pool's *measured* deltas, so stored
+/// reserves stay in lock-step with the actual pool position (Finding ①).
 pub fn withdraw(
-    e: &Env,
+    _e: &Env,
     user_shares: i128,
     amount: i128, // underlying amount requested
     reserves: &LeverageReserves,
@@ -156,7 +163,8 @@ pub fn withdraw(
         .fixed_mul_floor(reserves.total_d_tokens, reserves.total_shares)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    // Update totals
+    // Project the post-withdraw state for the caller's preview/return value.
+    // NOTE: not persisted here — see `commit_withdraw` (Finding ①).
     reserves.total_shares = reserves
         .total_shares
         .checked_sub(shares_to_burn)
@@ -170,15 +178,44 @@ pub fn withdraw(
         .checked_sub(d_tokens_to_remove)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // Persist
-    storage::set_strategy_reserves(e, reserves.clone());
-
     Ok((
         shares_to_burn,
         b_tokens_to_remove,
         d_tokens_to_remove,
         reserves,
     ))
+}
+
+/// Commit a withdrawal to storage using the b/d tokens the pool *actually*
+/// removed (returned by `submit_unwind`), keeping stored reserves in lock-step
+/// with the real pool position — the same measured-delta discipline used by
+/// `deposit`, `harvest` and `deleverage`.
+///
+/// `reserves` is the pre-withdraw snapshot (with refreshed rates). `shares_to_burn`
+/// is the amount burned from the share token; `b_removed`/`d_removed` are the
+/// measured pool deltas. Position totals use `saturating_sub` so a full close
+/// that clears a stroop more than was tracked (e.g. the `i64::MAX` dust sweep)
+/// floors at zero instead of reverting.
+///
+/// Returns the persisted, post-withdraw reserves.
+pub fn commit_withdraw(
+    e: &Env,
+    shares_to_burn: i128,
+    b_removed: i128,
+    d_removed: i128,
+    reserves: &LeverageReserves,
+) -> Result<LeverageReserves, StrategyError> {
+    let mut reserves = reserves.clone();
+
+    reserves.total_shares = reserves
+        .total_shares
+        .checked_sub(shares_to_burn)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    reserves.total_b_tokens = reserves.total_b_tokens.saturating_sub(b_removed);
+    reserves.total_d_tokens = reserves.total_d_tokens.saturating_sub(d_removed);
+
+    storage::set_strategy_reserves(e, reserves.clone());
+    Ok(reserves)
 }
 
 // ── Harvest accounting ───────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ _Per-deliverable amounts per the SCF #43 application §8 (not restated here)._
 
 - **Contracts:** `partial_unwind` / `compute_partial_unwind`, `rebalance` /
   `rebalance_keeper`, split `harvest_claim` / `harvest_reinvest` — covered by the
-  contract test suite (71 tests green) + clippy `-D warnings` + `cargo fmt`.
+  contract test suite (80 tests green) + clippy `-D warnings` + `cargo fmt`.
 - **Rate model:** TS `projectRates` ↔ Rust `rate_calc` parity within 1e-7 over
   **34 IR-kink fixtures** (`parity.yml`).
 - **Swap routing:** dual-quote best-route logic + slippage floor + A/B telemetry

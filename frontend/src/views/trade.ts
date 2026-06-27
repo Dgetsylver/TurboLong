@@ -62,7 +62,7 @@ import {
   type PositionEvent,
 } from "../blend";
 import { fetchSnapshotSeries } from "../history";
-import { getState, subscribe } from "../app/state";
+import { getState, setState, subscribe } from "../app/state";
 import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 
@@ -132,13 +132,19 @@ export function tradeScreen(): HTMLElement {
   const root = el("div", { class: "trade" });
 
   const pools = getKnownPools();
-  const pool = pools[0];
+  // Deep-link target from the dashboard's Manage / Add leg buttons (one-shot).
+  // Resolve the requested pool + asset, falling back to defaults if unknown,
+  // then clear it so a later manual visit starts on the default pool.
+  const target = getState().tradeTarget;
+  const pool = (target?.poolId && pools.find((p) => p.id === target.poolId)) || pools[0];
   const assets = getPoolAssets(pool);
+  const startAsset = (target?.assetId && assets.find((a) => a.id === target.assetId)) || assets[0];
+  if (target) setState({ tradeTarget: null });
 
   const ts: TradeState = {
     pool,
     assets,
-    asset: assets[0],
+    asset: startAsset,
     reserves: [],
     positions: { byAsset: new Map() },
     balance: 0,
@@ -1519,7 +1525,7 @@ export function tradeScreen(): HTMLElement {
           row("Total borrowed", `${fmt(borrow)} ${liveAsset.symbol}`),
           row(
             "Health Factor",
-            Number.isFinite(hf) ? fmt(hf, getState().expert ? 5 : 4) : "∞",
+            Number.isFinite(hf) ? fmt(hf, 4) : "∞",
             hf > 1.1 ? "trade-tone-up" : hf > 1.03 ? "trade-tone-warn" : "trade-tone-down",
           ),
           row(

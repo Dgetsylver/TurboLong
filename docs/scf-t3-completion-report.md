@@ -18,7 +18,7 @@
 | T3.1 | Aquarius rate comparison + Best Rate UI | ✅ Built | PR #273 — `aquarius.ts` (find-path client), `history.ts` (server-backed trends), swap-view Aquarius rate + Best Rate badge |
 | T3.2 | Aquarius SEP-41 receipt-token listing + trade UX | ✅ Built / ⛔ listing | PR #275 — vault "Trade on Aquarius" CTA + `aquarius_listings.ts` registry + `docs/aquarius-listing-runbook.md`. ⛔ Pool creation, liquidity, **5 verification trades** at launch |
 | T3.3 | Compare Pools view (cross-pool APY + Aquarius + history) | ✅ Built | PR #274 — no-wallet Compare view, ranked leveraged net APY, Aquarius rates, 7D/30D/1Y history sparklines, Best Rate badge (issue #11) |
-| T3.4 | Structured testing programme | ✅ Built | PR #276 — `docs/testing-programme.md` (6 layers, 71 contract tests, parity, e2e, release gate) |
+| T3.4 | Structured testing programme | ✅ Built | PR #276 — `docs/testing-programme.md` (6 layers, 80 contract tests, parity, e2e, release gate) |
 | T3.5 | Mainnet launch (i18n, status page, onboarding, runbook, report) | ✅ Built / ⛔ launch | This PR — i18n EN/ES/PT-BR + language switcher, onboarding tour, `/status.html`, `docs/launch-runbook.md`, this report. ⛔ Go-live + 14-day-green watch |
 
 ## What shipped (verifiable now)

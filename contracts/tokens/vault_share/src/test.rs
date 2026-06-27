@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     Address, Env, String,
@@ -218,6 +216,26 @@ fn test_set_minter() {
     let new_minter = Address::generate(&f.e);
     f.client.set_minter(&new_minter);
     assert_eq!(f.client.minter(), new_minter);
+}
+
+// admin-sep rotation: the current admin can hand the admin role over.
+#[test]
+fn test_set_admin_rotates_under_admin_auth() {
+    let f = setup();
+    f.e.mock_all_auths();
+    let new_admin = Address::generate(&f.e);
+    f.client.set_admin(&new_admin);
+    assert_eq!(f.client.admin(), new_admin);
+}
+
+// Proves the gating is real (not just mocked): rotating the admin requires the
+// current admin's authorization — no auth mocked → must reject.
+#[test]
+#[should_panic]
+fn test_set_admin_requires_current_admin_auth() {
+    let f = setup();
+    let new_admin = Address::generate(&f.e);
+    f.client.set_admin(&new_admin);
 }
 
 #[test]

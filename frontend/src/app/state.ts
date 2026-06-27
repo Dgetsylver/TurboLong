@@ -9,6 +9,17 @@ export type View = "dashboard" | "trade" | "vault" | "compare" | "swap" | "statu
 export type Theme = "light" | "dark";
 export type Lang = "en" | "es" | "pt";
 
+/**
+ * One-shot deep-link target for the Trade screen. Set by the dashboard's
+ * Manage / Add leg buttons just before navigating to "trade"; the trade screen
+ * consumes it on mount (selecting the pool + asset) and clears it so a later
+ * manual visit starts on the default pool.
+ */
+export interface TradeTarget {
+  poolId: string;
+  assetId?: string;
+}
+
 export interface AppState {
   view: View;
   userAddress: string | null;
@@ -17,6 +28,7 @@ export interface AppState {
   theme: Theme;
   expert: boolean;
   lang: Lang;
+  tradeTarget: TradeTarget | null;
 }
 
 const state: AppState = {
@@ -27,6 +39,7 @@ const state: AppState = {
   theme: "dark",
   expert: false,
   lang: "en",
+  tradeTarget: null,
 };
 
 type Listener = (s: AppState) => void;

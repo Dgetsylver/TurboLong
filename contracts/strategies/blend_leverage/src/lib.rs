@@ -21,7 +21,8 @@ mod test_integration;
 #[cfg(test)]
 mod test_leverage;
 
-use constants::SCALAR_12;
+use admin_sep::{Administratable, AdministratableExtension, Upgradable};
+use constants::{SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
     check_deposit_safety, compute_health_factor, compute_partial_unwind, compute_totals,
@@ -103,6 +104,29 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         check_positive_amount(reward_threshold).expect("reward_threshold must be positive");
 
+        // Validate risk parameters at deploy time. A misconfiguration here would
+        // either allow unsafe leverage or permanently brick liquidation
+        // protection (`compute_partial_unwind` requires orange_hf > c_factor),
+        // so these invariants are enforced before any funds can enter.
+        //
+        //   0 < c_factor < 1.0           — a collateral factor must be a fraction
+        //   1 <= target_loops <= 20      — at least one leverage loop; 20 is the
+        //                                  internal request cap
+        //   min_hf > 1.0                 — never open a directly-liquidatable position
+        //   orange_hf > min_hf           — orange (rebalance) zone sits above the
+        //                                  hard deposit floor
+        // (orange_hf > c_factor is implied by orange_hf > min_hf > 1.0 > c_factor.)
+        assert!(
+            c_factor > 0 && c_factor < SCALAR_7,
+            "c_factor must be in (0, 1.0)"
+        );
+        assert!(
+            (1..=20).contains(&target_loops),
+            "target_loops must be in [1, 20]"
+        );
+        assert!(min_hf > SCALAR_7, "min_hf must be > 1.0");
+        assert!(orange_hf > min_hf, "orange_hf must be > min_hf");
+
         let config = Config {
             asset: asset.clone(),
             pool,
@@ -119,7 +143,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
-        storage::set_admin(&e, &admin);
+        Self::set_admin(&e, &admin);
         storage::set_version(&e, 1);
     }
 
@@ -289,15 +313,24 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
         let user_shares = token.balance(&from);
 
-        // Calculate shares to burn + proportional b/d tokens to unwind.
-        let (shares_to_burn, b_to_remove, d_to_remove, updated_reserves) =
+        // Calculate shares to burn + the intended proportional b/d tokens to
+        // unwind. This does NOT persist the position (see `commit_withdraw`).
+        let (shares_to_burn, b_to_remove, d_to_remove, _preview) =
             reserves::withdraw(&e, user_shares, amount, &reserves)?;
 
         // Burn the caller's shares (minter burn — from already authorized above).
         token.burn_by_minter(&from, &shares_to_burn);
 
-        // Execute unwind on the pool — net equity flows to `to`
-        blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+        // Execute unwind on the pool — net equity flows to `to`. The returned
+        // deltas are the b/d tokens the pool *actually* removed.
+        let (b_removed, d_removed) =
+            blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+
+        // Persist using the measured pool deltas so stored reserves stay in
+        // lock-step with the real pool position (Finding ①), matching the
+        // measured-delta discipline of deposit/harvest/deleverage.
+        let updated_reserves =
+            reserves::commit_withdraw(&e, shares_to_burn, b_removed, d_removed, &reserves)?;
 
         let remaining_shares = user_shares
             .checked_sub(shares_to_burn)
@@ -461,11 +494,27 @@ impl BlendLeverageStrategy {
         Ok(loops)
     }
 
-    /// Set a new keeper address. Only the current keeper can call this.
+    /// Set a new keeper address (keeper self-rotation).
+    ///
+    /// Gated by the *current* keeper. This is one of two ways to rotate the
+    /// keeper; see `admin_set_keeper` for the admin recovery path used when the
+    /// keeper key is lost or compromised.
     pub fn set_keeper(e: Env, new_keeper: Address) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
         let old_keeper = storage::get_keeper(&e);
         old_keeper.require_auth();
+        storage::set_keeper(&e, &new_keeper);
+        Ok(())
+    }
+
+    /// Admin recovery path to rotate the keeper (gated by the `admin-sep` admin).
+    ///
+    /// Complements `set_keeper`: the keeper rotates itself in normal operation,
+    /// but if the keeper key is lost or compromised the admin can install a new
+    /// keeper here without the old keeper's cooperation.
+    pub fn admin_set_keeper(e: Env, new_keeper: Address) -> Result<(), StrategyError> {
+        extend_instance_ttl(&e);
+        Self::require_admin(&e);
         storage::set_keeper(&e, &new_keeper);
         Ok(())
     }
@@ -502,28 +551,9 @@ impl BlendLeverageStrategy {
         ))
     }
 
-    /// Upgrade the contract WASM in place (admin-gated).
-    ///
-    /// All persistent storage (Config, Reserves, per-user VaultPos, Keeper,
-    /// Admin) is preserved across the upgrade, so user health factors and
-    /// balances are untouched — no exit/re-enter required. The version counter
-    /// is bumped for observability. See docs/migration-runbook.md.
-    pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>) -> Result<(), StrategyError> {
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-        e.deployer().update_current_contract_wasm(new_wasm_hash);
-        storage::set_version(&e, storage::get_version(&e).saturating_add(1));
-        Ok(())
-    }
-
     /// Current contract version (1 at deploy, bumped on each upgrade).
     pub fn version(e: Env) -> u32 {
         storage::get_version(&e)
-    }
-
-    /// The admin authorized to upgrade the contract and set the share token.
-    pub fn admin(e: Env) -> Address {
-        storage::get_admin(&e)
     }
 
     /// Set the SEP-41 vault-share token (admin-gated, one-time wiring).
@@ -533,7 +563,7 @@ impl BlendLeverageStrategy {
     /// per-user ledger from day one; for an upgraded legacy deployment, call
     /// `migrate_position` per holder afterwards.
     pub fn set_share_token(e: Env, token: Address) -> Result<(), StrategyError> {
-        storage::get_admin(&e).require_auth();
+        Self::require_admin(&e);
         storage::set_share_token(&e, &token);
         extend_instance_ttl(&e);
         Ok(())
@@ -577,7 +607,7 @@ impl BlendLeverageStrategy {
     /// Set the keeper-controlled account allowed to pull claimed BLND for an
     /// off-chain swap (admin-gated).
     pub fn set_swap_account(e: Env, account: Address) -> Result<(), StrategyError> {
-        storage::get_admin(&e).require_auth();
+        Self::require_admin(&e);
         storage::set_swap_account(&e, &account);
         extend_instance_ttl(&e);
         Ok(())
@@ -682,5 +712,27 @@ impl BlendLeverageStrategy {
             ),
         );
         Ok(realized)
+    }
+}
+
+// ── Administration (admin-sep SEP) ───────────────────────────────────────────
+//
+// Admin storage and the `admin` / `set_admin` entrypoints come from the
+// `admin-sep` Administratable trait (admin lives in instance storage under the
+// SEP's canonical key). `set_admin` is current-admin-gated, giving the missing
+// admin-rotation path. The constructor seeds the admin via `Self::set_admin`.
+
+#[contractimpl(contracttrait)]
+impl Administratable for BlendLeverageStrategy {}
+
+// `upgrade` is admin-gated by the SEP; we override the default only to keep the
+// monotonic `version` counter bumping for observability (see migration-runbook).
+#[contractimpl(contracttrait)]
+impl Upgradable for BlendLeverageStrategy {
+    fn upgrade(e: &Env, new_wasm_hash: &BytesN<32>) {
+        Self::require_admin(e);
+        e.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        storage::set_version(e, storage::get_version(e).saturating_add(1));
     }
 }

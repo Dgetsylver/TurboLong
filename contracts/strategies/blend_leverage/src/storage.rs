@@ -19,8 +19,6 @@ pub enum DataKey {
     Reserves,
     VaultPos(Address),
     Keeper,
-    /// Admin authorized to upgrade the contract WASM and set the share token.
-    Admin,
     /// Monotonic contract version, bumped on each upgrade.
     Version,
     /// The SEP-41 vault-share token contract — the canonical per-user share
@@ -151,17 +149,9 @@ pub fn get_keeper(e: &Env) -> Address {
 }
 
 // ── Admin ────────────────────────────────────────────────────────────────────
-
-pub fn set_admin(e: &Env, admin: &Address) {
-    e.storage().instance().set(&DataKey::Admin, admin);
-}
-
-pub fn get_admin(e: &Env) -> Address {
-    e.storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .expect("Admin not set")
-}
+//
+// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// under the SEP's canonical instance-storage key — there is no local Admin key.
 
 // ── Version ──────────────────────────────────────────────────────────────────
 

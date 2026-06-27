@@ -12,10 +12,12 @@ soroban-sdk = "25.3.0"
 defindex-strategy-core = "0.3.0"
 soroban-fixed-point-math = "1.3.0"
 blend-contract-sdk = "2.25.0"
+admin-sep = { git = "https://github.com/theahaco/admin-sep", rev = "46ed159ff38ee81f4b61b5ddb8ca4b6bdf972028" }
 
 [dev-dependencies]
 soroban-sdk = { version = "25.3.0", features = ["testutils"] }
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+vault_share_token = { path = "../../tokens/vault_share" }
 
 [profile.release]
 opt-level = "z"
