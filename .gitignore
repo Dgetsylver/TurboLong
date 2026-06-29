@@ -14,7 +14,7 @@ src/.DS_Store
 *.secret
 .env.local
 .env*.local
-
+.env
 frontend/dist/
 frontend/package-lock.json
 frontend/.env.local

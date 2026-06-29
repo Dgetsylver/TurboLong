@@ -299,9 +299,48 @@ function yourPositionCard(
     disabled: !addr || !ready,
     onMax: () => {
       if (vs.userWalletBalance > 0) depField.value = vs.userWalletBalance.toFixed(2);
+      updateDepPreview();
     },
   });
   const depField = depInput.querySelector("input") as HTMLInputElement;
+
+  // ── Projected HF preview (before → after) for the entered deposit amount ──
+  // The loop levers every deposit at the same ratio, so the marginal HF is the
+  // deterministic target c·S/(S−1); the aggregate "after" HF blends it with the
+  // current position. Computed entirely client-side from cFactor + targetLoops
+  // and the position's underlying collateral/debt — no extra on-chain call.
+  const targetLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  const depPreview = el("div", { class: "vault-row vault-dep-preview", style: "display:none" }, []);
+  function updateDepPreview() {
+    const amount = Number.parseFloat(depField.value);
+    if (!ready || !amount || amount <= 0) {
+      depPreview.style.display = "none";
+      return;
+    }
+    const cBefore = stats?.collateralValue ?? 0;
+    const dBefore = stats?.debtValue ?? 0;
+    const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
+    const cAfter = cBefore + amount * targetLeverage;
+    const dAfter = dBefore + amount * (targetLeverage - 1);
+    const hfAfter = dAfter > 0 ? (vault.cFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
+    const fb = formatHf(hfBefore);
+    const fa = formatHf(hfAfter);
+    depPreview.replaceChildren(
+      el("span", { class: "vault-row__label" }, [
+        lbl(
+          tt("vault.projectedHf", "Projected HF"),
+          "Health factor of the whole vault before and after your deposit, at the target leverage.",
+        ),
+      ]),
+      el("span", { class: "vault-mono vault-row__value" }, [
+        el("span", { class: fb.cls }, [fb.text]),
+        " → ",
+        el("span", { class: fa.cls }, [fa.text]),
+        el("span", { class: "vault-dep-preview__lev" }, [`  (~${targetLeverage.toFixed(2)}×)`]),
+      ]),
+    );
+    depPreview.style.display = "";
+  }
 
   const depBtn = Button({
     variant: "primary",
@@ -311,6 +350,7 @@ function yourPositionCard(
     children: `${tt("vault.deposit", "Deposit")} ${sym}`,
   });
   on(depBtn, "click", () => void runDeposit());
+  on(depField, "input", () => updateDepPreview());
 
   // ── Withdraw ──
   const wdInput = Input({
@@ -442,6 +482,7 @@ function yourPositionCard(
     equityRow,
     shareRow,
     el("div", { class: "vault-field" }, [el("label", { class: "vault-field__label" }, [`Deposit ${sym}`]), depInput]),
+    depPreview,
     depBtn,
     el("div", { class: "vault-field" }, [el("label", { class: "vault-field__label" }, [`Withdraw ${sym}`]), wdInput]),
     wdBtn,

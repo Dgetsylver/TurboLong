@@ -98,15 +98,57 @@ const MAINNET_VAULTS: VaultConfig[] = [
   },
 ];
 
+// Testnet rehearsal vaults across the 4 reserves of the testnet Blend pool
+// (XLM, USDC, CETES, TESOURO — USTRY does not exist on testnet, so TESOURO
+// stands in for the 4th vault). vaultId/shareToken are filled post-deploy from
+// deployed-vaults.testnet.json (see scripts/wire_testnet_vaults.ts). Config
+// mirrors scripts/deploy_strategy_testnet.ts.
 const TESTNET_VAULTS: VaultConfig[] = [
   {
-    vaultId: "CDOETIUHCETALQMBMYUXGFJFA34KDTV74AMHTWXJLY2XUVNZ23JDLJZA",
+    vaultId: "CCGM3FT4HKLXGTD5FZYSIWTOPR4REIEMTTC23GU6PHSLBXBADKFQPEKR",
+    shareToken: "CDWADWK2AYWWCZOZAHAPAKJDYXAST4VSDAPTIKQZRX7ZLN4YKP5U2G5A", // filled post-deploy
     assetId: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", // USDC
     poolId: "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
     name: "Leveraged USDC (Testnet)",
     assetSymbol: "USDC",
     decimals: 7,
     cFactor: 0.90,
+    targetLoops: 4,
+    minHf: 1.05,
+  },
+  {
+    vaultId: "CBK3RBS6DTTUTXSCBE3B3WCSQ5XCFPLBIL3AGAZJGNI5PZNBZ66BIGMZ",
+    shareToken: "CCUT4XNXJ6H4BFUY7V2QVKLA7UIXH2GAEGCVVTOSQW4M3APHZ3SQTGPE",
+    assetId: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", // CETES
+    poolId: "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+    name: "Leveraged CETES (Testnet)",
+    assetSymbol: "CETES",
+    decimals: 7,
+    cFactor: 0.75,
+    targetLoops: 3,
+    minHf: 1.05,
+  },
+  {
+    vaultId: "CCCJA2JLLODWPWEYBE6X77SAFY2ZLBHTP33PYLKKZON2LM5OPPNAJ5HB",
+    shareToken: "CDDA6LYKAJTUCB4NYS25BOUM7GRVK45ELKTB4KE3557EIHPRIHMELSTD",
+    assetId: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", // XLM (native)
+    poolId: "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+    name: "Leveraged XLM (Testnet)",
+    assetSymbol: "XLM",
+    decimals: 7,
+    cFactor: 0.70,
+    targetLoops: 2,
+    minHf: 1.10,
+  },
+  {
+    vaultId: "CATU5FLSDYXSAXOMXBWFKHPBWW3ZIKESQMR75YR6HUYE2LJJLDKH2QIX",
+    shareToken: "CDKEYTBUW6GTHZUWXBLSVCPMGISWHSB4IWETGWUTZMKXICEUGCW4EF7N",
+    assetId: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", // TESOURO
+    poolId: "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW",
+    name: "Leveraged TESOURO (Testnet)",
+    assetSymbol: "TESOURO",
+    decimals: 7,
+    cFactor: 0.80,
     targetLoops: 3,
     minHf: 1.05,
   },
