@@ -97,7 +97,7 @@ function settingsMenu(): HTMLElement {
     ["Set up alerts", () => openAppModal("alerts")],
     ["Take the tour", () => openAppModal("tour")],
     ["Keyboard shortcuts", () => openAppModal("shortcuts")],
-    ["Status page", () => go("status")],
+    ["Status page", () => { window.location.href = "/status.html"; }],
   ];
   for (const [label, act] of items) rows.push(menuRow(label, null, () => { closeMenus(); render(); act(); }));
 
@@ -140,11 +140,14 @@ function renderNav(): HTMLElement {
   ]);
   on(netBtn, "click", () => void switchNetwork(testnet ? "mainnet" : "testnet"));
 
+  const bell = el("button", { class: "tl-gear", title: "Alerts", "aria-label": "Alerts" }, ["🔔"]);
+  on(bell, "click", () => { closeMenus(); render(); openAppModal("alerts"); });
+
   const gear = el("button", { class: "tl-gear" + (settingsOpen ? " is-open" : ""), title: "Settings", "aria-label": "Settings" }, ["⚙"]);
   on(gear, "click", () => { settingsOpen = !settingsOpen; walletMenuOpen = false; langOpen = false; render(); });
   const gearWrap = el("div", { class: "tl-rel" }, [gear, settingsOpen ? settingsMenu() : ""]);
 
-  const right = el("div", { class: "tl-nav__right" }, [netBtn, gearWrap, walletArea()]);
+  const right = el("div", { class: "tl-nav__right" }, [netBtn, bell, gearWrap, walletArea()]);
 
   const logo = el("div", { class: "tl-nav__brand" }, [
     el("img", { src: "/logo.svg", alt: "", class: "tl-nav__logo" }),
