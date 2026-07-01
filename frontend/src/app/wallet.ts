@@ -21,7 +21,7 @@ import {
   submitClassicXdr,
   type NetworkMode,
 } from "../blend";
-import type { TxSeam } from "../e2e-harness";
+import type { TxSeam, E2EHook } from "../e2e-harness";
 import { getState, setState } from "./state";
 import { toast } from "./chrome";
 import { t } from "../i18n";
@@ -86,12 +86,18 @@ export async function installE2EHarness(): Promise<void> {
   const { isE2E, installKitMocks } = await import("../e2e-harness");
   if (!isE2E()) return;
   txSeam = installKitMocks(StellarWalletsKit, getNetworkPassphrase());
-  // Expose the registered wallet module ids so the E2E suite can assert on them.
-  const w = window as unknown as { __E2E__?: { registeredWallets?: string[] } };
+  const w = window as unknown as { __E2E__?: E2EHook };
   if (w.__E2E__) {
+    // Expose the registered wallet module ids so the E2E suite can assert on them.
     w.__E2E__.registeredWallets = baseWalletModules(getActiveNetwork()).map(
       (m) => (m as unknown as { productId: string }).productId,
     );
+    // Test-only drivers: let the suite exercise the *real* kit-native sign→submit
+    // path (sign() → txSeam) for both classic and Soroban ops, per wallet.
+    w.__E2E__.drive = {
+      signSoroban: (xdr: string, label = "e2e") => signAndSubmit(xdr, label),
+      signClassic: (xdr: string, label = "e2e") => signAndSubmitClassic(xdr, label),
+    };
   }
 }
 

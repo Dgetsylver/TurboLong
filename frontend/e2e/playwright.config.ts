@@ -8,6 +8,10 @@ import { defineConfig, devices } from "@playwright/test";
  * harness (frontend/src/e2e-harness.ts) replaces all wallet + RPC calls — no
  * extension, hardware wallet, or live network is touched.
  */
+// Port for the preview server. Defaults to 4173 but is overridable via E2E_PORT
+// so the suite can dodge a busy port (e.g. an unrelated dev server) locally.
+const PORT = Number(process.env.E2E_PORT ?? 4173);
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: false,
@@ -16,7 +20,7 @@ export default defineConfig({
   workers: 1,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
   use: {
-    baseURL: "http://localhost:4173",
+    baseURL: `http://localhost:${PORT}`,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -27,9 +31,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Build first so `vite preview` serves fresh assets, then preview on :4173.
-    command: "npm --prefix .. run build && npm --prefix .. run preview -- --port 4173 --strictPort",
-    url: "http://localhost:4173",
+    // Build first so `vite preview` serves fresh assets, then preview on $PORT.
+    command: `npm --prefix .. run build && npm --prefix .. run preview -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

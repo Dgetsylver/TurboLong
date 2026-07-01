@@ -15,18 +15,35 @@
  * `window.__E2E__.wallet`.
  */
 
+/** Mock wallet ids the harness understands (kit module ids + LEDGER). */
+export type MockWalletId = "freighter" | "xbull" | "albedo" | "lobstr" | "hana" | "LEDGER";
+
 /** Shape of the test hook a runner may set before the app boots. */
 export interface E2EHook {
   /** Which mock wallet is "connected". Mirrors the kit module ids + LEDGER. */
-  wallet?: "freighter" | "xbull" | "albedo" | "lobstr" | "hana" | "LEDGER";
+  wallet?: MockWalletId;
   /** Override the mock account address. */
   address?: string;
   /** Populated by the harness once installed, so tests can introspect. */
   installed?: boolean;
-  /** Every tx the harness "submitted", newest last. Tests assert on this. */
-  submitted?: Array<{ kind: "soroban" | "classic"; xdr: string; hash: string }>;
+  /**
+   * Every tx the harness "submitted", newest last. Tests assert on this. Each
+   * entry records the active mock wallet at submit time so per-wallet drives can
+   * be attributed.
+   */
+  submitted?: Array<{ kind: "soroban" | "classic"; xdr: string; hash: string; wallet?: MockWalletId }>;
   /** The wallet ids the app registered with the kit (for assertions). */
   registeredWallets?: string[];
+  /**
+   * Test-only sign→submit drivers, wired by the app in E2E mode. They invoke
+   * the *real* kit-native `signAndSubmit` / `signAndSubmitClassic` helpers, so
+   * tests can drive a classic and a Soroban op for each wallet without touching
+   * a real extension, device, or RPC. Each resolves to the (mock) tx hash.
+   */
+  drive?: {
+    signSoroban(xdr: string, label?: string): Promise<string>;
+    signClassic(xdr: string, label?: string): Promise<string>;
+  };
 }
 
 declare global {
@@ -101,12 +118,12 @@ export function makeSeam(): TxSeam {
     },
     async submitSoroban(signedXdr: string) {
       const h = fakeHash("soroban:" + signedXdr);
-      hook().submitted!.push({ kind: "soroban", xdr: signedXdr, hash: h });
+      hook().submitted!.push({ kind: "soroban", xdr: signedXdr, hash: h, wallet: hook().wallet });
       return h;
     },
     async submitClassic(signedXdr: string) {
       const h = fakeHash("classic:" + signedXdr);
-      hook().submitted!.push({ kind: "classic", xdr: signedXdr, hash: h });
+      hook().submitted!.push({ kind: "classic", xdr: signedXdr, hash: h, wallet: hook().wallet });
       return h;
     },
     async getMissingTrustlines<T>(forcedAsset: T) {

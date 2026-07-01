@@ -102,8 +102,16 @@ async function signSubmit(tx: any, label: string): Promise<SorobanRpc.Api.GetSuc
   }
   prepared.sign(keypair);
   const sent = await server.sendTransaction(prepared);
+  if (sent.status !== "PENDING") {
+    const detail = sent.errorResult ? sent.errorResult.toXDR("base64") : JSON.stringify(sent).slice(0, 800);
+    throw new Error(`${label} rejected at submission (status=${sent.status}) hash=${sent.hash}\n  ${detail}`);
+  }
+  const deadline = Date.now() + 90_000; // bound the poll instead of looping forever
   let res = await server.getTransaction(sent.hash);
   while (res.status === "NOT_FOUND") {
+    if (Date.now() > deadline) {
+      throw new Error(`${label} timed out after 90s waiting for tx=${sent.hash} to land (still NOT_FOUND). Check https://stellar.expert/explorer/public/tx/${sent.hash}`);
+    }
     await new Promise((r) => setTimeout(r, 1500));
     res = await server.getTransaction(sent.hash);
   }
