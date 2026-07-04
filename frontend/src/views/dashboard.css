@@ -96,3 +96,123 @@
 .tl-flex1 { flex: 1; }
 .tl-row { display: flex; }
 .tl-row--gap { gap: 8px; }
+
+/* ── PositionPanel — asset breakdown table ───────────────────────────────── */
+.pp-card { display: flex; flex-direction: column; gap: 0; }
+
+/* 4-cell summary grid override (when collateral/debt available) */
+.pp-card .tl-grid--4 { margin-bottom: var(--tl-space-4); }
+.pp-card .tl-grid--2 { margin-bottom: var(--tl-space-4); }
+
+/* Table wrapper — full bleed inside the card, clipped for overflow on mobile */
+.pp-table-wrap {
+  margin: 0 -20px var(--tl-space-4);
+  overflow-x: auto;
+  border-top: 1px solid var(--tl-border);
+  border-bottom: 1px solid var(--tl-border);
+}
+.pp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--tl-text-sm);
+}
+
+/* Header row */
+.pp-table__th {
+  padding: var(--tl-space-2) var(--tl-space-5);
+  font-size: var(--tl-text-xs);
+  font-weight: var(--tl-fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tl-tracking-label);
+  color: var(--tl-text-3);
+  white-space: nowrap;
+  background: var(--tl-surface-2);
+}
+.pp-table__th--l { text-align: left; }
+.pp-table__th--r { text-align: right; }
+.pp-table__th--c { text-align: center; }
+
+/* Data rows */
+.pp-table__row { transition: background var(--tl-dur-fast) var(--tl-ease); }
+.pp-table__row:hover { background: var(--tl-tab-hover-bg); }
+
+.pp-table__td {
+  padding: var(--tl-space-3) var(--tl-space-5);
+  border-bottom: 1px solid var(--tl-border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.pp-table__row:last-child .pp-table__td { border-bottom: none; }
+
+.pp-table__td--r  { text-align: right; }
+.pp-table__td--c  { text-align: center; }
+
+/* Asset symbol cell */
+.pp-table__sym { font-weight: var(--tl-fw-bold); color: var(--tl-text); }
+
+/* Borrowed column — muted when empty ("—") */
+.pp-table__borrow { color: var(--tl-text-2); }
+.pp-table__row:has(.pp-table__borrow:not(:empty)) .pp-table__borrow { color: var(--tl-danger); }
+
+/* Leverage multiplier inline label (e.g. "5.0×") */
+.pp-table__lev {
+  font-family: var(--tl-font-mono);
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+  margin-left: var(--tl-space-1);
+}
+
+/* ── Days to liquidation row ─────────────────────────────────────────────── */
+.pp-liq {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tl-space-3);
+  padding: var(--tl-space-3) var(--tl-space-4);
+  margin-bottom: var(--tl-space-3);
+  background: var(--tl-input-bg);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-xs);
+  font-size: var(--tl-text-sm);
+}
+
+.pp-liq__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tl-space-1);
+  color: var(--tl-text-2);
+  font-weight: var(--tl-fw-medium);
+}
+
+/* Inline "?" tooltip trigger */
+.pp-liq__tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.04);
+  color: var(--tl-text-3);
+  font-size: 9px;
+  font-weight: var(--tl-fw-bold);
+  cursor: help;
+  font-style: normal;
+}
+.pp-liq__tip:hover { background: var(--tl-tab-active-bg); color: var(--tl-text-2); }
+
+.pp-liq__val {
+  font-weight: var(--tl-fw-bold);
+  font-size: var(--tl-text-base);
+}
+
+/* ── Cross-collateral explainer note ─────────────────────────────────────── */
+.pp-cross-note {
+  margin-top: 0;
+  margin-bottom: var(--tl-space-3);
+}
+
+/* ── Mobile: keep table horizontally scrollable ──────────────────────────── */
+@media (max-width: 720px) {
+  .pp-table-wrap { margin: 0 -16px var(--tl-space-4); }
+}

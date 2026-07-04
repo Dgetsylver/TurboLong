@@ -57,6 +57,10 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
           equityUsd: agg.equityUsd,
           netApy: agg.netApy,
           accountHealth: agg.poolHF,
+          collateralUsd: agg.collateralUsd,
+          debtUsd: agg.debtUsd,
+          effLeverage: agg.effLeverage,
+          liqDays: agg.liqDays,
         });
       } catch (e) {
         console.warn(`Dashboard: pool ${pool.name} load failed`, e);

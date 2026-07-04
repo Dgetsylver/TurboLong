@@ -38,6 +38,11 @@ export interface PoolAccount {
    */
   accountHealth: number;
   hasNew?: boolean;
+  // Extended pool-level aggregates from aggregatePoolAccount (PoolAccountSummary).
+  collateralUsd?: number;    // total collateral in USD across all assets in this pool
+  debtUsd?: number;          // total debt in USD across all assets in this pool
+  effLeverage?: number;      // collateralUsd / equityUsd — effective pool-wide leverage
+  liqDays?: number | null;   // estimated days until liquidation at current rates; null = n/a, Infinity = never
 }
 
 export interface VaultHolding {
@@ -71,12 +76,6 @@ function hfLabel(hf: number): string {
   if (hf < 2.0) return 'Caution';
   return 'Safe';
 }
-const ROLE_COLOR: Record<Role, string> = {
-  Looped: 'var(--tl-primary)',
-  Collateral: 'var(--tl-success)',
-  Borrow: 'var(--tl-blnd)',
-};
-
 // ── Tiny DOM helper ─────────────────────────────────────────────────────────
 type Attrs = Record<string, string>;
 function el(tag: string, attrs: Attrs = {}, children: (Node | string)[] = []): HTMLElement {
@@ -128,56 +127,167 @@ function accountHealth(hf: number, title: string): HTMLElement {
   ]);
 }
 
-function legRow(lg: Leg, last: boolean): HTMLElement {
-  const left = el('span', { class: 'tl-leg__left' }, [
-    el('span', { class: 'tl-mono tl-leg__sym' }, [lg.asset]),
-    badge(lg.role, lg.role === 'Looped' ? 'primary' : lg.role === 'Collateral' ? 'success' : 'blnd'),
+// ── liqDays formatter ───────────────────────────────────────────────────────
+function fmtLiqDays(liqDays: number | null | undefined): string {
+  if (liqDays == null) return '—';
+  if (!Number.isFinite(liqDays)) return 'Never (supply ≥ borrow)';
+  if (liqDays > 3650) return 'Over 10y';
+  if (liqDays < 1) return '< 1 day';
+  return `~${Math.round(liqDays)} days`;
+}
+
+function liqDaysColor(liqDays: number | null | undefined): string {
+  if (liqDays == null || !Number.isFinite(liqDays) || liqDays > 180) return 'var(--tl-success)';
+  if (liqDays > 60) return 'var(--tl-warning)';
+  return 'var(--tl-danger)';
+}
+
+// ── Asset breakdown table ────────────────────────────────────────────────────
+/**
+ * Per-asset rows showing Supplied / Borrowed / Role for every leg in the pool.
+ * Wired to PoolAccountRow[] from aggregatePoolAccount — no mocks.
+ */
+function assetBreakdownTable(legs: Leg[]): HTMLElement {
+  const thead = el('thead', {}, [
+    el('tr', { class: 'pp-table__hrow' }, [
+      el('th', { class: 'pp-table__th pp-table__th--l', scope: 'col' }, ['Asset']),
+      el('th', { class: 'pp-table__th pp-table__th--r', scope: 'col' }, ['Supplied']),
+      el('th', { class: 'pp-table__th pp-table__th--r', scope: 'col' }, ['Borrowed']),
+      el('th', { class: 'pp-table__th pp-table__th--c', scope: 'col' }, ['Role']),
+    ]),
   ]);
-  if (lg.loopX) left.append(el('span', { class: 'tl-leg__sub' }, [lg.loopX.toFixed(1) + '× loop']));
-  return el('div', { class: 'tl-leg' + (last ? ' tl-leg--last' : '') }, [
-    left,
-    el('span', { class: 'tl-mono tl-leg__amt' }, [money(lg.amountUsd)]),
+
+  const tbody = el('tbody', {});
+  for (const lg of legs) {
+    const roleTone = lg.role === 'Looped' ? 'primary' : lg.role === 'Collateral' ? 'success' : 'blnd';
+    const roleBadge = badge(lg.role, roleTone);
+    // Show leverage multiplier inline for looped legs.
+    const roleCell = el('td', { class: 'pp-table__td pp-table__td--c' }, [
+      roleBadge,
+      ...(lg.loopX ? [el('span', { class: 'pp-table__lev' }, [` ${lg.loopX.toFixed(1)}×`])] : []),
+    ]);
+    // Supplied = amountUsd for Looped/Collateral; Borrowed = amountUsd for Borrow.
+    // We don't have raw token amounts on Leg, only USD — show USD for both columns,
+    // leaving the opposite column as "—" so the table is honest about what it has.
+    const suppliedUsd = lg.role !== 'Borrow' ? money(lg.amountUsd) : '—';
+    const borrowedUsd = lg.role === 'Borrow'  ? money(lg.amountUsd) : '—';
+    tbody.append(el('tr', { class: 'pp-table__row' }, [
+      el('td', { class: 'pp-table__td pp-table__sym' }, [
+        el('span', { class: 'tl-mono' }, [lg.asset]),
+      ]),
+      el('td', { class: 'pp-table__td pp-table__td--r tl-mono' }, [suppliedUsd]),
+      el('td', { class: 'pp-table__td pp-table__td--r tl-mono pp-table__borrow' }, [borrowedUsd]),
+      roleCell,
+    ]));
+  }
+
+  return el('div', { class: 'pp-table-wrap' }, [
+    el('table', { class: 'pp-table' }, [thead, tbody]),
   ]);
 }
 
-// ── Cards ───────────────────────────────────────────────────────────────────
+// ── PositionPanel (pool card) ────────────────────────────────────────────────
+/**
+ * Renders a single pool account as a PositionPanel card.
+ *
+ * Data wiring (all from aggregatePoolAccount — no mocks):
+ *   accountHealth  → agg.poolHF          (Σ collateral×cFactor ÷ Σ debt/lFactor)
+ *   liqDays        → agg.liqDays         (ln(poolHF) / spread × 365)
+ *   effLeverage    → agg.effLeverage     (collateralUsd / equityUsd)
+ *   collateralUsd  → agg.collateralUsd
+ *   debtUsd        → agg.debtUsd
+ *   legs (table)   → agg.rows mapped via legsFromRows
+ */
 function poolCard(acc: PoolAccount, onManage: () => void, onAddLeg: () => void): HTMLElement {
   const cross = acc.legs.length > 1;
+  const hasLiqData = acc.liqDays !== undefined;
 
-  const actions: Node[] = [];
-  if (acc.hasNew) actions.push(badge('New', 'primary'));
+  // ── Header badges ──────────────────────────────────────────────────────────
+  const headerBadges: Node[] = [];
+  if (acc.hasNew) headerBadges.push(badge('New', 'primary'));
+  if (acc.effLeverage != null && acc.effLeverage > 1) {
+    const levBadge = badge(`${acc.effLeverage.toFixed(1)}×`, 'neutral');
+    levBadge.title = `Effective pool-wide leverage: total collateral ÷ equity across all assets in this pool.`;
+    headerBadges.push(levBadge);
+  }
   if (cross) {
     const xc = badge('Cross-collateralized', 'neutral');
     xc.title = 'More than one asset in this pool. They share one Account Health — every collateral backs every borrow, so liquidation is account-wide, not per leg.';
-    actions.push(xc);
+    headerBadges.push(xc);
   }
 
-  const card = el('section', { class: 'tl-card' }, [
+  // ── Summary metrics row (4 cells when full data, 2 when not) ──────────────
+  const hasFull = acc.collateralUsd != null && acc.debtUsd != null;
+  const summaryItems: HTMLElement[] = hasFull
+    ? [
+        miniMetric('Equity',     money(acc.equityUsd)),
+        miniMetric('Collateral', money(acc.collateralUsd!)),
+        miniMetric('Borrowed',   money(acc.debtUsd!), acc.debtUsd! > 0 ? 'var(--tl-danger)' : undefined),
+        miniMetric('Net APY',    pct(acc.netApy), acc.netApy >= 0 ? 'var(--tl-success)' : 'var(--tl-danger)'),
+      ]
+    : [
+        miniMetric('Equity',  money(acc.equityUsd)),
+        miniMetric('Net APY', pct(acc.netApy), acc.netApy >= 0 ? 'var(--tl-success)' : 'var(--tl-danger)'),
+      ];
+  const summaryGridClass = hasFull ? 'tl-grid tl-grid--4' : 'tl-grid tl-grid--2';
+
+  // ── liqDays row ────────────────────────────────────────────────────────────
+  const liqRow = hasLiqData
+    ? el('div', { class: 'pp-liq' }, [
+        el('span', { class: 'pp-liq__label' }, [
+          'Days to liquidation',
+          el('span', {
+            class: 'pp-liq__tip',
+            title: 'At current interest rates: how long before borrow cost erodes your buffer to Health Factor 1.0. Claim & Convert BLND to extend it.',
+          }, ['?']),
+        ]),
+        el('span', {
+          class: 'pp-liq__val tl-mono',
+          style: `color:${liqDaysColor(acc.liqDays)}`,
+        }, [fmtLiqDays(acc.liqDays)]),
+      ])
+    : null;
+
+  // ── Account Health gauge ───────────────────────────────────────────────────
+  const hfTip = cross
+    ? `Pool-wide health across all ${acc.legs.length} assets: Σ(collateral × cFactor) ÷ Σ(debt / lFactor). Every collateral backs every borrow — liquidation is account-wide.`
+    : 'Pool-wide: total collateral value ÷ total debt. Liquidation triggers when this drops below 1.0.';
+
+  // ── Cross-collateral explainer (only for multi-asset pools) ───────────────
+  const crossNote = cross
+    ? el('p', { class: 'tl-note pp-cross-note' }, [
+        `All ${acc.legs.length} assets in ${acc.pool} share one account-wide Health Factor — every collateral backs every borrow. There is no per-asset liquidation line.`,
+      ])
+    : null;
+
+  // ── Assemble card ──────────────────────────────────────────────────────────
+  const children: (HTMLElement | null)[] = [
     el('header', { class: 'tl-card__head' }, [
-      el('h2', { class: 'tl-card__title' }, [acc.pool + ' ', el('span', { class: 'tl-card__sub' }, ['account'])]),
-      el('div', { class: 'tl-card__actions' }, actions),
+      el('h2', { class: 'tl-card__title' }, [
+        acc.pool,
+        el('span', { class: 'tl-card__sub' }, [' account']),
+      ]),
+      el('div', { class: 'tl-card__actions' }, headerBadges),
     ]),
-    el('div', { class: 'tl-grid tl-grid--2' }, [
-      miniMetric('Equity', money(acc.equityUsd)),
-      miniMetric('Net APY', pct(acc.netApy), acc.netApy >= 0 ? 'var(--tl-success)' : 'var(--tl-danger)'),
-    ]),
-    el('div', { class: 'tl-legs' }, acc.legs.map((lg, i) => legRow(lg, i === acc.legs.length - 1))),
+    el('div', { class: summaryGridClass }, summaryItems),
+    assetBreakdownTable(acc.legs),
     el('div', { class: 'tl-well' }, [
-      accountHealth(acc.accountHealth, 'Pool-wide: total collateral value ÷ total debt across every leg in this pool. Liquidation is account-wide — it triggers when this drops below 1.0.'),
+      accountHealth(acc.accountHealth, hfTip),
     ]),
-  ]);
+    liqRow,
+    crossNote,
+  ];
 
-  if (cross) {
-    card.append(el('p', { class: 'tl-note' }, [
-      `All legs in ${acc.pool} share this health — every collateral backs every borrow. Liquidation is account-wide, not per asset.`,
-    ]));
-  }
+  const card = el('section', { class: 'tl-card pp-card' },
+    children.filter((c): c is HTMLElement => c !== null),
+  );
 
   const manage = el('button', { class: 'tl-btn tl-btn--secondary tl-flex1' }, ['Manage']);
   manage.addEventListener('click', onManage);
   const add = el('button', { class: 'tl-btn tl-btn--ghost tl-flex1' }, ['Add leg']);
   add.addEventListener('click', onAddLeg);
   card.append(el('div', { class: 'tl-row tl-row--gap' }, [manage, add]));
+
   return card;
 }
 
