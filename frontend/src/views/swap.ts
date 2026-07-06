@@ -4,11 +4,11 @@ import "./swap.css";
  * (Aquarius) cross-check.
  *
  * Data wiring ported 1:1 from /tmp/old-main.ts:
- *   - SWAP_ASSETS / getSwapAssetList()   → the broker-id asset list (classic CODE-ISSUER)
- *   - populateSwapAssets()               → Select option seeding + XLM→USDC defaults
- *   - fetchSwapQuote() + debounce        → estimateSwap() from @stellar-broker/client
- *   - compareAquariusRate()              → aquariusBestRate() from ../aquarius (DEX Rate well)
- *   - BROKER_TO_CONTRACT / updateSwapBalance() → fetchAssetBalance() from ../blend
+ *   - SWAP_ASSETS                    → dynamically loaded from swapAssets.ts
+ *   - populateSwapAssets()           → Select option seeding + XLM→USDC defaults
+ *   - fetchSwapQuote() + debounce    → estimateSwap() from @stellar-broker/client
+ *   - compareAquariusRate()          → aquariusBestRate() from ../aquarius (DEX Rate well)
+ *   - refreshBalance()               → fetchAssetBalance() from ../blend
  *
  * EXECUTE: the original never implemented an execute path — its swap button shows
  * "coming soon" and stays disabled. There is no swap-build/sign/submit XDR in
@@ -24,6 +24,20 @@ import { getState } from "../app/state";
 import { signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { t } from "../i18n";
+import {
+  loadSwapAssets,
+  type SwapAsset,
+} from "./swapAssets";
+
+let SWAP_ASSETS: SwapAsset[] = [];
+
+const symbolFor = (brokerId: string) =>
+  SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ??
+  brokerId;
+
+const contractFor = (brokerId: string) =>
+  SWAP_ASSETS.find((a) => a.brokerId === brokerId)
+    ?.contractId;
 
 // ── i18n helper: fall back to the literal when the key isn't translated ───────
 const tx = (key: string, fallback: string) => {
@@ -31,63 +45,88 @@ const tx = (key: string, fallback: string) => {
   return v === key ? fallback : v;
 };
 
-// ── Asset list (classic CODE-ISSUER broker IDs, not Soroban contracts) ────────
-const SWAP_ASSETS: { symbol: string; brokerId: string }[] = [
-  { symbol: "XLM", brokerId: "XLM" },
-  { symbol: "USDC", brokerId: "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
-  { symbol: "EURC", brokerId: "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2" },
-  { symbol: "AQUA", brokerId: "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA" },
-  { symbol: "BLND", brokerId: "BLND-GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY" },
-  { symbol: "yXLM", brokerId: "yXLM-GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55" },
-  { symbol: "USDGLO", brokerId: "USDGLO-GBBS25EGYQPGEZCGCFBKG4OAGFXU6DSOQBGTHELLJT3HZXZJ34HWS6XV" },
-];
-
-function getSwapAssetList(): { symbol: string; brokerId: string }[] {
-  return [...SWAP_ASSETS];
-}
-
-const symbolFor = (brokerId: string) =>
-  SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ?? brokerId;
-
-// Map broker asset ID → Soroban contract ID for balance + Aquarius lookups.
-const BROKER_TO_CONTRACT: Record<string, string> = {
-  XLM: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
-  "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN":
-    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
-  "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IBER":
-    "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
-  "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA":
-    "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
-};
-
 // EXECUTE TODO: gate the on-chain execute path. The broker trade-XDR build is not
 // yet available (old-main.ts left it as "coming soon"); flip on once it lands.
 const SWAP_EXECUTE_ENABLED = false;
 
-const SLIPPAGE_CHIPS = ["0.1", "0.5", "1.0"];
+const SLIPPAGE_CHIPS = [
+  "0.1",
+  "0.5",
+  "1.0",
+  "custom",
+];
 
 type QuoteResult = Awaited<ReturnType<typeof estimateSwap>>;
 
 interface SwapUiState {
-  sell: string; // broker id
-  buy: string; // broker id
+  sell: string;
+  buy: string;
   amount: string;
-  slipPct: string; // "0.1" | "0.5" | "1.0"
+  slipPct: string; // "0.1" | "0.5" | "1.0" or custom numeric string
   quote: QuoteResult | null;
 }
+
+let assetsLoaded = false;
 
 /** Build the Swap view. Renders immediately; quotes are fetched async on input. */
 export function swapScreen(): HTMLElement {
   const root = el("div", { class: "tl-swap" });
+
+  if (!assetsLoaded) {
+    root.replaceChildren(
+      el("div", { class: "tl-swap__loading" }, [
+        "Loading assets...",
+      ]),
+    );
+
+    void loadSwapAssets()
+      .then((assets) => {
+        SWAP_ASSETS = assets;
+        assetsLoaded = true;
+
+        root.replaceChildren(renderCard({
+          sell:
+            assets.find((a) => a.symbol === "XLM")?.brokerId ??
+            assets[0]?.brokerId ??
+            "XLM",
+          buy:
+            assets.find((a) => a.symbol === "USDC")?.brokerId ??
+            assets[1]?.brokerId ??
+            assets[0].brokerId,
+          amount: "",
+          slipPct: "0.5",
+          quote: null,
+        }, root));
+      })
+      .catch((err) => {
+        console.error("Failed to load swap assets", err);
+
+        root.replaceChildren(
+          el("div", { class: "tl-swap__error" }, [
+            "Failed to load assets",
+          ]),
+        );
+      });
+
+    return root;
+  }
 
   // The quote form renders and works whether or not a wallet is connected —
   // estimateSwap / aquariusBestRate need no address. Only the sell-side balance
   // hint and the (already quote-only) execute action gate on connect. Mirrors
   // trade.ts: public data shows; wallet-specific bits gate.
 
-  const list = getSwapAssetList();
-  const defaultSell = "XLM";
-  const defaultBuy = list.find((a) => a.symbol === "USDC")?.brokerId ?? list[1].brokerId;
+  const list = SWAP_ASSETS;
+
+  const defaultSell =
+    list.find((a) => a.symbol === "XLM")?.brokerId ??
+    list[0]?.brokerId ??
+    "XLM";
+
+  const defaultBuy =
+    list.find((a) => a.symbol === "USDC")?.brokerId ??
+    list.find((a) => a.brokerId !== defaultSell)?.brokerId ??
+    defaultSell;
 
   const ui: SwapUiState = {
     sell: defaultSell,
@@ -98,10 +137,11 @@ export function swapScreen(): HTMLElement {
   };
 
   root.replaceChildren(renderCard(ui, root));
+
   return root;
 }
 
-// ── Card ──────────────────────────────────────────────────────────────────────
+// ── Card ────────────────────────────────────────────────────────────────────
 function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const slip = () => Number.parseFloat(ui.slipPct) / 100; // 0.5% → 0.005
 
@@ -110,6 +150,24 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const sellBalEl = el("span", { class: "tl-swap__bal" }, ["—"]);
   const well = el("div", { class: "tl-swap__well", style: "display:none" });
   const slipChips: HTMLButtonElement[] = [];
+  const customSlipInput = el("input", {
+    class: "tl-swap__custom-slip",
+    type: "number",
+    min: "0.01",
+    max: "50",
+    step: "0.1",
+    placeholder: "Custom %",
+    style: "display:none",
+  }) as HTMLInputElement;
+
+  const slipWarning = el(
+    "div",
+    {
+      class: "tl-swap__slip-warning",
+      style: "display:none",
+    },
+    ["High slippage warning (>5%)"],
+  );
 
   let quoteTimer: ReturnType<typeof setTimeout> | null = null;
   let aqSeq = 0; // guards out-of-order Aquarius responses
@@ -157,7 +215,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     },
   });
 
-  // ── Reverse ─────────────────────────────────────────────────────────────────
+  // ── Reverse ──────────────────────────────────────────────────────────────
   const reverseBtn = el(
     "button",
     { class: "tl-swap__reverse", type: "button", title: tx("swap.reverse", "Reverse pair"), "aria-label": tx("swap.reverse", "Reverse pair") },
@@ -174,7 +232,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     scheduleQuote();
   });
 
-  // ── Amount input ─────────────────────────────────────────────────────────────
+  // ── Amount input ──────────────────────────────────────────────────────────
   on(amountInput, "input", () => {
     // Strip everything that isn't a digit or a dot (matches old-main.ts).
     const cleaned = amountInput.value.replace(/[^\d.]/g, "");
@@ -184,14 +242,23 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     scheduleQuote();
   });
 
-  // ── Slippage chips ──────────────────────────────────────────────────────────
+  // ── Slippage chips ────────────────────────────────────────────────────────
   for (const s of SLIPPAGE_CHIPS) {
+    const label =
+      s === "custom" ? "Custom" : `${s}%`;
     const chip = el(
       "button",
       { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" },
-      [`${s}%`],
+      [label],
     ) as HTMLButtonElement;
     on(chip, "click", () => {
+      if (s === "custom") {
+        customSlipInput.style.display = "";
+        customSlipInput.focus();
+        return;
+      }
+
+      customSlipInput.style.display = "none";
       ui.slipPct = s;
       slipChips.forEach((c) => c.classList.toggle("is-active", c === chip));
       updateWellSlip();
@@ -201,7 +268,29 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     slipChips.push(chip);
   }
 
-  // ── Quote well rows ──────────────────────────────────────────────────────────
+  on(customSlipInput, "input", () => {
+    const value = Number(customSlipInput.value);
+
+    if (
+      Number.isNaN(value) ||
+      value <= 0 ||
+      value > 50
+    ) {
+      return;
+    }
+
+    ui.slipPct = String(value);
+
+    slipWarning.style.display =
+      value > 5 ? "" : "none";
+
+    updateWellSlip();
+
+    ui.quote = null;
+    scheduleQuote();
+  });
+
+  // ── Quote well rows ───────────────────────────────────────────────────────
   const rateVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const dexVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const advVal = el("span", { class: "tl-swap__qrow-v tl-swap__qrow-v--good" }, ["—"]);
@@ -221,12 +310,12 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     ),
     qrow(
       tx("swap.brokerAdvantage", "Broker advantage"),
-      "How much better the broker’s routed rate is versus a direct DEX trade.",
+      "How much better the broker's routed rate is versus a direct DEX trade.",
       advVal,
     ),
     qrow(
       tx("swap.slippage", "Slippage tolerance"),
-      "The maximum price movement you’ll accept before the swap fails. Lower is stricter but more likely to revert in volatile markets.",
+      "The maximum price movement you'll accept before the swap fails. Lower is stricter but more likely to revert in volatile markets.",
       slipVal,
       true,
     ),
@@ -236,10 +325,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     slipVal.textContent = `${ui.slipPct}%`;
   }
 
-  // ── Balance ──────────────────────────────────────────────────────────────────
+  // ── Balance ───────────────────────────────────────────────────────────���──
   async function refreshBalance() {
     const addr = getState().userAddress;
-    const contractId = BROKER_TO_CONTRACT[ui.sell];
+    const contractId = contractFor(ui.sell);
     if (!addr || !contractId) {
       sellBalEl.textContent = "—";
       return;
@@ -252,20 +341,15 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     }
   }
 
-  // ── Button state machine (ported from updateSwapBtn) ─────────────────────────
+  // ── Button state machine ──────────────────────────────────────────────────
   function updateButton() {
     const hasAmount = !!ui.amount && Number.parseFloat(ui.amount) > 0;
     const samePair = ui.sell === ui.buy;
-    // Get Quote works disconnected (estimateSwap needs no wallet). Only the
-    // execute action gates on connect, and it's already quote-only for now.
     if (samePair) {
       setBtn(tx("swap.selectDifferent", "Select a different pair"), true);
     } else if (!hasAmount) {
       setBtn(tx("swap.enterAmount", "Enter an amount"), true);
     } else if (ui.quote && ui.quote.status === "success") {
-      // EXECUTE TODO: enable only once the broker trade-XDR build lands.
-      // When disconnected, prompt to connect before executing (execute is still
-      // disabled today regardless, so this is forward-looking).
       if (!getState().userAddress) {
         setBtn(tx("nav.connect", "Connect Wallet"), true);
       } else {
@@ -283,7 +367,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     actionBtn.disabled = disabled;
   }
 
-  // ── Quote fetch (estimateSwap) ───────────────────────────────────────────────
+  // ── Quote fetch ────────────────────────────────────────────────────────────
   function scheduleQuote() {
     updateButton();
     if (quoteTimer) clearTimeout(quoteTimer);
@@ -306,7 +390,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
         sellingAmount: amount,
         slippageTolerance: slip(),
       });
-      // Discard if inputs changed while the request was in flight.
       if (ui.sell !== sell || ui.buy !== buy || ui.amount !== amount) return;
       ui.quote = quote;
 
@@ -322,7 +405,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
           ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
           : "—";
         showWell();
-        // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
         void compareDexRate(sell, buy, sellNum, buySym);
       } else {
         ui.quote = null;
@@ -330,7 +412,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
         hideWell();
       }
     } catch (e) {
-      // Discard stale failures too.
       if (ui.sell !== sell || ui.buy !== buy || ui.amount !== amount) return;
       ui.quote = null;
       setReceive("Quote unavailable", true);
@@ -340,7 +421,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     updateButton();
   }
 
-  // ── DEX (Aquarius) comparison ────────────────────────────────────────────────
+  // ── DEX (Aquarius) comparison ──────────────────────────────────────────────
   async function compareDexRate(
     sellBrokerId: string,
     buyBrokerId: string,
@@ -348,8 +429,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     buySym: string,
   ) {
     const seq = ++aqSeq;
-    const sellC = BROKER_TO_CONTRACT[sellBrokerId];
-    const buyC = BROKER_TO_CONTRACT[buyBrokerId];
+    const sellC = contractFor(sellBrokerId);
+    const buyC = contractFor(buyBrokerId);
     if (!sellC || !buyC) {
       if (seq === aqSeq) {
         dexVal.textContent = tx("common.na", "N/A");
@@ -359,7 +440,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     }
     const amountStroops = BigInt(Math.round(sellNum * 1e7));
     const aq = await aquariusBestRate(sellC, buyC, amountStroops);
-    if (seq !== aqSeq) return; // a newer quote superseded this one
+    if (seq !== aqSeq) return;
     if (!aq) {
       dexVal.textContent = tx("common.unavailable", "unavailable");
       dexVal.removeAttribute("title");
@@ -370,7 +451,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     dexVal.removeAttribute("title");
   }
 
-  // ── Receive / well helpers ───────────────────────────────────────────────────
+  // ── Receive / well helpers ───────────────────────────────────────────────
   function setReceive(text: string, placeholder: boolean) {
     receiveEl.textContent = text;
     receiveEl.classList.toggle("tl-swap__receive--ph", placeholder);
@@ -382,9 +463,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     well.style.display = "none";
   }
 
-  // ── Primary action: Get Quote OR (TODO) execute ──────────────────────────────
+  // ── Primary action ─────────────────────────────────────────────────────────
   async function onAction() {
-    // If we have no live success quote yet, the click means "Get Quote".
     if (!ui.quote || ui.quote.status !== "success") {
       if (quoteTimer) clearTimeout(quoteTimer);
       await fetchQuote();
@@ -393,12 +473,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     await executeSwap();
   }
 
-  // ── EXECUTE (TODO) ───────────────────────────────────────────────────────────
-  // old-main.ts never built a broker trade-XDR — the button was permanently
-  // "coming soon". The TxStepper + sign/submit scaffold below is ready; the
-  // missing piece is a broker (or Aquarius router) trade-XDR builder that returns
-  // a signable transaction. Until SWAP_EXECUTE_ENABLED is flipped on with a real
-  // builder, this is unreachable (button stays disabled on a success quote).
+  // ── EXECUTE (TODO) ─────────────────────────────────────────────────────────
   async function executeSwap() {
     if (!SWAP_EXECUTE_ENABLED) {
       toast(tx("swap.comingSoon", "Swap execution is coming soon."), "info");
@@ -416,9 +491,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     txShow(steps);
     try {
       txStep(0);
-      // TODO: build the broker trade XDR for ui.quote here.
-      //   const xdr = await buildBrokerTradeXdr(ui.quote, addr);
-      const xdr = ""; // placeholder — no builder available yet
+      const xdr = "";
       if (!xdr) throw new Error("Swap execution not yet implemented");
 
       txStep(1);
@@ -426,7 +499,6 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       txStep(steps.length);
       toast(tx("swap.done", "Swap submitted."), "success", hash);
       txHide();
-      // Refresh the sell-side balance after a successful swap.
       void refreshBalance();
     } catch (e) {
       txStep(steps.length - 1, true);
@@ -435,9 +507,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     }
   }
 
-  // ── Layout ────────────────────────────────────────────────────────────────────
+  // ── Layout ─────────────────────────────────────────────────────────────────
   const card = el("div", { class: "tl-swap__card" }, [
-    // Header
     el("div", { class: "tl-swap__head" }, [
       el("h2", { class: "tl-swap__title" }, [tx("swap.title", "Swap")]),
       el("span", { class: "tl-swap__via" }, [
@@ -448,33 +519,31 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
       ]),
     ]),
 
-    // You sell
     el("div", { class: "tl-swap__label-row" }, [
       el("label", { class: "tl-swap__label" }, [tx("swap.youSell", "You sell")]),
       sellBalEl,
     ]),
     el("div", { class: "tl-swap__row" }, [amountField, sellSelect]),
 
-    // Reverse
     el("div", { class: "tl-swap__reverse-wrap" }, [reverseBtn]),
 
-    // You receive
     el("label", { class: "tl-swap__label" }, [tx("swap.youReceive", "You receive (estimated)")]),
     el("div", { class: "tl-swap__row" }, [receiveEl, buySelect]),
 
-    // Quote well
     well,
 
-    // Slippage chips
     el("div", { class: "tl-swap__slip" }, [
-      el("span", { class: "tl-swap__slip-label" }, [tx("swap.slippageShort", "Slippage")]),
+      el("span", { class: "tl-swap__slip-label" }, [
+        tx("swap.slippageShort", "Slippage"),
+      ]),
       ...slipChips,
+      customSlipInput,
     ]),
 
-    // Primary action
+    slipWarning,
+
     actionBtn,
 
-    // Footnote
     el("p", { class: "tl-swap__foot" }, [
       "Swaps are executed through ",
       el("strong", {}, ["Stellar Broker"]),
@@ -482,14 +551,13 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     ]),
   ]);
 
-  // Initial async fills.
   void refreshBalance();
   updateButton();
 
   return el("div", { class: "tl-swap__wrap" }, [card]);
 }
 
-// ── Quote-well row ──────────────────────────────────────────────────────────────
+// ── Quote-well row ────────────────────────────────────────────────────────
 function qrow(label: string, tip: string, valueEl: HTMLElement, dim = false): HTMLElement {
   return el("div", { class: `tl-swap__qrow${dim ? " tl-swap__qrow--dim" : ""}` }, [
     el("span", { class: "tl-swap__qrow-k" }, [label, Tooltip({ text: tip })]),
