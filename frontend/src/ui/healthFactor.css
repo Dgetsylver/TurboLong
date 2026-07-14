@@ -42,7 +42,7 @@
   position: relative;
   height: 6px;
   border-radius: var(--tl-radius-xs);
-  background: rgba(255, 255, 255, .06);
+  background: rgba(255, 255, 255, 0.06);
   overflow: visible;
 }
 
@@ -51,7 +51,7 @@
   inset: 0;
   border-radius: var(--tl-radius-xs);
   background: linear-gradient(90deg, var(--tl-danger), var(--tl-warning) 45%, var(--tl-success));
-  opacity: .25;
+  opacity: 0.25;
 }
 
 .tl-hf__fill {
@@ -92,6 +92,11 @@
 }
 
 @keyframes tl-liq-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }

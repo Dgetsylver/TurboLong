@@ -120,8 +120,13 @@
 }
 
 @keyframes tl-status-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .tl-status__foot {

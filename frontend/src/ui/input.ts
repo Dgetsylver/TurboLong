@@ -51,11 +51,7 @@ export function Input(props: InputProps = {}): HTMLElement {
     onBlur,
   } = props;
 
-  const inputCls = [
-    "tl-input__field",
-    suffix ? "tl-input__field--suffix" : "",
-    onMax ? "tl-input__field--max" : "",
-  ]
+  const inputCls = ["tl-input__field", suffix ? "tl-input__field--suffix" : "", onMax ? "tl-input__field--max" : ""]
     .filter(Boolean)
     .join(" ");
 

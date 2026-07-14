@@ -46,8 +46,7 @@ function getSwapAssetList(): { symbol: string; brokerId: string }[] {
   return [...SWAP_ASSETS];
 }
 
-const symbolFor = (brokerId: string) =>
-  SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ?? brokerId;
+const symbolFor = (brokerId: string) => SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ?? brokerId;
 
 // Map broker asset ID → Soroban contract ID for balance + Aquarius lookups.
 const BROKER_TO_CONTRACT: Record<string, string> = {
@@ -160,7 +159,12 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   // ── Reverse ─────────────────────────────────────────────────────────────────
   const reverseBtn = el(
     "button",
-    { class: "tl-swap__reverse", type: "button", title: tx("swap.reverse", "Reverse pair"), "aria-label": tx("swap.reverse", "Reverse pair") },
+    {
+      class: "tl-swap__reverse",
+      type: "button",
+      title: tx("swap.reverse", "Reverse pair"),
+      "aria-label": tx("swap.reverse", "Reverse pair"),
+    },
     ["↓"],
   ) as HTMLButtonElement;
   on(reverseBtn, "click", () => {
@@ -186,11 +190,9 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   // ── Slippage chips ──────────────────────────────────────────────────────────
   for (const s of SLIPPAGE_CHIPS) {
-    const chip = el(
-      "button",
-      { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" },
-      [`${s}%`],
-    ) as HTMLButtonElement;
+    const chip = el("button", { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" }, [
+      `${s}%`,
+    ]) as HTMLButtonElement;
     on(chip, "click", () => {
       ui.slipPct = s;
       slipChips.forEach((c) => c.classList.toggle("is-active", c === chip));
@@ -208,11 +210,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const slipVal = el("span", { class: "tl-swap__qrow-v" }, [`${ui.slipPct}%`]);
 
   well.replaceChildren(
-    qrow(
-      tx("swap.rate", "Rate"),
-      "The effective price you get for this swap via the best routed path.",
-      rateVal,
-    ),
+    qrow(tx("swap.rate", "Rate"), "The effective price you get for this swap via the best routed path.", rateVal),
     qrow(
       "DEX Rate",
       "For comparison: the direct quote on the Stellar DEX (Aquarius), without broker routing.",
@@ -318,9 +316,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
         setReceive(buyNum.toLocaleString("en-US", { maximumFractionDigits: 4 }), false);
         rateVal.textContent = `1 ${sellSym} ≈ ${(buyNum / sellNum).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
-        advVal.textContent = quote.profit && Number.parseFloat(quote.profit) > 0
-          ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
-          : "—";
+        advVal.textContent =
+          quote.profit && Number.parseFloat(quote.profit) > 0
+            ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
+            : "—";
         showWell();
         // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
         void compareDexRate(sell, buy, sellNum, buySym);
@@ -341,12 +340,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── DEX (Aquarius) comparison ────────────────────────────────────────────────
-  async function compareDexRate(
-    sellBrokerId: string,
-    buyBrokerId: string,
-    sellNum: number,
-    buySym: string,
-  ) {
+  async function compareDexRate(sellBrokerId: string, buyBrokerId: string, sellNum: number, buySym: string) {
     const seq = ++aqSeq;
     const sellC = BROKER_TO_CONTRACT[sellBrokerId];
     const buyC = BROKER_TO_CONTRACT[buyBrokerId];

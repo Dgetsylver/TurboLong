@@ -29,13 +29,21 @@ export function showDisclaimerIfNeeded(): Promise<void> {
       resolve();
     });
     const body = el("div", { style: "display:flex;flex-direction:column;gap:var(--tl-space-5)" }, [
-      el("p", { style: "margin:0;color:var(--tl-text-2);font-size:var(--tl-text-base);line-height:var(--tl-leading-body)" }, [
-        "Turbolong opens leveraged positions on Blend lending pools. Leverage amplifies both yield and risk — if your collateral value falls enough, your position is liquidated and you may lose your entire deposit. BLND emissions are variable and not guaranteed.",
-      ]),
-      el("label", { style: "display:flex;gap:var(--tl-space-3);align-items:center;font-size:var(--tl-text-base);color:var(--tl-text);cursor:pointer" }, [
-        check,
-        el("span", {}, ["I understand the risks, including liquidation and total loss."]),
-      ]),
+      el(
+        "p",
+        { style: "margin:0;color:var(--tl-text-2);font-size:var(--tl-text-base);line-height:var(--tl-leading-body)" },
+        [
+          "Turbolong opens leveraged positions on Blend lending pools. Leverage amplifies both yield and risk — if your collateral value falls enough, your position is liquidated and you may lose your entire deposit. BLND emissions are variable and not guaranteed.",
+        ],
+      ),
+      el(
+        "label",
+        {
+          style:
+            "display:flex;gap:var(--tl-space-3);align-items:center;font-size:var(--tl-text-base);color:var(--tl-text);cursor:pointer",
+        },
+        [check, el("span", {}, ["I understand the risks, including liquidation and total loss."])],
+      ),
     ]);
     const node = Modal({
       open: true,
@@ -59,12 +67,25 @@ export function openShortcuts(): void {
     ["?", "Toggle this help"],
   ];
   let close = () => {};
-  const body = el("div", { style: "display:flex;flex-direction:column;gap:var(--tl-space-3)" },
+  const body = el(
+    "div",
+    { style: "display:flex;flex-direction:column;gap:var(--tl-space-3)" },
     rows.map(([k, label]) =>
-      el("div", { style: "display:flex;justify-content:space-between;gap:var(--tl-space-7);font-size:var(--tl-text-base)" }, [
-        el("kbd", { style: "font-family:var(--tl-font-mono);background:var(--tl-surface-2);border:1px solid var(--tl-border);border-radius:var(--tl-radius-xs);padding:1px var(--tl-space-2);color:var(--tl-text)" }, [k]),
-        el("span", { style: "color:var(--tl-text-2)" }, [label]),
-      ]),
+      el(
+        "div",
+        { style: "display:flex;justify-content:space-between;gap:var(--tl-space-7);font-size:var(--tl-text-base)" },
+        [
+          el(
+            "kbd",
+            {
+              style:
+                "font-family:var(--tl-font-mono);background:var(--tl-surface-2);border:1px solid var(--tl-border);border-radius:var(--tl-radius-xs);padding:1px var(--tl-space-2);color:var(--tl-text)",
+            },
+            [k],
+          ),
+          el("span", { style: "color:var(--tl-text-2)" }, [label]),
+        ],
+      ),
     ),
   );
   const node = Modal({ open: true, title: "Keyboard shortcuts", width: 360, onClose: () => close(), children: body });

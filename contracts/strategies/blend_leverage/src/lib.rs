@@ -525,6 +525,24 @@ impl BlendLeverageStrategy {
         Ok(storage::get_keeper(&e))
     }
 
+    /// Deployed risk configuration: `(c_factor, target_loops, min_hf, orange_hf)`
+    /// (i128s 1e7-scaled, `target_loops` a plain u32).
+    ///
+    /// Read-only view for off-chain consumers (frontend, keeper, monitoring) so
+    /// they can display and act on the *actual* on-chain thresholds instead of
+    /// hardcoding copies of the deploy-script values, which silently drift when
+    /// a strategy is redeployed or upgraded with different parameters.
+    pub fn config(e: Env) -> Result<(i128, u32, i128, i128), StrategyError> {
+        extend_instance_ttl(&e);
+        let config = storage::get_config(&e);
+        Ok((
+            config.c_factor,
+            config.target_loops,
+            config.min_hf,
+            config.orange_hf,
+        ))
+    }
+
     /// Get current health factor (1e7 scaled).
     pub fn health_factor(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);

@@ -119,9 +119,7 @@ function th(label: string, tip: string, align: "l" | "r" | "c"): HTMLElement {
 }
 
 function stateRow(text: string): HTMLElement {
-  return el("tr", {}, [
-    el("td", { class: "tl-cmp__state", colspan: "7" }, [text]),
-  ]);
+  return el("tr", {}, [el("td", { class: "tl-cmp__state", colspan: "7" }, [text])]);
 }
 
 function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLElement {
@@ -142,9 +140,7 @@ function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLEleme
   ];
   if (best) {
     assetChildren.push(Badge({ tone: "success", children: tx("compare.bestRate", "Best Rate") }));
-    assetChildren.push(
-      Tooltip({ text: "Highest leveraged net APY across all pools and assets right now." }),
-    );
+    assetChildren.push(Tooltip({ text: "Highest leveraged net APY across all pools and assets right now." }));
   }
 
   const rankCell = best
@@ -157,9 +153,7 @@ function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLEleme
   const dexCell =
     r.dexRate == null
       ? el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__muted" }, ["n/a"])
-      : el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__rate" }, [
-          r.dexRate.toFixed(4),
-        ]);
+      : el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__rate" }, [r.dexRate.toFixed(4)]);
 
   const spark =
     sparkData.length >= 2
@@ -175,13 +169,9 @@ function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLEleme
   return el("tr", { class: cls.join(" ") }, [
     rankCell,
     el("td", { class: "tl-cmp__td" }, [el("span", { class: "tl-cmp__asset-cell" }, assetChildren)]),
-    el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__base" }, [
-      r.baseApy.toFixed(2) + "%",
-    ]),
+    el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__base" }, [r.baseApy.toFixed(2) + "%"]),
     el("td", { class: `tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__lev ${levCls}` }, [levTxt]),
-    el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__max" }, [
-      r.safeLev.toFixed(1) + "×",
-    ]),
+    el("td", { class: "tl-cmp__td tl-cmp__td--r tl-cmp__mono tl-cmp__max" }, [r.safeLev.toFixed(1) + "×"]),
     dexCell,
     el("td", { class: "tl-cmp__td" }, [
       el("span", { class: "tl-cmp__trend-cell" }, [
@@ -205,11 +195,7 @@ export function compareScreen(): HTMLElement {
   const renderBody = () => {
     if (rows.length === 0) {
       tbody.replaceChildren(
-        stateRow(
-          loading
-            ? tx("compare.loading", "Loading pools…")
-            : tx("compare.empty", "No pools available."),
-        ),
+        stateRow(loading ? tx("compare.loading", "Loading pools…") : tx("compare.empty", "No pools available.")),
       );
       return;
     }
@@ -219,15 +205,11 @@ export function compareScreen(): HTMLElement {
 
   // Header window chips → re-render the sparklines (scopes trend, not columns).
   const chips = (["7D", "30D", "1Y"] as Win[]).map((w) =>
-    on(
-      el("button", { class: `tl-cmp__chip${w === win ? " is-active" : ""}`, type: "button" }, [w]),
-      "click",
-      () => {
-        win = w;
-        for (const c of chipEls) c.classList.toggle("is-active", c.textContent === w);
-        renderBody();
-      },
-    ),
+    on(el("button", { class: `tl-cmp__chip${w === win ? " is-active" : ""}`, type: "button" }, [w]), "click", () => {
+      win = w;
+      for (const c of chipEls) c.classList.toggle("is-active", c.textContent === w);
+      renderBody();
+    }),
   );
   const chipEls = chips;
 
@@ -250,17 +232,9 @@ export function compareScreen(): HTMLElement {
   const table = el("table", { class: "tl-cmp__table" }, [
     el("thead", {}, [
       el("tr", {}, [
-        el("th", { class: "tl-cmp__th tl-cmp__th--l tl-cmp__rank", scope: "col" }, [
-          tx("compare.col.rank", "#"),
-        ]),
-        el("th", { class: "tl-cmp__th tl-cmp__th--l", scope: "col" }, [
-          tx("compare.col.poolAsset", "Pool / Asset"),
-        ]),
-        th(
-          tx("compare.col.baseApy", "Base APY"),
-          "The pool’s net supply yield before any leverage is applied.",
-          "r",
-        ),
+        el("th", { class: "tl-cmp__th tl-cmp__th--l tl-cmp__rank", scope: "col" }, [tx("compare.col.rank", "#")]),
+        el("th", { class: "tl-cmp__th tl-cmp__th--l", scope: "col" }, [tx("compare.col.poolAsset", "Pool / Asset")]),
+        th(tx("compare.col.baseApy", "Base APY"), "The pool’s net supply yield before any leverage is applied.", "r"),
         th(
           tx("compare.col.levApy", "Leveraged APY"),
           "Net APY at the carry-optimal leverage for this pool/asset — the looped yield you could actually achieve, after borrow costs.",
@@ -276,11 +250,7 @@ export function compareScreen(): HTMLElement {
           "Indicative DEX quote for swapping 1 unit of this asset → USDC, routed across Stellar DEXes.",
           "r",
         ),
-        th(
-          tx("compare.col.trend", "Trend"),
-          "Net supply APY history over the selected window (7D / 30D / 1Y).",
-          "c",
-        ),
+        th(tx("compare.col.trend", "Trend"), "Net supply APY history over the selected window (7D / 30D / 1Y).", "c"),
       ]),
     ]),
     tbody,

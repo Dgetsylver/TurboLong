@@ -9,8 +9,7 @@
  */
 
 const ALERTS_WORKER_URL =
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ??
-  "https://turbolong-alerts.workers.dev";
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev";
 
 const RATE_HISTORY_KEY = "blendlev_rate_history";
 const RATE_HISTORY_MAX = 4000; // 365d @ 15-min ≈ 35k; cap generously per key
@@ -72,11 +71,7 @@ function mergeInto(storageKey: string, server: SnapshotPoint[]): void {
  * localStorage (matching the existing chart/arrow renderers). Returns true if any
  * server data was merged.
  */
-export async function seedHistoryFromServer(
-  poolId: string,
-  assetId: string,
-  assetSymbol: string,
-): Promise<boolean> {
+export async function seedHistoryFromServer(poolId: string, assetId: string, assetSymbol: string): Promise<boolean> {
   const [supply, borrow] = await Promise.all([
     fetchSnapshotSeries(poolId, assetSymbol, "net_supply_apr"),
     fetchSnapshotSeries(poolId, assetSymbol, "net_borrow_cost"),
