@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "testnet-loop": "npx tsx testnet_loop.ts",
-    "harvest-router": "npx tsx harvest_router.ts"
+    "harvest-router": "npx tsx harvest_router.ts",
+    "rebalance-keeper": "npx tsx rebalance_keeper.ts"
   },
   "dependencies": {
     "@creit-tech/stellar-router-sdk": "npm:@jsr/creit-tech__stellar-router-sdk@^0.2.0",
