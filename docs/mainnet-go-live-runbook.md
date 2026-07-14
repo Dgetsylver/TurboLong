@@ -85,6 +85,8 @@ Get the DeFindex team to co-sign the deployments.
   — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
   the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
   HF, loops unwound, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  For a permanent deployment, use the hardened systemd unit + env template in
+  `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the
   T2.1 A/B deliverable; the same keeper firing `rebalance_keeper` produces the
   T2.3 live mainnet rebalance (captured in the JSONL evidence log).
