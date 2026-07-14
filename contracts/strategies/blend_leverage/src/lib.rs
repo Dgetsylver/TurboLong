@@ -447,9 +447,10 @@ impl BlendLeverageStrategy {
 
         // Rate-limit.
         let now = e.ledger().sequence();
-        let last = storage::get_last_rebalance(&e);
-        if last != 0 && now < last.saturating_add(constants::REBALANCE_COOLDOWN_LEDGERS) {
-            return Err(StrategyError::NotAuthorized);
+        if let Some(last) = storage::get_last_rebalance(&e) {
+            if now < last.saturating_add(constants::REBALANCE_COOLDOWN_LEDGERS) {
+                return Err(StrategyError::NotAuthorized);
+            }
         }
 
         let config = storage::get_config(&e);
