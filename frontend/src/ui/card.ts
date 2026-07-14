@@ -22,9 +22,7 @@ export interface CardProps {
 export function Card(props: CardProps = {}): HTMLElement {
   const { title, action, hoverable = true, bodyStyle, style, class: className, id, children } = props;
 
-  const cls = ["tl-card", hoverable ? "tl-card--hoverable" : "", className || ""]
-    .filter(Boolean)
-    .join(" ");
+  const cls = ["tl-card", hoverable ? "tl-card--hoverable" : "", className || ""].filter(Boolean).join(" ");
 
   const header =
     title || action
@@ -37,9 +35,5 @@ export function Card(props: CardProps = {}): HTMLElement {
   const content = Array.isArray(children) ? children : [children];
   const body = el("div", { class: "tl-card__body", ...(bodyStyle ? { style: bodyStyle } : {}) }, content);
 
-  return el(
-    "section",
-    { class: cls, ...(style ? { style } : {}), ...(id ? { id } : {}) },
-    [header, body],
-  );
+  return el("section", { class: cls, ...(style ? { style } : {}), ...(id ? { id } : {}) }, [header, body]);
 }

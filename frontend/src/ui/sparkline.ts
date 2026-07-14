@@ -42,16 +42,7 @@ export function colorForTone(tone: string, rises: boolean): string {
 
 /** Tiny inline trend line for APY / rate history. Mono-feel SVG polyline. */
 export function Sparkline(props: SparklineProps): SVGSVGElement {
-  const {
-    data = [],
-    width = 64,
-    height = 20,
-    tone = "auto",
-    strokeWidth = 1.5,
-    showDot = true,
-    title,
-    id,
-  } = props;
+  const { data = [], width = 64, height = 20, tone = "auto", strokeWidth = 1.5, showDot = true, title, id } = props;
 
   const root = svg("svg", {
     class: "tl-spark",

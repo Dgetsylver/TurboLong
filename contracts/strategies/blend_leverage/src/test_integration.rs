@@ -871,6 +871,24 @@ fn test_admin_set_keeper_rotates_keeper() {
     );
 }
 
+// The `config()` view must expose exactly the risk parameters the constructor
+// was given — it is the anti-drift source of truth for the frontend/keeper.
+#[test]
+fn test_config_view_exposes_constructor_risk_params() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Values from register_real_strategy's init_args.
+    let (c_factor, target_loops, min_hf, orange_hf) = sclient.config();
+    assert_eq!(c_factor, 9_000_000, "c_factor 0.90");
+    assert_eq!(target_loops, 3, "target_loops");
+    assert_eq!(min_hf, 10_500_000, "min_hf 1.05");
+    assert_eq!(orange_hf, 11_500_000, "orange_hf 1.15");
+}
+
 // ── Auto-rebalance keeper auth & rate-limit (T2.3) ────────────────────────────
 
 #[test]
@@ -1414,6 +1432,151 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         after_hf,
         target
     );
+}
+
+// T2.2 acceptance — dry-run ↔ on-chain parity within rounding.
+//
+// The dry-run prediction is the exact model the off-chain harness
+// (scripts/rebalance_sim.ts) uses: `compute_partial_unwind` for (repay, loops),
+// then the layered execution `submit_deleverage` performs (loops layers of
+// debt × (1 - c_factor) underlying, capped at the outstanding debt). This test
+// executes the real deleverage on the real Blend pool AFTER a year of interest
+// accrual (so b_rate/d_rate ≠ 1 and every underlying↔token conversion rounds)
+// and asserts the executed position matches the prediction to within a few
+// stroops per layer.
+#[test]
+fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let mut config = make_config(&e, &pool_addr, &token, &blnd);
+    // High leverage so the position sits inside the orange zone.
+    config.target_loops = 8;
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    // Advance ~1 year and poke the reserve so interest is materialised and the
+    // rates diverge from 1.0 — the rounding-heavy regime.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
+
+    let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
+    let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    let target = config.orange_hf;
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    assert!(
+        before_hf < target,
+        "fixture must start in the orange zone: before_hf={}",
+        before_hf
+    );
+
+    // ── Dry-run prediction (same model as scripts/rebalance_sim.ts) ──────────
+    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    assert!(loops >= 1);
+
+    // Layered execution model (mirrors blend_pool::submit_deleverage).
+    let debt_underlying = d * d_rate / SCALAR_12;
+    let supply_underlying = b * b_rate / SCALAR_12;
+    let layer = debt_underlying * (SCALAR_7 - config.c_factor) / SCALAR_7;
+    let mut total_repay = 0_i128;
+    let mut remaining = debt_underlying;
+    for _ in 0..loops {
+        let amount = layer.min(remaining);
+        if amount <= 0 {
+            break;
+        }
+        total_repay += amount;
+        remaining -= amount;
+    }
+    let pred_supply = supply_underlying - total_repay;
+    let pred_debt = debt_underlying - total_repay;
+    let pred_hf = pred_supply * config.c_factor / pred_debt;
+
+    // ── Execute the real deleverage on the real pool ──────────────────────────
+    e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, loops, &config).unwrap();
+    });
+
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b2 = post.collateral.get(config.reserve_id).unwrap_or(0);
+    let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
+    let actual_supply = b2 * b_rate / SCALAR_12;
+    let actual_debt = d2 * d_rate / SCALAR_12;
+    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+
+    std::println!(
+        "loops={} pred_supply={} actual_supply={} pred_debt={} actual_debt={} pred_hf={} after_hf={}",
+        loops,
+        pred_supply,
+        actual_supply,
+        pred_debt,
+        actual_debt,
+        pred_hf,
+        after_hf
+    );
+
+    // Every underlying↔token conversion rounds by ≤1 stroop, twice per layer.
+    let tol = (loops as i128) * 3 + 5;
+    assert!(
+        (actual_supply - pred_supply).abs() <= tol,
+        "supply diverges beyond rounding: pred={}, actual={}, tol={}",
+        pred_supply,
+        actual_supply,
+        tol
+    );
+    assert!(
+        (actual_debt - pred_debt).abs() <= tol,
+        "debt diverges beyond rounding: pred={}, actual={}, tol={}",
+        pred_debt,
+        actual_debt,
+        tol
+    );
+    // HF parity: a few-stroop position drift moves the 1e7-scale HF by <<1e-4.
+    assert!(
+        (after_hf - pred_hf).abs() <= 1_000,
+        "HF diverges beyond rounding: pred={}, actual={}",
+        pred_hf,
+        after_hf
+    );
+    assert!(after_hf >= target, "restored: {} >= {}", after_hf, target);
 }
 
 #[test]

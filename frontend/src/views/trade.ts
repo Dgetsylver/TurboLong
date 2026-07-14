@@ -68,8 +68,7 @@ import { toast, txShow, txStep, txHide } from "../app/chrome";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
-const fmt = (n: number, d = 2) =>
-  n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+const fmt = (n: number, d = 2) => n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const money = (n: number) => "$" + fmt(n, 2);
 /** APR (%) → compounded APY (%). Mirrors old-main's aprToApy exactly. */
 const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
@@ -110,9 +109,9 @@ interface TradeState {
   asset: AssetInfo;
   reserves: ReserveStats[];
   positions: UserPositions;
-  balance: number;          // wallet balance of selected asset
-  pendingBlnd: number;      // pool-wide pending BLND
-  events: PositionEvent[];  // on-chain activity for the selected position
+  balance: number; // wallet balance of selected asset
+  pendingBlnd: number; // pool-wide pending BLND
+  events: PositionEvent[]; // on-chain activity for the selected position
   loading: boolean;
   mode: ActionMode;
   holdDays: number;
@@ -260,16 +259,12 @@ export function tradeScreen(): HTMLElement {
         ...pools.map((p) => {
           const frozen = p.status !== 1;
           const active = p.id === ts.pool.id;
-          const item = el(
-            "button",
-            { class: "trade-pool-item" + (active ? " is-active" : ""), type: "button" },
-            [
-              el("span", { class: "trade-pool-item__name" }, [
-                p.name,
-                frozen ? el("span", { class: "trade-pool-item__frozen" }, ["Frozen"]) : null,
-              ]),
-            ],
-          );
+          const item = el("button", { class: "trade-pool-item" + (active ? " is-active" : ""), type: "button" }, [
+            el("span", { class: "trade-pool-item__name" }, [
+              p.name,
+              frozen ? el("span", { class: "trade-pool-item__frozen" }, ["Frozen"]) : null,
+            ]),
+          ]);
           on(item, "click", () => {
             menu.classList.add("is-hidden");
             if (p.id !== ts.pool.id) selectPool(p);
@@ -385,9 +380,7 @@ export function tradeScreen(): HTMLElement {
         ...rows.map(([k, v, cls]) =>
           el("div", { class: "trade-rate__row" }, [
             el("span", { class: "trade-rate__k" }, [k]),
-            skel
-              ? Skeleton({ width: 52, height: 14 })
-              : el("span", { class: `trade-mono trade-rate__v ${cls}` }, [v]),
+            skel ? Skeleton({ width: 52, height: 14 }) : el("span", { class: `trade-mono trade-rate__v ${cls}` }, [v]),
           ]),
         ),
         el("div", { class: "trade-rate__net" }, [
@@ -519,16 +512,16 @@ export function tradeScreen(): HTMLElement {
     const hf = hfForLeverage(lev, c, l);
     const pos = posFor(ts.asset);
 
-    const removeAmt = ts.mode === "remove-funds" ? depositOverride ?? 0 : 0;
+    const removeAmt = ts.mode === "remove-funds" ? (depositOverride ?? 0) : 0;
     // Base equity per mode — identical selection to old-main updatePreview.
     const equity =
       ts.mode === "adjust" && pos
         ? pos.equity
         : ts.mode === "add-funds"
-          ? depositOverride ?? 0
+          ? (depositOverride ?? 0)
           : ts.mode === "remove-funds" && pos
             ? Math.max(0, pos.equity - removeAmt)
-            : depositOverride ?? 0;
+            : (depositOverride ?? 0);
 
     const supply = equity * lev;
     const borrow = equity * (lev - 1);
@@ -603,16 +596,16 @@ export function tradeScreen(): HTMLElement {
       ? el(
           "div",
           { class: "trade-subtabs" },
-          ([
-            ["adjust", "Leverage"],
-            ["add-funds", "Add Funds"],
-            ["remove-funds", "Remove Funds"],
-          ] as Array<[ActionMode, string]>).map(([k, label]) => {
-            const b = el(
-              "button",
-              { class: "trade-subtab" + (ts.mode === k ? " is-active" : ""), type: "button" },
-              [label],
-            );
+          (
+            [
+              ["adjust", "Leverage"],
+              ["add-funds", "Add Funds"],
+              ["remove-funds", "Remove Funds"],
+            ] as Array<[ActionMode, string]>
+          ).map(([k, label]) => {
+            const b = el("button", { class: "trade-subtab" + (ts.mode === k ? " is-active" : ""), type: "button" }, [
+              label,
+            ]);
             on(b, "click", () => {
               ts.mode = k;
               renderColumns();
@@ -677,7 +670,10 @@ export function tradeScreen(): HTMLElement {
         el("div", { class: "trade-field" }, [
           el("label", { class: "trade-field__label" }, ["Deposit"]),
           depInput,
-          el("span", { class: "trade-hint" }, [`Balance: `, el("span", { class: "trade-mono" }, [`${fmt(ts.balance, 4)} ${sym}`])]),
+          el("span", { class: "trade-hint" }, [
+            `Balance: `,
+            el("span", { class: "trade-mono" }, [`${fmt(ts.balance, 4)} ${sym}`]),
+          ]),
         ]),
       );
     }
@@ -781,7 +777,10 @@ export function tradeScreen(): HTMLElement {
             true,
           ),
           previewRow(
-            lbl("Days to liquidation", "At current rates, the time until borrow interest erodes your buffer to liquidation."),
+            lbl(
+              "Days to liquidation",
+              "At current rates, the time until borrow interest erodes your buffer to liquidation.",
+            ),
             liqText,
           ),
         ]),
@@ -795,8 +794,7 @@ export function tradeScreen(): HTMLElement {
         el("span", { class: "trade-calc__cap" }, [
           "Return calculator",
           Tooltip({
-            text:
-              "Simulates the projected return on your equity if rates held constant over the holding period. Not a guarantee — rates drift and you can be liquidated.",
+            text: "Simulates the projected return on your equity if rates held constant over the holding period. Not a guarantee — rates drift and you can be liquidated.",
           }),
         ]),
         el(
@@ -852,7 +850,11 @@ export function tradeScreen(): HTMLElement {
         const curLev = pos ? Math.round(pos.leverage * 10) / 10 : 1;
         const changed = Math.abs(lev - curLev) >= 0.1;
         actionBtn.textContent =
-          lev > curLev ? `Increase to ${lev.toFixed(1)}×` : lev < curLev ? `Decrease to ${lev.toFixed(1)}×` : "Adjust Leverage";
+          lev > curLev
+            ? `Increase to ${lev.toFixed(1)}×`
+            : lev < curLev
+              ? `Decrease to ${lev.toFixed(1)}×`
+              : "Adjust Leverage";
         actionBtn.disabled = !safe || !changed;
       } else {
         actionBtn.textContent = !canCollateralize ? "Not collateral-eligible" : "Confirm & Open";
@@ -907,11 +909,17 @@ export function tradeScreen(): HTMLElement {
       el("div", { class: "trade-field" }, [
         el("label", { class: "trade-field__label" }, ["Add capital"]),
         input,
-        el("span", { class: "trade-hint" }, [`Wallet: `, el("span", { class: "trade-mono" }, [`${fmt(ts.balance, 4)} ${sym}`])]),
+        el("span", { class: "trade-hint" }, [
+          `Wallet: `,
+          el("span", { class: "trade-mono" }, [`${fmt(ts.balance, 4)} ${sym}`]),
+        ]),
       ]),
       el("div", { class: "trade-field" }, [
         el("label", { class: "trade-field__label" }, [
-          lbl("At current leverage", "New capital is looped at your current leverage, keeping your Health Factor roughly the same."),
+          lbl(
+            "At current leverage",
+            "New capital is looped at your current leverage, keeping your Health Factor roughly the same.",
+          ),
         ]),
         el("div", { class: "trade-mono trade-curlev" }, [`${curLev.toFixed(1)}×`]),
       ]),
@@ -1098,7 +1106,13 @@ export function tradeScreen(): HTMLElement {
             el("span", { class: "trade-mono trade-activity__time" }, [relTime(ev.timestamp)]),
             el(
               "a",
-              { class: "trade-mono trade-activity__link", href: expertUrl("tx", ev.hash), target: "_blank", rel: "noopener", title: "View transaction on Stellar Expert" },
+              {
+                class: "trade-mono trade-activity__link",
+                href: expertUrl("tx", ev.hash),
+                target: "_blank",
+                rel: "noopener",
+                title: "View transaction on Stellar Expert",
+              },
               [`${short}… ↗`],
             ),
           ]),
@@ -1124,8 +1138,7 @@ export function tradeScreen(): HTMLElement {
         el("span", { class: "trade-blnd__cap" }, [
           "BLND rewards",
           Tooltip({
-            text:
-              "Emissions earned by this position. Claim & Convert swaps your BLND to your collateral asset and credits your wallet — then use Add Funds to compound it back into the loop and extend your days-to-liquidation.",
+            text: "Emissions earned by this position. Claim & Convert swaps your BLND to your collateral asset and credits your wallet — then use Add Funds to compound it back into the loop and extend your days-to-liquidation.",
           }),
         ]),
         el("span", { class: "trade-mono trade-blnd__amt" }, [`${fmt(ts.pendingBlnd, 4)} BLND`]),
@@ -1535,9 +1548,7 @@ export function tradeScreen(): HTMLElement {
           ),
           el("label", { class: "trade-modal__ack" }, [
             chk,
-            el("span", {}, [
-              "I understand this is a leveraged position and I can be liquidated, losing collateral.",
-            ]),
+            el("span", {}, ["I understand this is a leveraged position and I can be liquidated, losing collateral."]),
           ]),
         ]),
         el("div", { class: "trade-modal__foot" }, [cancelBtn, confirmBtn]),
@@ -1560,8 +1571,10 @@ export function tradeScreen(): HTMLElement {
   /** Friendly message for Blend error codes (mirrors old-main mapping). */
   function txErr(e: unknown): string {
     const msg = (e as Error)?.message ?? "Transaction failed";
-    if (msg.includes("#1205") || msg.includes("InvalidHf")) return "Health factor too low — reduce leverage or deposit more.";
-    if (msg.includes("#1207") || msg.includes("InvalidUtilRate")) return "Pool utilization limit reached — not enough liquidity.";
+    if (msg.includes("#1205") || msg.includes("InvalidHf"))
+      return "Health factor too low — reduce leverage or deposit more.";
+    if (msg.includes("#1207") || msg.includes("InvalidUtilRate"))
+      return "Pool utilization limit reached — not enough liquidity.";
     return msg.slice(0, 200);
   }
 
@@ -1572,7 +1585,10 @@ export function tradeScreen(): HTMLElement {
   const unsub = subscribe((s) => {
     const inDoc = document.contains(root);
     if (inDoc) wasMounted = true;
-    else if (wasMounted) { unsub(); return; } // mounted then removed → clean up
+    else if (wasMounted) {
+      unsub();
+      return;
+    } // mounted then removed → clean up
     else return; // not mounted yet — ignore early state changes
     if (s.expert !== lastExpert) {
       lastExpert = s.expert;

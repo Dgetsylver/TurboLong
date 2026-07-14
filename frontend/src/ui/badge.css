@@ -39,7 +39,7 @@
 }
 .tl-badge--success {
   color: var(--tl-success);
-  background: rgba(45, 232, 163, .08);
+  background: rgba(45, 232, 163, 0.08);
   border-color: var(--tl-success-border);
 }
 .tl-badge--warning {
@@ -54,6 +54,6 @@
 }
 .tl-badge--blnd {
   color: var(--tl-blnd);
-  background: rgba(167, 139, 250, .10);
-  border-color: rgba(167, 139, 250, .30);
+  background: rgba(167, 139, 250, 0.1);
+  border-color: rgba(167, 139, 250, 0.3);
 }

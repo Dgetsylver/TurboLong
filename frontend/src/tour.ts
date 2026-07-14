@@ -9,21 +9,32 @@ import { t } from "./i18n.ts";
 
 const DONE_KEY = "tl_tour_done";
 
-interface Step { titleKey: string; bodyKey: string }
+interface Step {
+  titleKey: string;
+  bodyKey: string;
+}
 
 const STEPS: Step[] = [
   { titleKey: "tour.welcome.title", bodyKey: "tour.welcome.body" },
-  { titleKey: "tour.trade.title",   bodyKey: "tour.trade.body" },
-  { titleKey: "tour.vault.title",   bodyKey: "tour.vault.body" },
+  { titleKey: "tour.trade.title", bodyKey: "tour.trade.body" },
+  { titleKey: "tour.vault.title", bodyKey: "tour.vault.body" },
   { titleKey: "tour.compare.title", bodyKey: "tour.compare.body" },
 ];
 
 function tourSeen(): boolean {
-  try { return localStorage.getItem(DONE_KEY) === "1"; } catch { return false; }
+  try {
+    return localStorage.getItem(DONE_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 function markSeen(): void {
-  try { localStorage.setItem(DONE_KEY, "1"); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(DONE_KEY, "1");
+  } catch {
+    /* ignore */
+  }
 }
 
 let overlay: HTMLDivElement | null = null;
@@ -37,7 +48,10 @@ const FOCUSABLE =
 
 function close(): void {
   if (dontShow) markSeen();
-  if (trapHandler) { document.removeEventListener("keydown", trapHandler); trapHandler = null; }
+  if (trapHandler) {
+    document.removeEventListener("keydown", trapHandler);
+    trapHandler = null;
+  }
   overlay?.remove();
   overlay = null;
   // Return focus to whatever opened the tour (#10).
@@ -64,9 +78,15 @@ function render(): void {
     </div>`;
 
   (overlay.querySelector("#tour-skip") as HTMLElement)?.addEventListener("click", close);
-  (overlay.querySelector("#tour-back") as HTMLElement)?.addEventListener("click", () => { step = Math.max(0, step - 1); render(); });
+  (overlay.querySelector("#tour-back") as HTMLElement)?.addEventListener("click", () => {
+    step = Math.max(0, step - 1);
+    render();
+  });
   (overlay.querySelector("#tour-next") as HTMLElement)?.addEventListener("click", () => {
-    if (last) { close(); return; }
+    if (last) {
+      close();
+      return;
+    }
     step = Math.min(STEPS.length - 1, step + 1);
     render();
   });
@@ -89,18 +109,29 @@ export function startTour(): void {
   trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   overlay = document.createElement("div");
   overlay.className = "tour-overlay";
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
   document.body.appendChild(overlay);
   // Trap Tab within the tour card and allow Escape to dismiss (#10).
   trapHandler = (e: KeyboardEvent) => {
     if (!overlay) return;
-    if (e.key === "Escape") { close(); return; }
+    if (e.key === "Escape") {
+      close();
+      return;
+    }
     if (e.key !== "Tab") return;
     const items = Array.from(overlay.querySelectorAll<HTMLElement>(FOCUSABLE));
     if (items.length === 0) return;
-    const firstEl = items[0], lastEl = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === firstEl) { e.preventDefault(); lastEl.focus(); }
-    else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
+    const firstEl = items[0],
+      lastEl = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === firstEl) {
+      e.preventDefault();
+      lastEl.focus();
+    } else if (!e.shiftKey && document.activeElement === lastEl) {
+      e.preventDefault();
+      firstEl.focus();
+    }
   };
   document.addEventListener("keydown", trapHandler);
   render();
@@ -109,7 +140,11 @@ export function startTour(): void {
 function underE2E(): boolean {
   if (typeof window === "undefined") return false;
   if ((window as unknown as { __E2E__?: boolean }).__E2E__) return true;
-  try { return new URLSearchParams(window.location.search).get("e2e") === "1"; } catch { return false; }
+  try {
+    return new URLSearchParams(window.location.search).get("e2e") === "1";
+  } catch {
+    return false;
+  }
 }
 
 /** Show the tour automatically the first time a visitor lands (never under E2E). */
