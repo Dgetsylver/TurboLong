@@ -9,7 +9,7 @@
  */
 
 const ALERTS_WORKER_URL =
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev";
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
 
 const RATE_HISTORY_KEY = "blendlev_rate_history";
 const RATE_HISTORY_MAX = 4000; // 365d @ 15-min ≈ 35k; cap generously per key
