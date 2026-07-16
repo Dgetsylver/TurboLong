@@ -46,7 +46,7 @@ const swapExecuteAvailable = () => getActiveNetwork() === "mainnet";
 // VITE_STELLAR_BROKER_PARTNER_KEY, which connects straight to api.stellar.broker.
 const DEV_PARTNER_KEY = import.meta.env.VITE_STELLAR_BROKER_PARTNER_KEY as string | undefined;
 const BROKER_RELAY_ORIGIN = `${
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev"
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev"
 }/broker`;
 
 /** Build a broker client wired either to the relay (prod) or directly (dev). */

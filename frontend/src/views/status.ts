@@ -17,7 +17,7 @@ import { t } from "../i18n";
 // ── Endpoints / env vars (identical to src/status.ts) ────────────────────────
 const RPC_URL = (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
 const ALERTS_URL =
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev";
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
 const AQUARIUS_API =
   (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 

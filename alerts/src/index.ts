@@ -496,7 +496,7 @@ async function pruneSnapshots(env: Env): Promise<void> {
 
 async function handleCron(env: Env, requestBase?: string): Promise<void> {
   console.log("[cron] rate snapshot + alert check starting...");
-  const base = requestBase ?? "https://turbolong-alerts.workers.dev";
+  const base = requestBase ?? "https://turbolong-alerts.turbolong.workers.dev";
 
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
