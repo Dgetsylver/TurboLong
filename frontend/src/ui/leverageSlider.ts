@@ -63,18 +63,15 @@ export function LeverageSlider(props: LeverageSliderProps): HTMLDivElement {
   const labels = el(
     "div",
     { class: "tl-lev__zones" },
-    shownZones.map((zone) =>
-      el("span", { class: `tl-lev__zone tl-lev__zone--${zone.key}` }, [zone.label]),
-    ),
+    shownZones.map((zone) => el("span", { class: `tl-lev__zone tl-lev__zone--${zone.key}` }, [zone.label])),
   );
 
   const row = el("div", { class: "tl-lev__row" }, [input, val]);
 
-  const root = el(
-    "div",
-    { class: "tl-lev", ...(id ? { id } : {}), ...(title ? { title } : {}) },
-    [row, labels],
-  ) as HTMLDivElement;
+  const root = el("div", { class: "tl-lev", ...(id ? { id } : {}), ...(title ? { title } : {}) }, [
+    row,
+    labels,
+  ]) as HTMLDivElement;
 
   const render = (v: number) => {
     const z = activeZone(v);

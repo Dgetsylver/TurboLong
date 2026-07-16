@@ -15,14 +15,11 @@ import { el, Badge } from "../ui";
 import { t } from "../i18n";
 
 // ── Endpoints / env vars (identical to src/status.ts) ────────────────────────
-const RPC_URL =
-  (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
+const RPC_URL = (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
 const ALERTS_URL =
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ??
-  "https://turbolong-alerts.workers.dev";
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev";
 const AQUARIUS_API =
-  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ??
-  "https://amm-api.aqua.network/api/external/v1";
+  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 
 type State = "operational" | "degraded" | "down" | "checking";
 
@@ -95,11 +92,10 @@ export function statusScreen(): HTMLElement {
 
   const bannerDot = el("span", { class: "tl-status__banner-dot", "aria-hidden": "true" });
   const bannerText = el("span", {}, [t("status.checking")]);
-  const banner = el(
-    "div",
-    { class: "tl-status__banner", role: "status", "aria-live": "polite" },
-    [bannerDot, bannerText],
-  );
+  const banner = el("div", { class: "tl-status__banner", role: "status", "aria-live": "polite" }, [
+    bannerDot,
+    bannerText,
+  ]);
 
   const list = el("div", { class: "tl-status__list" });
   list.replaceChildren(...SERVICES.map((s) => renderRow(s, "checking")));

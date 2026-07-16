@@ -7,7 +7,7 @@
   align-items: center;
   justify-content: center;
   padding: var(--tl-space-8);
-  background: rgba(0, 0, 0, .7);
+  background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(8px);
   animation: tl-modal-fade var(--tl-dur-fast) var(--tl-ease);
 }
@@ -60,7 +60,9 @@
   border-radius: var(--tl-radius-xs);
   transition: color var(--tl-dur-fast) var(--tl-ease);
 }
-.tl-modal__close:hover { color: var(--tl-text); }
+.tl-modal__close:hover {
+  color: var(--tl-text);
+}
 
 /* Body */
 .tl-modal__body {
@@ -77,10 +79,20 @@
 }
 
 @keyframes tl-modal-fade {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 @keyframes tl-modal-pop {
-  from { opacity: 0; transform: translateY(var(--tl-space-3)) scale(.98); }
-  to   { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(var(--tl-space-3)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }

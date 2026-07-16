@@ -29,10 +29,16 @@
   font-weight: var(--tl-fw-bold);
   color: var(--tl-text);
 }
-.tl-riskband__value--safe { color: var(--tl-success); }
+.tl-riskband__value--safe {
+  color: var(--tl-success);
+}
 .tl-riskband__value--caution,
-.tl-riskband__value--high { color: var(--tl-warning); }
-.tl-riskband__value--nearLiq { color: var(--tl-danger); }
+.tl-riskband__value--high {
+  color: var(--tl-warning);
+}
+.tl-riskband__value--nearLiq {
+  color: var(--tl-danger);
+}
 
 .tl-riskband__track {
   display: flex;
@@ -52,7 +58,7 @@
   color: var(--tl-text-3);
   border: 1px solid var(--tl-border);
   background: transparent;
-  opacity: .45;
+  opacity: 0.45;
   transition: all var(--tl-dur) var(--tl-ease);
 }
 
@@ -63,7 +69,7 @@
 .tl-riskband__seg--safe.is-on {
   color: var(--tl-success);
   border-color: var(--tl-success-border);
-  background: rgba(45, 232, 163, .08);
+  background: rgba(45, 232, 163, 0.08);
 }
 .tl-riskband__seg--caution.is-on,
 .tl-riskband__seg--high.is-on {

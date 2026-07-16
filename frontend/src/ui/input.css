@@ -12,21 +12,32 @@
   color: var(--tl-text);
   font-size: var(--tl-text-lg);
   font-family: var(--tl-font-mono);
-  font-feature-settings: 'tnum' 1;
+  font-feature-settings: "tnum" 1;
   outline: none;
   transition: border-color var(--tl-dur) var(--tl-ease), box-shadow var(--tl-dur) var(--tl-ease);
 }
-.tl-input__field::placeholder { color: var(--tl-text-3); }
+.tl-input__field::placeholder {
+  color: var(--tl-text-3);
+}
 .tl-input__field:focus {
   border-color: var(--tl-primary);
   box-shadow: 0 0 0 3px var(--tl-primary-glow);
 }
-.tl-input__field:disabled { opacity: .5; cursor: not-allowed; }
+.tl-input__field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Reserve room on the right for suffix and/or Max chip. */
-.tl-input__field--suffix { padding-right: 52px; }
-.tl-input__field--max { padding-right: 48px; }
-.tl-input__field--suffix.tl-input__field--max { padding-right: 100px; }
+.tl-input__field--suffix {
+  padding-right: 52px;
+}
+.tl-input__field--max {
+  padding-right: 48px;
+}
+.tl-input__field--suffix.tl-input__field--max {
+  padding-right: 100px;
+}
 
 /* Trailing asset symbol — mono, non-interactive. */
 .tl-input__suffix {
@@ -37,7 +48,7 @@
   font-size: var(--tl-text-sm);
   color: var(--tl-text-3);
   font-family: var(--tl-font-mono);
-  font-feature-settings: 'tnum' 1;
+  font-feature-settings: "tnum" 1;
   pointer-events: none;
 }
 
@@ -59,5 +70,10 @@
   font-family: var(--tl-font-sans);
   transition: color var(--tl-dur-fast) var(--tl-ease), border-color var(--tl-dur-fast) var(--tl-ease);
 }
-.tl-input__max:hover { color: var(--tl-text); border-color: var(--tl-border-hover); }
-.tl-input__max--suffix { right: 48px; }
+.tl-input__max:hover {
+  color: var(--tl-text);
+  border-color: var(--tl-border-hover);
+}
+.tl-input__max--suffix {
+  right: 48px;
+}
