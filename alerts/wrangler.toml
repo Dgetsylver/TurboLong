@@ -8,7 +8,7 @@ crons = ["*/15 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "turbolong-alerts"
-database_id = "<run `npm run db:create` and paste the ID here>"
+database_id = "08ac5484-e3b5-4d60-905b-dc49ae28c137"
 
 [vars]
 RESEND_FROM = "alerts@turbolong.com"
