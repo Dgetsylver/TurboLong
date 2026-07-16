@@ -16,6 +16,9 @@
  *                                  (?network=&strategy_id=&limit=)
  *   POST /swap-routes            — keeper ingests one routing record
  *                                  (Authorization: Bearer KEEPER_INGEST_KEY)
+ *   GET  /broker/ws              — WebSocket relay to api.stellar.broker that
+ *                                  injects the partner key server-side
+ *                                  (secret: STELLAR_BROKER_PARTNER_KEY)
  *
  * Cron (every 15 min):
  *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
@@ -43,6 +46,8 @@ interface Env {
   VAPID_SUBJECT?: string;
   /** Shared secret the keeper sends to POST /swap-routes (Authorization: Bearer). */
   KEEPER_INGEST_KEY?: string;
+  /** Stellar Broker partner key, injected into /broker/ws upstream connections (wrangler secret). */
+  STELLAR_BROKER_PARTNER_KEY?: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -675,6 +680,31 @@ async function handleSwapRoutesGet(request: Request, env: Env): Promise<Response
 
 // ── Worker entry ─────────────────────────────────────────────────────────────
 
+// ── Stellar Broker WebSocket relay ────────────────────────────────────────────
+// The swap UI's broker session connects here instead of api.stellar.broker so
+// the partner key never ships in the frontend bundle. Cloudflare proxies the
+// WebSocket transparently: we just rewrite the upstream URL, injecting the key.
+const BROKER_UPSTREAM = "https://api.stellar.broker/ws";
+
+async function handleBrokerWs(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return jsonResponse({ error: "Expected WebSocket upgrade" }, 426, env);
+  }
+  if (!env.STELLAR_BROKER_PARTNER_KEY) {
+    return jsonResponse({ error: "Broker relay not configured" }, 503, env);
+  }
+  // Keep other sites from riding our partner key through this relay. Browsers
+  // always send Origin on WebSocket handshakes; non-browser clients gain
+  // nothing here they couldn't get from api.stellar.broker directly.
+  const origin = request.headers.get("Origin");
+  const allowed = new Set([env.FRONTEND_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]);
+  if (origin && !allowed.has(origin)) {
+    return jsonResponse({ error: "Origin not allowed" }, 403, env);
+  }
+  const upstream = `${BROKER_UPSTREAM}?partner=${encodeURIComponent(env.STELLAR_BROKER_PARTNER_KEY)}`;
+  return fetch(upstream, request);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -721,6 +751,9 @@ export default {
         if (request.method === "POST") return handleSwapRoutesPost(request, env);
         if (request.method === "GET") return handleSwapRoutesGet(request, env);
         return jsonResponse({ error: "Method not allowed" }, 405, env);
+
+      case "/broker/ws":
+        return handleBrokerWs(request, env);
 
       default:
         return jsonResponse({ error: "Not found" }, 404);
