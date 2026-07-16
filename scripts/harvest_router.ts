@@ -43,6 +43,11 @@
  *   VAULTS_JSON             JSON array of {symbol, strategyId, underlyingClassic, underlyingSoroban}
  *   QUOTE_AMOUNT_BLND       nominal BLND amount (stroops) to quote in dry-run (default 100e7)
  *   HARVEST_MIN_BLND        min claimed BLND (stroops) to bother swapping (default 1e7 = 1 BLND)
+ *   REWARD_THRESHOLD_BLND   the strategy's on-chain reward_threshold (stroops, default
+ *                           100e7 = 100 BLND, matching deploy_strategy_mainnet.ts).
+ *                           Below this the contract's Soroswap reinvest is a no-op,
+ *                           so the keeper defers instead of burning a tx fee.
+ *   FEE_STROOPS             inclusion-fee bid in stroops (default 10000 = 0.001 XLM)
  *   STELLAR_BROKER_PARTNER_KEY  Broker partner key for the trading session
  *   BROKER_TRADE_TIMEOUT_S  max seconds to wait for a Broker trade (default 180)
  *   INTERVAL_S              loop interval seconds (default 3600, with --loop)
@@ -87,8 +92,13 @@ const LOOP = process.argv.includes("--loop");
 const INTERVAL_S = Number(process.env.INTERVAL_S ?? "3600");
 const QUOTE_AMOUNT_BLND = BigInt(process.env.QUOTE_AMOUNT_BLND ?? "1000000000"); // 100 BLND @ 7dp
 const HARVEST_MIN_BLND = BigInt(process.env.HARVEST_MIN_BLND ?? "10000000"); // 1 BLND @ 7dp
+// Contract-side gate: blend_pool::perform_reinvest silently no-ops (returns 0)
+// when the strategy's BLND balance is below Config.reward_threshold. Mirror it
+// here so the keeper defers the Soroswap path instead of submitting a useless tx.
+const REWARD_THRESHOLD_BLND = BigInt(process.env.REWARD_THRESHOLD_BLND ?? "1000000000"); // 100 BLND @ 7dp
 const BROKER_PARTNER_KEY = process.env.STELLAR_BROKER_PARTNER_KEY;
 const BROKER_TRADE_TIMEOUT_S = Number(process.env.BROKER_TRADE_TIMEOUT_S ?? "180");
+const FEE_STROOPS = process.env.FEE_STROOPS ?? "10000"; // inclusion-fee bid (0.001 XLM)
 const EVIDENCE_FILE = resolve(
   HERE,
   process.env.EVIDENCE_FILE ?? "../docs/evidence/harvest-router-log.jsonl",
@@ -154,7 +164,11 @@ interface InvokeResult {
 /** Sign + submit a contract invocation with the keeper key; poll for the result. */
 async function invoke(kp: Keypair, contractId: string, method: string, ...args: xdr.ScVal[]): Promise<InvokeResult> {
   const acc = await server.getAccount(kp.publicKey());
-  const built = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
+  // Inclusion fee: BASE_FEE (100 stroops) gets dropped from the mempool under
+  // mainnet surge pricing — the tx then expires without ever reaching a ledger.
+  // Bid a comfortable margin (still ≤0.001 XLM); prepareTransaction adds the
+  // resource fee on top.
+  const built = new TransactionBuilder(acc, { fee: FEE_STROOPS, networkPassphrase: PASSPHRASE })
     .addOperation(new Contract(contractId).call(method, ...args))
     .setTimeout(120)
     .build();
@@ -164,7 +178,8 @@ async function invoke(kp: Keypair, contractId: string, method: string, ...args: 
   if (sent.status === "ERROR") {
     return { hash: sent.hash, status: "send_error", result: sent.errorResult ?? null };
   }
-  for (let i = 0; i < 30; i++) {
+  // Poll for the full tx window (setTimeout(120) above) + margin.
+  for (let i = 0; i < 70; i++) {
     await new Promise((r) => setTimeout(r, 2_000));
     const res = await server.getTransaction(sent.hash);
     if (res.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
@@ -516,12 +531,26 @@ async function processVault(v: Vault): Promise<void> {
 
   // 3. Execute the chosen route.
   if (d.chosen === "soroswap") {
+    // The contract's perform_reinvest no-ops below reward_threshold — defer
+    // instead of paying for a tx that swaps nothing. BLND accrues on-chain.
+    if (claimed < REWARD_THRESHOLD_BLND) {
+      console.log(`[${v.symbol}] ${claimed} BLND stroops < on-chain reward_threshold ${REWARD_THRESHOLD_BLND}; Soroswap reinvest deferred (BLND accrues in the strategy)`);
+      await logRoute({ ...base, status: "deferred_threshold" });
+      return;
+    }
     const res = await executeSoroswap(v, kp, claimed, d.amountOutMin);
     if (res.status !== "success") {
       await logRoute({ ...base, status: "failed", tx_hash: res.hash });
       return;
     }
     const realized = BigInt(res.result as bigint | number);
+    if (realized === 0n) {
+      // Contract-side threshold no-op (shouldn't happen with the guard above
+      // unless REWARD_THRESHOLD_BLND is misconfigured).
+      console.warn(`[${v.symbol}] harvest_reinvest returned 0 — contract reward_threshold not met; check REWARD_THRESHOLD_BLND`);
+      await logRoute({ ...base, status: "noop_threshold", tx_hash: res.hash });
+      return;
+    }
     await logRoute({
       ...base,
       status: "executed",
@@ -551,6 +580,11 @@ async function processVault(v: Vault): Promise<void> {
 
   // 4. Fallback: reinvest any unsold BLND via the on-chain Soroswap path.
   if (out.unsoldBlnd > 0n) {
+    if (out.unsoldBlnd < REWARD_THRESHOLD_BLND) {
+      console.warn(`[${v.symbol}] broker left ${out.unsoldBlnd} BLND unsold (${out.error ?? "partial fill"}) — below on-chain reward_threshold, deferred to next pass`);
+      await logRoute({ ...base, amount_in: out.unsoldBlnd.toString(), chosen: "soroswap", reason: "fallback_unavailable", status: "deferred_threshold" });
+      return;
+    }
     console.warn(`[${v.symbol}] broker left ${out.unsoldBlnd} BLND unsold (${out.error ?? "partial fill"}); falling back to Soroswap`);
     const fbQuote = await soroswapQuote(out.unsoldBlnd, [BLND_SOROBAN, v.underlyingSoroban]);
     if (fbQuote == null) {
