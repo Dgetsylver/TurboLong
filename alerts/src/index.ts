@@ -77,6 +77,25 @@ function corsHeaders(env: Env): Record<string, string> {
   };
 }
 
+/** Origins allowed to call the API from a browser (prod app + local dev). */
+function allowedOrigins(env: Env): Set<string> {
+  return new Set([env.FRONTEND_ORIGIN, "http://localhost:5173", "http://127.0.0.1:5173"]);
+}
+
+/**
+ * Reflect an allowlisted request Origin onto the response so the local dev
+ * frontend can call the API too (corsHeaders defaults to FRONTEND_ORIGIN).
+ * Leaves responses without CORS headers (e.g. WebSocket upgrades) untouched.
+ */
+function withCors(request: Request, env: Env, res: Response): Response {
+  const origin = request.headers.get("Origin");
+  if (!origin || origin === env.FRONTEND_ORIGIN || !allowedOrigins(env).has(origin)) return res;
+  if (!res.headers.has("Access-Control-Allow-Origin")) return res;
+  const out = new Response(res.body, res);
+  out.headers.set("Access-Control-Allow-Origin", origin);
+  return out;
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Known pool IDs for validation. */
@@ -325,6 +344,7 @@ async function alertEmailSubscribers(
     WHERE pool_id = ?1
       AND asset_symbol = ?2
       AND leverage_bracket = ?3
+      AND alert_type = 'apy'
       AND verified = 1
       AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
   `).bind(pool.id, asset.symbol, bracket).all();
@@ -479,6 +499,8 @@ async function alertHfSubscribers(
     );
     if (result.ok) {
       await env.DB.prepare(`UPDATE subscriptions SET last_fired_at = datetime('now') WHERE id = ?1`).bind(row.id).run();
+    } else {
+      console.error(`[cron] Failed to send HF alert to ${row.email}:`, result.error);
     }
   }
 }
@@ -707,13 +729,22 @@ async function handleBrokerWs(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+    return withCors(request, env, await routeRequest(request, env));
+  },
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
-    }
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(handleCron(env));
+  },
+};
 
-    switch (url.pathname) {
+async function routeRequest(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(env) });
+  }
+
+  switch (url.pathname) {
       case "/subscribe":
         if (request.method !== "POST") {
           return jsonResponse({ error: "Method not allowed" }, 405, env);
@@ -757,10 +788,5 @@ export default {
 
       default:
         return jsonResponse({ error: "Not found" }, 404);
-    }
-  },
-
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(handleCron(env));
-  },
-};
+  }
+}

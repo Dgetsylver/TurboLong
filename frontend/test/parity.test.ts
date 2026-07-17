@@ -66,7 +66,7 @@ describe('Parity tests between Rust simulate binary and TS projectRates', () => 
       await fetchBlndPrice({} as any, '');
       global.fetch = originalFetch;
     }
-  });
+  }, 180_000); // allow a cold `cargo build` of rate_calc without a hook timeout
 
   it('should have loaded fixtures', () => {
     expect(fixtures.length).toBeGreaterThanOrEqual(20);
