@@ -8,7 +8,7 @@
  * so every visitor sees real 24h/7d/30d/1y history with no per-browser warm-up.
  */
 
-const ALERTS_WORKER_URL =
+export const ALERTS_WORKER_URL =
   (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
 
 const RATE_HISTORY_KEY = "blendlev_rate_history";
