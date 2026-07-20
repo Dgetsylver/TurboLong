@@ -796,6 +796,42 @@ export function projectRates(rs: ReserveStats, addSupply: number, addBorrow: num
 
 // ── User position ─────────────────────────────────────────────────────────────
 
+export interface DownsideScenario {
+  utilization:       number; // 0..1
+  rates:             ProjectedRates;
+  netApy:            number; // leveraged APY, %
+  hfDecayApr:        number; // interest-only HF decay, %/yr
+  daysToLiquidation: number | null; // null when already liquidatable / invalid
+}
+
+/**
+ * Stress a reserve at a future utilization while reusing the same projectRates
+ * path as the trade preview. The pool supply is held constant and borrow is
+ * moved to the requested utilization, matching "util hits X%" scenarios.
+ */
+export function projectDownsideScenario(
+  rs: ReserveStats,
+  targetUtilization: number,
+  leverage: number,
+  healthFactor: number,
+): DownsideScenario {
+  const utilization = Math.min(0.9999, Math.max(0, targetUtilization));
+  const targetBorrow = rs.totalSupply * utilization;
+  const rates = projectRates(rs, 0, targetBorrow - rs.totalBorrow);
+  const netApr = rates.netSupplyApr * leverage - rates.netBorrowCost * (leverage - 1);
+  const netApy = (Math.exp(netApr / 100) - 1) * 100;
+  const hfDecayApr = rates.interestBorrowApr - rates.interestSupplyApr;
+
+  let daysToLiquidation: number | null = null;
+  if (hfDecayApr <= 0) {
+    daysToLiquidation = Number.POSITIVE_INFINITY;
+  } else if (Number.isFinite(healthFactor) && healthFactor > 1) {
+    daysToLiquidation = Math.log(healthFactor) / (hfDecayApr / 100) * 365;
+  }
+
+  return { utilization, rates, netApy, hfDecayApr, daysToLiquidation };
+}
+
 export interface AssetPosition {
   asset: AssetInfo;
   bTokens: bigint;
