@@ -10,19 +10,7 @@ import "./vault.css";
  * Pattern mirrors dashboard.screen.ts: render a lightweight skeleton/empty
  * state immediately, then fill async per selected vault.
  */
-import {
-  el,
-  on,
-  Card,
-  Badge,
-  Button,
-  Input,
-  MetricHero,
-  StatCard,
-  HealthFactor,
-  Tooltip,
-  Skeleton,
-} from "../ui";
+import { el, on, Card, Badge, Button, Input, MetricHero, StatCard, HealthFactor, Tooltip, Skeleton } from "../ui";
 import {
   getVaults,
   fetchVaultStats,
@@ -81,8 +69,7 @@ function aquariusBlock(vault: VaultConfig): HTMLElement {
     el("span", { class: "vault-receipt__label" }, [
       tt("vault.receiptToken", "Receipt token"),
       Tooltip({
-        text:
-          "A transferable SEP-41 token representing your vault deposit. Trade it against the asset on Aquarius to exit without unwinding the loop on-chain.",
+        text: "A transferable SEP-41 token representing your vault deposit. Trade it against the asset on Aquarius to exit without unwinding the loop on-chain.",
       }),
     ]),
   ]);
@@ -119,7 +106,9 @@ function aquariusBlock(vault: VaultConfig): HTMLElement {
       ]),
     );
   } else {
-    headRow.append(el("span", { class: "vault-receipt__id vault-mono vault-receipt__pending" }, [`tl${vault.assetSymbol}`]));
+    headRow.append(
+      el("span", { class: "vault-receipt__id vault-mono vault-receipt__pending" }, [`tl${vault.assetSymbol}`]),
+    );
   }
 
   const tradeBtn = Button({
@@ -163,13 +152,11 @@ function detailHeader(vault: VaultConfig, stats: VaultStats | null): HTMLElement
     el("h2", { class: "vault-detail__title" }, [vault.name]),
     Badge({ tone: "blnd", children: tt("vault.strategyBadge", "Strategy") }),
     Tooltip({
-      text:
-        "A managed, automated leverage loop you deposit into passively — Turbolong runs the supply/borrow loop for you.",
+      text: "A managed, automated leverage loop you deposit into passively — Turbolong runs the supply/borrow loop for you.",
     }),
     Badge({ tone: "success", dot: true, children: "Auto-rebalance" }),
     Tooltip({
-      text:
-        "A permissionless keeper partially unwinds the loop when the Health Factor drops below the minimum, protecting all depositors.",
+      text: "A permissionless keeper partially unwinds the loop when the Health Factor drops into the orange zone, restoring it to the safety threshold and protecting all depositors.",
     }),
   ]);
 
@@ -213,7 +200,10 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
 
   const stats4 = el("div", { class: "vault-stats4" }, [
     StatCard({
-      label: lbl(tt("vault.collateral", "Collateral"), "Total assets the strategy has supplied as collateral across the loop."),
+      label: lbl(
+        tt("vault.collateral", "Collateral"),
+        "Total assets the strategy has supplied as collateral across the loop.",
+      ),
       value: collateral,
     }),
     StatCard({
@@ -230,7 +220,10 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
       tone: "success",
     }),
     StatCard({
-      label: lbl(tt("vault.loops", "Loops"), "How many times collateral was re-supplied and borrowed to build the leverage."),
+      label: lbl(
+        tt("vault.loops", "Loops"),
+        "How many times collateral was re-supplied and borrowed to build the leverage.",
+      ),
       value: loops,
     }),
   ]);
@@ -245,11 +238,15 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
     el("span", {}, [
       tt(
         "vault.keeperNote",
-        "Auto-rebalance keeper monitors the health factor and partially unwinds the loop when HF drops below the minimum",
+        "Auto-rebalance keeper monitors the health factor and partially unwinds the loop when HF drops into the orange zone",
       ),
-      " (",
-      el("span", { class: "vault-mono" }, [vault.minHf.toFixed(2)]),
-      "), protecting all depositors. Rebalance is permissionless.",
+      " (< ",
+      el("span", { class: "vault-mono" }, [vault.orangeHf.toFixed(2)]),
+      ")",
+      tt(
+        "vault.keeperNoteTail",
+        ", restoring it to that threshold and protecting all depositors. Rebalance is permissionless.",
+      ),
     ]),
   ]);
 
@@ -287,7 +284,10 @@ function yourPositionCard(
 
   const equityRow = row(tt("vault.yourEquity", "Your Equity"), userEquity, true);
   const shareRow = row(
-    lbl(tt("vault.shareOfVault", "Share of Vault"), "Your portion of the vault’s net equity, based on the shares you hold."),
+    lbl(
+      tt("vault.shareOfVault", "Share of Vault"),
+      "Your portion of the vault’s net equity, based on the shares you hold.",
+    ),
     sharePct,
   );
 
@@ -299,9 +299,48 @@ function yourPositionCard(
     disabled: !addr || !ready,
     onMax: () => {
       if (vs.userWalletBalance > 0) depField.value = vs.userWalletBalance.toFixed(2);
+      updateDepPreview();
     },
   });
   const depField = depInput.querySelector("input") as HTMLInputElement;
+
+  // ── Projected HF preview (before → after) for the entered deposit amount ──
+  // The loop levers every deposit at the same ratio, so the marginal HF is the
+  // deterministic target c·S/(S−1); the aggregate "after" HF blends it with the
+  // current position. Computed entirely client-side from cFactor + targetLoops
+  // and the position's underlying collateral/debt — no extra on-chain call.
+  const targetLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  const depPreview = el("div", { class: "vault-row vault-dep-preview", style: "display:none" }, []);
+  function updateDepPreview() {
+    const amount = Number.parseFloat(depField.value);
+    if (!ready || !amount || amount <= 0) {
+      depPreview.style.display = "none";
+      return;
+    }
+    const cBefore = stats?.collateralValue ?? 0;
+    const dBefore = stats?.debtValue ?? 0;
+    const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
+    const cAfter = cBefore + amount * targetLeverage;
+    const dAfter = dBefore + amount * (targetLeverage - 1);
+    const hfAfter = dAfter > 0 ? (vault.cFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
+    const fb = formatHf(hfBefore);
+    const fa = formatHf(hfAfter);
+    depPreview.replaceChildren(
+      el("span", { class: "vault-row__label" }, [
+        lbl(
+          tt("vault.projectedHf", "Projected HF"),
+          "Health factor of the whole vault before and after your deposit, at the target leverage.",
+        ),
+      ]),
+      el("span", { class: "vault-mono vault-row__value" }, [
+        el("span", { class: fb.cls }, [fb.text]),
+        " → ",
+        el("span", { class: fa.cls }, [fa.text]),
+        el("span", { class: "vault-dep-preview__lev" }, [`  (~${targetLeverage.toFixed(2)}×)`]),
+      ]),
+    );
+    depPreview.style.display = "";
+  }
 
   const depBtn = Button({
     variant: "primary",
@@ -311,6 +350,7 @@ function yourPositionCard(
     children: `${tt("vault.deposit", "Deposit")} ${sym}`,
   });
   on(depBtn, "click", () => void runDeposit());
+  on(depField, "input", () => updateDepPreview());
 
   // ── Withdraw ──
   const wdInput = Input({
@@ -400,9 +440,10 @@ function yourPositionCard(
     }
   }
 
-  // ── Rebalance (permissionless; enabled only when HF < min) ──
-  const needsRebalance =
-    ready && stats && Number.isFinite(stats.healthFactor) && stats.healthFactor < vault.minHf;
+  // ── Rebalance (permissionless; the contract fires whenever HF < orange_hf,
+  // so the button follows the exact same trigger — not min_hf, which is only
+  // the deposit floor and would enable the button too late) ──
+  const needsRebalance = ready && stats && Number.isFinite(stats.healthFactor) && stats.healthFactor < vault.orangeHf;
   const rebalBtn = Button({
     variant: "danger",
     fullWidth: true,
@@ -413,7 +454,11 @@ function yourPositionCard(
   const rebalHint = el(
     "p",
     { class: "vault-rebal-hint " + (needsRebalance ? "vault-rebal-hint--bad" : "vault-rebal-hint--ok") },
-    [needsRebalance ? tt("vault.hfBelowMin", "HF below minimum — rebalance available") : tt("vault.hfHealthy", "HF is healthy")],
+    [
+      needsRebalance
+        ? `${tt("vault.hfInOrangeZone", "HF in the orange zone")} (< ${vault.orangeHf.toFixed(2)}) — ${tt("vault.rebalanceAvailable", "rebalance available")}`
+        : `${tt("vault.hfHealthy", "HF is healthy")} (≥ ${vault.orangeHf.toFixed(2)})`,
+    ],
   );
 
   async function runRebalance() {
@@ -442,6 +487,7 @@ function yourPositionCard(
     equityRow,
     shareRow,
     el("div", { class: "vault-field" }, [el("label", { class: "vault-field__label" }, [`Deposit ${sym}`]), depInput]),
+    depPreview,
     depBtn,
     el("div", { class: "vault-field" }, [el("label", { class: "vault-field__label" }, [`Withdraw ${sym}`]), wdInput]),
     wdBtn,
@@ -463,17 +509,26 @@ function selectorTile(
   soon: boolean,
   onSelect: () => void,
 ): HTMLElement {
-  const tile = el("button", { class: "vault-tile" + (active ? " vault-tile--active" : "") + (soon ? " vault-tile--soon" : "") }, [
-    el("div", { class: "vault-tile__top" }, [
-      el("span", { class: "vault-mono vault-tile__asset" }, [vault.assetSymbol]),
-      el("span", { class: "vault-tile__pool" }, [vault.name.replace(/^Leveraged\s+\S+\s*/, "").replace(/[()]/g, "").trim() || "Strategy"]),
-      soon ? Badge({ tone: "neutral", children: "Soon" }) : null,
-    ]),
-    el("div", { class: "vault-tile__bottom" }, [
-      el("span", { class: "vault-mono vault-tile__apy" + (soon ? " vault-tile__apy--soon" : "") }, [apyText]),
-      el("span", { class: "vault-tile__tvl" }, [`TVL ${tvlText}`]),
-    ]),
-  ]);
+  const tile = el(
+    "button",
+    { class: "vault-tile" + (active ? " vault-tile--active" : "") + (soon ? " vault-tile--soon" : "") },
+    [
+      el("div", { class: "vault-tile__top" }, [
+        el("span", { class: "vault-mono vault-tile__asset" }, [vault.assetSymbol]),
+        el("span", { class: "vault-tile__pool" }, [
+          vault.name
+            .replace(/^Leveraged\s+\S+\s*/, "")
+            .replace(/[()]/g, "")
+            .trim() || "Strategy",
+        ]),
+        soon ? Badge({ tone: "neutral", children: "Soon" }) : null,
+      ]),
+      el("div", { class: "vault-tile__bottom" }, [
+        el("span", { class: "vault-mono vault-tile__apy" + (soon ? " vault-tile__apy--soon" : "") }, [apyText]),
+        el("span", { class: "vault-tile__tvl" }, [`TVL ${tvlText}`]),
+      ]),
+    ],
+  );
   if (soon) {
     tile.setAttribute("disabled", "true");
   } else {
@@ -563,10 +618,7 @@ export function vaultScreen(): HTMLElement {
       : strategyCard(vault, stats);
     const right = yourPositionCard(vault, stats, vs, { refresh: () => loadDetail() });
 
-    detailEl.replaceChildren(
-      detailHeader(vault, stats),
-      el("div", { class: "vault-cols" }, [left, right]),
-    );
+    detailEl.replaceChildren(detailHeader(vault, stats), el("div", { class: "vault-cols" }, [left, right]));
   }
 
   function skeletonBlock(): HTMLElement {
@@ -595,10 +647,7 @@ export function vaultScreen(): HTMLElement {
     try {
       const pool = getKnownPools().find((p) => p.id === vault.poolId);
       if (pool) {
-        poolReserves = await fetchAllReserves(
-          pool,
-          addr ?? "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
+        poolReserves = await fetchAllReserves(pool, addr ?? "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
       }
     } catch {
       /* APY degrades to "—" */

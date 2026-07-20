@@ -186,11 +186,11 @@ pub fn set_last_rebalance(e: &Env, ledger: u32) {
     e.storage().instance().set(&DataKey::LastRebalance, &ledger);
 }
 
-pub fn get_last_rebalance(e: &Env) -> u32 {
-    e.storage()
-        .instance()
-        .get(&DataKey::LastRebalance)
-        .unwrap_or(0)
+/// `None` when no keeper rebalance has ever been recorded. An explicit Option
+/// (instead of a `0` sentinel) so a rebalance recorded at any ledger sequence
+/// — including 0 in test environments — correctly arms the cooldown.
+pub fn get_last_rebalance(e: &Env) -> Option<u32> {
+    e.storage().instance().get(&DataKey::LastRebalance)
 }
 
 // ── Swap account (off-chain Broker harvest path) ─────────────────────────────

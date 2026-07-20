@@ -163,7 +163,12 @@ async function main() {
   const tokenHash = await installWasm(TOKEN_WASM, "token");
   console.log(`  strategy wasm=${strategyHash}\n  token wasm=${tokenHash}`);
 
-  const out: Record<string, { strategy: string; token: string }> = {};
+  // Persist the risk params alongside the addresses so the JSON documents the
+  // configuration that was ACTUALLY deployed (human floats, not 1e7 ints).
+  const out: Record<
+    string,
+    { strategy: string; token: string; cFactor: number; targetLoops: number; minHf: number; orangeHf: number }
+  > = {};
 
   for (const a of ASSETS) {
     console.log(`\n=== ${a.symbol} ===`);
@@ -198,7 +203,14 @@ async function main() {
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER!)], `${a.symbol} set_swap_account`);
 
-    out[a.symbol] = { strategy, token };
+    out[a.symbol] = {
+      strategy,
+      token,
+      cFactor: Number(a.cFactor) / 1e7,
+      targetLoops: a.targetLoops,
+      minHf: Number(a.minHf) / 1e7,
+      orangeHf: Number(a.orangeHf) / 1e7,
+    };
   }
 
   const file = path.resolve(here, "../deployed-vaults.mainnet.json");

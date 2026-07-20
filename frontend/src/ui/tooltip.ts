@@ -42,17 +42,9 @@ export function Tooltip(props: TooltipProps): HTMLSpanElement {
           ),
         ];
 
-  const pop = el(
-    "span",
-    { class: `tl-tip__pop tl-tip__pop--${placement}`, role: "tooltip" },
-    [text],
-  );
+  const pop = el("span", { class: `tl-tip__pop tl-tip__pop--${placement}`, role: "tooltip" }, [text]);
 
   const cls = ["tl-tip", className].filter(Boolean).join(" ");
 
-  return el(
-    "span",
-    { class: cls, ...(id ? { id } : {}) },
-    [...trigger, pop],
-  ) as HTMLSpanElement;
+  return el("span", { class: cls, ...(id ? { id } : {}) }, [...trigger, pop]) as HTMLSpanElement;
 }

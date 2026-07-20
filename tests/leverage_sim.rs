@@ -315,8 +315,8 @@ fn simulate_usdc_leverage() {
 
     println!();
     println!(
-        "  {:>4}  {:>12}  {:>12}  {:>8}  {:>11}  {:>10}  {:>10}  {}",
-        "Loop", "Supplied ($)", "Borrowed ($)", "Leverage", "HF", "Net APY", "BLND/yr", "⚠"
+        "  {:>4}  {:>12}  {:>12}  {:>8}  {:>11}  {:>10}  {:>10}  ⚠",
+        "Loop", "Supplied ($)", "Borrowed ($)", "Leverage", "HF", "Net APY", "BLND/yr"
     );
     println!("  {}", "─".repeat(85));
 

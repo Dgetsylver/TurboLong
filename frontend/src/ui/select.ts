@@ -22,29 +22,16 @@ export interface SelectProps {
 
 /** Styled native <select> — brand chevron + mono type. Options are strings or {value,label}. */
 export function Select(props: SelectProps): HTMLSelectElement {
-  const {
-    options = [],
-    value,
-    onChange,
-    width,
-    mono = true,
-    disabled = false,
-    id,
-    title,
-  } = props;
+  const { options = [], value, onChange, width, mono = true, disabled = false, id, title } = props;
 
-  const opts: SelectOption[] = options.map((o) =>
-    typeof o === "string" ? { value: o, label: o } : o,
-  );
+  const opts: SelectOption[] = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
 
   const cls = ["tl-select", mono ? "tl-select--mono" : "tl-select--sans"].join(" ");
 
   const sel = el(
     "select",
     { class: cls, ...(id ? { id } : {}), ...(title ? { title } : {}) },
-    opts.map((o) =>
-      el("option", { value: o.value, ...(o.value === value ? { selected: "" } : {}) }, [o.label]),
-    ),
+    opts.map((o) => el("option", { value: o.value, ...(o.value === value ? { selected: "" } : {}) }, [o.label])),
   ) as HTMLSelectElement;
 
   if (width != null) sel.style.width = typeof width === "number" ? `${width}px` : width;

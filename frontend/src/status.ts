@@ -7,10 +7,9 @@
 import "./style.css";
 import { initI18n, applyTranslations, t, cycleLang } from "./i18n.ts";
 
-const RPC_URL =
-  (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
+const RPC_URL = (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
 const ALERTS_URL =
-  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.workers.dev";
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
 const AQUARIUS_API =
   (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 
@@ -42,9 +41,13 @@ const SERVICES: Service[] = [
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }),
       }),
   },
-  { id: "alerts",    labelKey: "status.svc.alerts",    check: () => reachable(`${ALERTS_URL}/snapshots?limit=1`) },
-  { id: "snapshots", labelKey: "status.svc.snapshots", check: () => reachable(`${ALERTS_URL}/snapshots?asset=USDC&limit=1`) },
-  { id: "aquarius",  labelKey: "status.svc.aquarius",  check: () => reachable(AQUARIUS_API) },
+  { id: "alerts", labelKey: "status.svc.alerts", check: () => reachable(`${ALERTS_URL}/snapshots?limit=1`) },
+  {
+    id: "snapshots",
+    labelKey: "status.svc.snapshots",
+    check: () => reachable(`${ALERTS_URL}/snapshots?asset=USDC&limit=1`),
+  },
+  { id: "aquarius", labelKey: "status.svc.aquarius", check: () => reachable(AQUARIUS_API) },
 ];
 
 function dotClass(state: State): string {

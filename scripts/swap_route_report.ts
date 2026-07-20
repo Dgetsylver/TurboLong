@@ -8,7 +8,7 @@
 // uplift, the Broker/Soroswap chosen split, and progress vs the ≥50-harvest
 // acceptance target.
 //
-// Run (live):     npx tsx scripts/swap_route_report.ts --url https://turbolong-alerts.workers.dev --network mainnet
+// Run (live):     npx tsx scripts/swap_route_report.ts --url https://turbolong-alerts.turbolong.workers.dev --network mainnet
 // Run (offline):  npx tsx scripts/swap_route_report.ts --fixture
 // Out:            docs/evidence/swap-route-report.md
 
@@ -109,7 +109,7 @@ function perAsset(rows: Row[]) {
 
 async function main() {
   const fixture = hasFlag("--fixture");
-  const url = arg("--url") ?? "https://turbolong-alerts.workers.dev";
+  const url = arg("--url") ?? "https://turbolong-alerts.turbolong.workers.dev";
   const network = arg("--network") ?? (fixture ? "mainnet" : "mainnet");
 
   let report: ServerReport;
