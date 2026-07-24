@@ -47,4 +47,4 @@ if (-not $env:SKIP_RESEND_SECRET) {
 Write-Host "Deploying worker..."
 npm run deploy
 
-Write-Host "Done. Worker: https://turbolong-alerts.workers.dev"
+Write-Host "Done. Worker: https://turbolong-alerts.turbolong.workers.dev"

@@ -27,11 +27,21 @@
   line-height: 1.1;
 }
 
-.tl-metric-hero__value--default { color: var(--tl-text); }
-.tl-metric-hero__value--primary { color: var(--tl-primary); }
-.tl-metric-hero__value--success { color: var(--tl-success); }
-.tl-metric-hero__value--warning { color: var(--tl-warning); }
-.tl-metric-hero__value--danger { color: var(--tl-danger); }
+.tl-metric-hero__value--default {
+  color: var(--tl-text);
+}
+.tl-metric-hero__value--primary {
+  color: var(--tl-primary);
+}
+.tl-metric-hero__value--success {
+  color: var(--tl-success);
+}
+.tl-metric-hero__value--warning {
+  color: var(--tl-warning);
+}
+.tl-metric-hero__value--danger {
+  color: var(--tl-danger);
+}
 
 .tl-metric-hero__sub {
   display: block;

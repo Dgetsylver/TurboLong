@@ -4,13 +4,7 @@
  * via aggregatePoolAccount / PR #295) and lists vault holdings separately.
  */
 import { el } from "../ui";
-import {
-  renderDashboard,
-  type DashboardData,
-  type PoolAccount,
-  type Leg,
-  type Role,
-} from "./dashboard";
+import { renderDashboard, type DashboardData, type PoolAccount, type Leg, type Role } from "./dashboard";
 import {
   getKnownPools,
   fetchAllReserves,
@@ -44,9 +38,7 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
       try {
         const reserves = await fetchAllReserves(pool, addr);
         const pos = await fetchUserPositions(pool, addr, reserves);
-        const active: AssetPosition[] = [...pos.byAsset.values()].filter(
-          (p) => p.collateral > 0 || p.debt > 0,
-        );
+        const active: AssetPosition[] = [...pos.byAsset.values()].filter((p) => p.collateral > 0 || p.debt > 0);
         if (!active.length) return;
         const agg = aggregatePoolAccount(active, reserves);
         const priceBySymbol = new Map(reserves.map((rs) => [rs.asset.symbol, rs.priceUsd]));
@@ -69,15 +61,10 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
     getVaults().map(async (vault) => {
       if (!vault.vaultId) return;
       try {
-        const [stats, userPos] = await Promise.all([
-          fetchVaultStats(vault),
-          fetchUserVaultBalance(vault, addr),
-        ]);
+        const [stats, userPos] = await Promise.all([fetchVaultStats(vault), fetchUserVaultBalance(vault, addr)]);
         if (!userPos || userPos.underlyingValue <= 0) return;
         const share =
-          stats && stats.totalShares > 0
-            ? `${((userPos.shares / stats.totalShares) * 100).toFixed(2)}%`
-            : "—";
+          stats && stats.totalShares > 0 ? `${((userPos.shares / stats.totalShares) * 100).toFixed(2)}%` : "—";
         vaults.push({
           name: vault.name,
           equityUsd: userPos.underlyingValue,
@@ -98,8 +85,7 @@ const handlers = {
   onNewPosition: () => setState({ view: "trade", tradeTarget: null }),
   onManagePool: (poolId: string | undefined, assetId: string | undefined) =>
     setState({ view: "trade", tradeTarget: poolId ? { poolId, assetId } : null }),
-  onAddLeg: (poolId: string | undefined) =>
-    setState({ view: "trade", tradeTarget: poolId ? { poolId } : null }),
+  onAddLeg: (poolId: string | undefined) => setState({ view: "trade", tradeTarget: poolId ? { poolId } : null }),
   onGoVault: () => setState({ view: "vault" }),
 };
 

@@ -4,7 +4,11 @@
    primitive helper classes used across specimen cards.
    ============================================================================ */
 
-*, *::before, *::after { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
@@ -15,14 +19,16 @@ body {
   line-height: var(--tl-leading-body);
   -webkit-font-smoothing: antialiased;
   /* Signature backdrop: faint mint glow top-center, violet glow bottom-right */
-  background-image:
-    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45,232,163,.04), transparent),
-    radial-gradient(circle at 90% 80%, rgba(167,139,250,.02), transparent);
+  background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45, 232, 163, 0.04), transparent),
+    radial-gradient(circle at 90% 80%, rgba(167, 139, 250, 0.02), transparent);
   background-attachment: fixed;
 }
 
 /* Every financial figure is mono. */
-.tl-mono { font-family: var(--tl-font-mono); font-feature-settings: 'tnum' 1; }
+.tl-mono {
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+}
 
 /* Uppercase micro-label — the workhorse caption style. */
 .tl-label {

@@ -27,7 +27,9 @@
   font-weight: var(--tl-fw-semibold);
   font-size: var(--tl-text-sm);
 }
-.tl-asset-tab__label { opacity: .85; }
+.tl-asset-tab__label {
+  opacity: 0.85;
+}
 
 /* Active — solid mint, dark text, glow */
 .tl-asset-tab.is-active {
@@ -39,4 +41,6 @@
   background: var(--tl-primary);
   color: var(--tl-bg);
 }
-.tl-asset-tab.is-active .tl-asset-tab__label { opacity: .7; }
+.tl-asset-tab.is-active .tl-asset-tab__label {
+  opacity: 0.7;
+}

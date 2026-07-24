@@ -1,0 +1,54 @@
+# Turbolong harvest router keeper — systemd unit (T2.1 production service).
+#
+# Runs the Broker-vs-Soroswap A/B harvest router live: claims BLND, executes
+# the best-quoted route (Stellar Broker primary, Soroswap fallback), re-leverages
+# and logs every routing decision to the alerts Worker + a JSONL evidence file.
+#
+# Install (as root, on the keeper VPS):
+#   cp harvest-keeper.service /etc/systemd/system/
+#   cp harvest-keeper.env.example /etc/turbolong/harvest-keeper.env   # then fill it in
+#   chmod 600 /etc/turbolong/harvest-keeper.env
+#   systemctl daemon-reload
+#   systemctl enable --now harvest-keeper
+#
+# Logs:    journalctl -u harvest-keeper -f
+# Evidence: $EVIDENCE_FILE (JSONL, one line per routing decision)
+
+[Unit]
+Description=Turbolong harvest router keeper (harvest_router.ts --execute --loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Same dedicated non-root user as the rebalance keeper.
+User=keeper
+Group=keeper
+
+# Repo checkout location on the server — adjust if different.
+WorkingDirectory=/home/keeper/TurboLong/scripts
+ExecStart=/usr/bin/env npx tsx harvest_router.ts --execute --loop
+
+# KEEPER_SECRET, VAULTS_JSON, STELLAR_BROKER_PARTNER_KEY, SWAP_ROUTES_URL,
+# KEEPER_INGEST_KEY, INTERVAL_S, EVIDENCE_FILE live here — root-owned,
+# mode 600, never in the repo.
+EnvironmentFile=/etc/turbolong/harvest-keeper.env
+
+# Crash-loop protection: always restart, but back off.
+Restart=always
+RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+# Hardening: the process only needs to read the repo and append to the
+# evidence file. It never needs privileges, /tmp sharing, or other homes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/turbolong
+# Node/npm cache needs a writable HOME subset:
+ReadWritePaths=/home/keeper/.npm /home/keeper/.cache
+
+[Install]
+WantedBy=multi-user.target

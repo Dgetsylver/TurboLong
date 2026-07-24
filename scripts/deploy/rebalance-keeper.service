@@ -1,0 +1,49 @@
+# Turbolong auto-rebalance keeper — systemd unit (T2.3 production service).
+#
+# Install (as root, on the keeper VPS):
+#   cp rebalance-keeper.service /etc/systemd/system/
+#   cp rebalance-keeper.env.example /etc/turbolong/rebalance-keeper.env   # then fill it in
+#   chmod 600 /etc/turbolong/rebalance-keeper.env
+#   systemctl daemon-reload
+#   systemctl enable --now rebalance-keeper
+#
+# Logs:    journalctl -u rebalance-keeper -f
+# Evidence: $EVIDENCE_FILE (JSONL, one line per probe/rebalance)
+
+[Unit]
+Description=Turbolong auto-rebalance keeper (rebalance_keeper.ts --execute --loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated non-root user (create with: useradd -r -m -d /home/keeper keeper)
+User=keeper
+Group=keeper
+
+# Repo checkout location on the server — adjust if different.
+WorkingDirectory=/home/keeper/TurboLong/scripts
+ExecStart=/usr/bin/env npx tsx rebalance_keeper.ts --execute --loop
+
+# KEEPER_SECRET, NETWORK, VAULTS_JSON, INTERVAL_S, EVIDENCE_FILE live here —
+# root-owned, mode 600, never in the repo.
+EnvironmentFile=/etc/turbolong/rebalance-keeper.env
+
+# Crash-loop protection: always restart, but back off.
+Restart=always
+RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+# Hardening: the process only needs to read the repo and append to the
+# evidence file. It never needs privileges, /tmp sharing, or other homes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/turbolong
+# Node/npm cache needs a writable HOME subset:
+ReadWritePaths=/home/keeper/.npm /home/keeper/.cache
+
+[Install]
+WantedBy=multi-user.target

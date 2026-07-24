@@ -43,7 +43,11 @@ export function Button(props: ButtonProps = {}): HTMLButtonElement {
   const content = Array.isArray(children) ? children : [children];
   kids.push(...content);
 
-  const btn = el("button", { class: cls, type, ...(title ? { title } : {}), ...(id ? { id } : {}) }, kids) as HTMLButtonElement;
+  const btn = el(
+    "button",
+    { class: cls, type, ...(title ? { title } : {}), ...(id ? { id } : {}) },
+    kids,
+  ) as HTMLButtonElement;
   btn.disabled = disabled || loading;
   if (onClick) btn.addEventListener("click", onClick);
   return btn;

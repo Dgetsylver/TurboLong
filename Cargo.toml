@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 [dev-dependencies]
 soroban-sdk = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "snapshot-source-tx", features = ["testutils"] }
 soroban-ledger-snapshot-source-tx = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "snapshot-source-tx" }
-blend-contract-sdk = "2.25.0"
+blend-contract-sdk = { path = "vendor/blend-contract-sdk" }
 
 [patch.crates-io]
 soroban-sdk = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "snapshot-source-tx" }

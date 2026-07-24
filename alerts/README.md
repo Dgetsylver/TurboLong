@@ -19,7 +19,8 @@ npm install
 
    ```bash
    wrangler secret put RESEND_API_KEY
-   wrangler secret put VAPID_PRIVATE_KEY   # JWK JSON from `npm run vapid:generate`
+   wrangler secret put VAPID_PRIVATE_KEY          # JWK JSON from `npm run vapid:generate`
+   wrangler secret put STELLAR_BROKER_PARTNER_KEY # Stellar Broker partner key (swap relay)
    ```
 
    `VAPID_PUBLIC_KEY` is set in `wrangler.toml` and must match the key pair used for `VAPID_PRIVATE_KEY`.
@@ -41,6 +42,14 @@ npm install
 - `GET /push/unsubscribe?token=` — remove subscription
 
 Cron (every 15 min) sends push for the same negative-APY events as email, with the same 24h throttle.
+
+## Stellar Broker relay
+
+- `GET /broker/ws` — WebSocket relay to `api.stellar.broker/ws`. The worker injects
+  the `STELLAR_BROKER_PARTNER_KEY` secret into the upstream URL so the partner key
+  never ships in the frontend bundle. Handshakes are restricted to `FRONTEND_ORIGIN`
+  (plus localhost for dev). The swap screen uses this relay by default; setting
+  `VITE_STELLAR_BROKER_PARTNER_KEY` in the frontend bypasses it (local dev only).
 
 ## Local dev
 

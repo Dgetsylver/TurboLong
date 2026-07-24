@@ -30,7 +30,7 @@
 .tl-stat__track {
   height: 3px;
   margin-top: var(--tl-space-2);
-  background: rgba(255, 255, 255, .06);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -42,13 +42,33 @@
 }
 
 /* Tones — color the value and the bar fill per the signal system */
-.tl-stat--primary .tl-stat__value { color: var(--tl-primary); }
-.tl-stat--primary .tl-stat__fill  { background: var(--tl-primary); }
-.tl-stat--success .tl-stat__value { color: var(--tl-success); }
-.tl-stat--success .tl-stat__fill  { background: var(--tl-success); }
-.tl-stat--warning .tl-stat__value { color: var(--tl-warning); }
-.tl-stat--warning .tl-stat__fill  { background: var(--tl-warning); }
-.tl-stat--danger .tl-stat__value  { color: var(--tl-danger); }
-.tl-stat--danger .tl-stat__fill   { background: var(--tl-danger); }
-.tl-stat--blnd .tl-stat__value    { color: var(--tl-blnd); }
-.tl-stat--blnd .tl-stat__fill     { background: var(--tl-blnd); }
+.tl-stat--primary .tl-stat__value {
+  color: var(--tl-primary);
+}
+.tl-stat--primary .tl-stat__fill {
+  background: var(--tl-primary);
+}
+.tl-stat--success .tl-stat__value {
+  color: var(--tl-success);
+}
+.tl-stat--success .tl-stat__fill {
+  background: var(--tl-success);
+}
+.tl-stat--warning .tl-stat__value {
+  color: var(--tl-warning);
+}
+.tl-stat--warning .tl-stat__fill {
+  background: var(--tl-warning);
+}
+.tl-stat--danger .tl-stat__value {
+  color: var(--tl-danger);
+}
+.tl-stat--danger .tl-stat__fill {
+  background: var(--tl-danger);
+}
+.tl-stat--blnd .tl-stat__value {
+  color: var(--tl-blnd);
+}
+.tl-stat--blnd .tl-stat__fill {
+  background: var(--tl-blnd);
+}

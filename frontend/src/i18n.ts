@@ -58,7 +58,11 @@ export function setLang(lang: Lang, opts: { persist?: boolean } = {}): void {
   if (!SUPPORTED.includes(lang)) return;
   activeLang = lang;
   if (opts.persist !== false) {
-    try { localStorage.setItem(STORAGE_KEY, lang); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(STORAGE_KEY, lang);
+    } catch {
+      /* ignore */
+    }
   }
   if (typeof document !== "undefined") {
     document.documentElement.lang = lang;
@@ -85,10 +89,12 @@ export function langName(lang: Lang = activeLang): string {
 
 export function initI18n(): Lang {
   let stored: string | null = null;
-  try { stored = localStorage.getItem(STORAGE_KEY); } catch { /* ignore */ }
-  const lang = normalize(stored)
-    ?? normalize(typeof navigator !== "undefined" ? navigator.language : null)
-    ?? "en";
+  try {
+    stored = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+  const lang = normalize(stored) ?? normalize(typeof navigator !== "undefined" ? navigator.language : null) ?? "en";
   setLang(lang, { persist: false });
   return lang;
 }
