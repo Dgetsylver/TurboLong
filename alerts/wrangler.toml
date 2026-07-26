@@ -8,7 +8,7 @@ crons = ["*/15 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "turbolong-alerts"
-database_id = "<run `npm run db:create` and paste the ID here>"
+database_id = "08ac5484-e3b5-4d60-905b-dc49ae28c137"
 
 [vars]
 RESEND_FROM = "alerts@turbolong.com"
@@ -17,3 +17,5 @@ FRONTEND_ORIGIN = "https://app.turbolong.com"
 VAPID_PUBLIC_KEY = "BNR21aZuQZMC7UzKshdQAi40Irko_OSm0b0xFLza69Lnemrw947grj4utI1ZpjVgsrWd4jOtjS1XGS_PJAABPHk"
 # RESEND_API_KEY: set via `wrangler secret put RESEND_API_KEY`
 # VAPID_PRIVATE_KEY: JWK JSON string via `wrangler secret put VAPID_PRIVATE_KEY`
+# STELLAR_BROKER_PARTNER_KEY: set via `wrangler secret put STELLAR_BROKER_PARTNER_KEY`
+#   (used by the GET /broker/ws WebSocket relay so the key never ships in the frontend bundle)

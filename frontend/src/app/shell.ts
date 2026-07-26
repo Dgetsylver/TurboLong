@@ -43,7 +43,9 @@ const closeMenus = () => {
 
 function navTabs(active: View): HTMLElement[] {
   return NAV.map((it) => {
-    const b = el("button", { class: "tl-nav__tab" + (active === it.key ? " is-active" : "") }, [tr(it.i18n, it.fallback)]);
+    const b = el("button", { class: "tl-nav__tab" + (active === it.key ? " is-active" : "") }, [
+      tr(it.i18n, it.fallback),
+    ]);
     on(b, "click", () => go(it.key));
     return b;
   });
@@ -57,8 +59,7 @@ function menuRow(label: string, right: Node | string | null, onClick: () => void
 
 function settingsMenu(): HTMLElement {
   const s = getState();
-  const badge = (txt: string, on_: boolean) =>
-    el("span", { class: "tl-menu__badge" + (on_ ? " is-on" : "") }, [txt]);
+  const badge = (txt: string, on_: boolean) => el("span", { class: "tl-menu__badge" + (on_ ? " is-on" : "") }, [txt]);
 
   const rows: HTMLElement[] = [
     menuRow("Expert mode", badge(s.expert ? "On" : "Off", s.expert), () => {
@@ -79,7 +80,9 @@ function settingsMenu(): HTMLElement {
   );
   rows.push(langToggle);
   if (langOpen) {
-    const sub = el("div", { class: "tl-menu__sub" },
+    const sub = el(
+      "div",
+      { class: "tl-menu__sub" },
       LANGS.map((l) =>
         menuRow(l.name, s.lang === l.code ? el("span", {}, ["✓"]) : null, () => {
           setLang(l.code);
@@ -99,7 +102,14 @@ function settingsMenu(): HTMLElement {
     ["Keyboard shortcuts", () => openAppModal("shortcuts")],
     ["Status page", () => go("status")],
   ];
-  for (const [label, act] of items) rows.push(menuRow(label, null, () => { closeMenus(); render(); act(); }));
+  for (const [label, act] of items)
+    rows.push(
+      menuRow(label, null, () => {
+        closeMenus();
+        render();
+        act();
+      }),
+    );
 
   return el("div", { class: "tl-menu" }, rows);
 }
@@ -116,17 +126,31 @@ function walletArea(): HTMLElement {
     el("span", { class: "tl-mono tl-wallet-pill__addr" }, [fmtAddr(s.userAddress)]),
     el("span", { class: "tl-wallet-pill__caret" }, ["▾"]),
   ]);
-  on(pill, "click", () => { walletMenuOpen = !walletMenuOpen; settingsOpen = false; render(); });
+  on(pill, "click", () => {
+    walletMenuOpen = !walletMenuOpen;
+    settingsOpen = false;
+    render();
+  });
   const wrap = el("div", { class: "tl-rel" }, [pill]);
   if (walletMenuOpen) {
-    wrap.append(el("div", { class: "tl-menu tl-menu--wallet" }, [
-      menuRow("Switch wallet", null, () => { closeMenus(); render(); void switchWallet(); }),
-      (() => {
-        const r = menuRow("Disconnect", null, () => { closeMenus(); render(); void disconnect(); });
-        r.classList.add("tl-menu__row--danger");
-        return r;
-      })(),
-    ]));
+    wrap.append(
+      el("div", { class: "tl-menu tl-menu--wallet" }, [
+        menuRow("Switch wallet", null, () => {
+          closeMenus();
+          render();
+          void switchWallet();
+        }),
+        (() => {
+          const r = menuRow("Disconnect", null, () => {
+            closeMenus();
+            render();
+            void disconnect();
+          });
+          r.classList.add("tl-menu__row--danger");
+          return r;
+        })(),
+      ]),
+    );
   }
   return wrap;
 }
@@ -135,13 +159,24 @@ function renderNav(): HTMLElement {
   const s = getState();
   const testnet = s.network === "testnet";
 
-  const netBtn = el("button", { class: "tl-net" + (testnet ? " is-testnet" : ""), title: "Switch between Mainnet and Testnet" }, [
-    testnet ? "Testnet" : "Mainnet",
-  ]);
+  const netBtn = el(
+    "button",
+    { class: "tl-net" + (testnet ? " is-testnet" : ""), title: "Switch between Mainnet and Testnet" },
+    [testnet ? "Testnet" : "Mainnet"],
+  );
   on(netBtn, "click", () => void switchNetwork(testnet ? "mainnet" : "testnet"));
 
-  const gear = el("button", { class: "tl-gear" + (settingsOpen ? " is-open" : ""), title: "Settings", "aria-label": "Settings" }, ["⚙"]);
-  on(gear, "click", () => { settingsOpen = !settingsOpen; walletMenuOpen = false; langOpen = false; render(); });
+  const gear = el(
+    "button",
+    { class: "tl-gear" + (settingsOpen ? " is-open" : ""), title: "Settings", "aria-label": "Settings" },
+    ["⚙"],
+  );
+  on(gear, "click", () => {
+    settingsOpen = !settingsOpen;
+    walletMenuOpen = false;
+    langOpen = false;
+    render();
+  });
   const gearWrap = el("div", { class: "tl-rel" }, [gear, settingsOpen ? settingsMenu() : ""]);
 
   const right = el("div", { class: "tl-nav__right" }, [netBtn, gearWrap, walletArea()]);
@@ -155,7 +190,10 @@ function renderNav(): HTMLElement {
   const nav = el("nav", { class: "tl-nav" }, [left, right]);
   if (settingsOpen || walletMenuOpen) {
     const backdrop = el("div", { class: "tl-nav__backdrop" });
-    on(backdrop, "click", () => { closeMenus(); render(); });
+    on(backdrop, "click", () => {
+      closeMenus();
+      render();
+    });
     nav.append(backdrop);
   }
   return nav;
@@ -176,7 +214,9 @@ function renderBanner(): HTMLElement {
 
 function renderMobile(): HTMLElement {
   const active = getState().view;
-  return el("nav", { class: "tl-mobnav" },
+  return el(
+    "nav",
+    { class: "tl-mobnav" },
     NAV.map((it) => {
       const b = el("button", { class: "tl-mobnav__tab" + (active === it.key ? " is-active" : "") }, [
         tr(it.key === "dashboard" ? "nav.home" : it.i18n, it.key === "dashboard" ? "Home" : it.fallback),

@@ -50,9 +50,7 @@ export function RiskBand(props: RiskBandProps = {}): HTMLDivElement {
       el(
         "span",
         {
-          class:
-            `tl-riskband__seg tl-riskband__seg--${s.key}` +
-            (s.key === zone ? " is-on" : ""),
+          class: `tl-riskband__seg tl-riskband__seg--${s.key}` + (s.key === zone ? " is-on" : ""),
         },
         [s.label],
       ),

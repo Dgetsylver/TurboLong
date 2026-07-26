@@ -6,11 +6,21 @@
 }
 
 /* Active-zone color → drives fill, thumb, value text. */
-.tl-lev[data-zone="conservative"] { --tl-lev-color: var(--tl-success); }
-.tl-lev[data-zone="moderate"]     { --tl-lev-color: var(--tl-primary); }
-.tl-lev[data-zone="aggressive"]   { --tl-lev-color: var(--tl-warning); }
-.tl-lev[data-zone="degen"]        { --tl-lev-color: var(--tl-danger); }
-.tl-lev[data-zone="maxi"]         { --tl-lev-color: var(--tl-danger); }
+.tl-lev[data-zone="conservative"] {
+  --tl-lev-color: var(--tl-success);
+}
+.tl-lev[data-zone="moderate"] {
+  --tl-lev-color: var(--tl-primary);
+}
+.tl-lev[data-zone="aggressive"] {
+  --tl-lev-color: var(--tl-warning);
+}
+.tl-lev[data-zone="degen"] {
+  --tl-lev-color: var(--tl-danger);
+}
+.tl-lev[data-zone="maxi"] {
+  --tl-lev-color: var(--tl-danger);
+}
 
 .tl-lev__row {
   display: flex;
@@ -26,11 +36,7 @@
   appearance: none;
   height: 6px;
   border-radius: 3px;
-  background: linear-gradient(
-    90deg,
-    var(--tl-lev-color) var(--tl-lev-pct),
-    rgba(255, 255, 255, .06) var(--tl-lev-pct)
-  );
+  background: linear-gradient(90deg, var(--tl-lev-color) var(--tl-lev-pct), rgba(255, 255, 255, 0.06) var(--tl-lev-pct));
   cursor: pointer;
   outline: none;
 }
@@ -90,16 +96,30 @@
   text-transform: uppercase;
   letter-spacing: 0;
   white-space: nowrap;
-  opacity: .4;
+  opacity: 0.4;
   transition: opacity var(--tl-dur) var(--tl-ease);
 }
-.tl-lev__zone:first-child { text-align: left; }
-.tl-lev__zone:last-child { text-align: right; }
-.tl-lev__zone--conservative { color: var(--tl-success); }
-.tl-lev__zone--moderate     { color: var(--tl-primary); }
-.tl-lev__zone--aggressive   { color: var(--tl-warning); }
-.tl-lev__zone--degen        { color: var(--tl-danger); }
-.tl-lev__zone--maxi         { color: var(--tl-danger); }
+.tl-lev__zone:first-child {
+  text-align: left;
+}
+.tl-lev__zone:last-child {
+  text-align: right;
+}
+.tl-lev__zone--conservative {
+  color: var(--tl-success);
+}
+.tl-lev__zone--moderate {
+  color: var(--tl-primary);
+}
+.tl-lev__zone--aggressive {
+  color: var(--tl-warning);
+}
+.tl-lev__zone--degen {
+  color: var(--tl-danger);
+}
+.tl-lev__zone--maxi {
+  color: var(--tl-danger);
+}
 
 /* Active zone label — bold, full opacity; maxi gets a red glow. */
 .tl-lev[data-zone="conservative"] .tl-lev__zone--conservative,

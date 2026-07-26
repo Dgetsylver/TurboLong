@@ -6,33 +6,33 @@
    ============================================================================ */
 
 :root {
-  --tl-font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --tl-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+  --tl-font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --tl-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 
   /* Weights */
-  --tl-fw-regular:  400;  /* @kind font */
-  --tl-fw-medium:   500;  /* @kind font */
-  --tl-fw-semibold: 600;  /* @kind font */
-  --tl-fw-bold:     700;  /* @kind font */
-  --tl-fw-black:    800;  /* @kind font */
+  --tl-fw-regular: 400; /* @kind font */
+  --tl-fw-medium: 500; /* @kind font */
+  --tl-fw-semibold: 600; /* @kind font */
+  --tl-fw-bold: 700; /* @kind font */
+  --tl-fw-black: 800; /* @kind font */
 
   /* Type scale (px) — compact fintech rhythm */
-  --tl-text-xs:   11px;   /* uppercase labels, hints      */
-  --tl-text-sm:   12px;   /* meta, captions               */
-  --tl-text-base: 13px;   /* default body / controls      */
-  --tl-text-md:   14px;   /* card body                    */
-  --tl-text-lg:   15px;   /* card titles, inputs          */
-  --tl-text-xl:   17px;   /* stat values, logo            */
-  --tl-text-2xl:  24px;   /* hero metrics                 */
-  --tl-text-3xl:  42px;   /* landing headline             */
+  --tl-text-xs: 11px; /* uppercase labels, hints      */
+  --tl-text-sm: 12px; /* meta, captions               */
+  --tl-text-base: 13px; /* default body / controls      */
+  --tl-text-md: 14px; /* card body                    */
+  --tl-text-lg: 15px; /* card titles, inputs          */
+  --tl-text-xl: 17px; /* stat values, logo            */
+  --tl-text-2xl: 24px; /* hero metrics                 */
+  --tl-text-3xl: 42px; /* landing headline             */
 
   /* Line heights */
   --tl-leading-tight: 1.15;
-  --tl-leading-snug:  1.4;
-  --tl-leading-body:  1.6;
+  --tl-leading-snug: 1.4;
+  --tl-leading-body: 1.6;
   --tl-leading-loose: 1.7;
 
   /* Letter spacing */
-  --tl-tracking-tight: -0.5px;   /* display headings */
-  --tl-tracking-label:  0.5px;   /* uppercase micro-labels */
+  --tl-tracking-tight: -0.5px; /* display headings */
+  --tl-tracking-label: 0.5px; /* uppercase micro-labels */
 }

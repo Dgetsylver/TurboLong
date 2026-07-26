@@ -34,9 +34,5 @@ export function StatCard(props: StatCardProps): HTMLDivElement {
     kids.push(el("div", { class: "tl-stat__track" }, [fill]));
   }
 
-  return el(
-    "div",
-    { class: cls, ...(title ? { title } : {}), ...(id ? { id } : {}) },
-    kids,
-  ) as HTMLDivElement;
+  return el("div", { class: cls, ...(title ? { title } : {}), ...(id ? { id } : {}) }, kids) as HTMLDivElement;
 }

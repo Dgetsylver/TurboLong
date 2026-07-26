@@ -56,11 +56,15 @@ export function TxStepper(props: TxStepperProps): HTMLElement | null {
   });
 
   if (onClose && (current >= steps.length || error)) {
-    const close = el("button", {
-      class: "tl-stepper__close",
-      type: "button",
-      "aria-label": "Dismiss",
-    }, ["✕"]);
+    const close = el(
+      "button",
+      {
+        class: "tl-stepper__close",
+        type: "button",
+        "aria-label": "Dismiss",
+      },
+      ["✕"],
+    );
     close.addEventListener("click", onClose);
     kids.push(close);
   }

@@ -23,12 +23,16 @@ export function toast(msg: string, type: ToastType = "info", hash?: string): voi
   const dot = el("span", { class: `tl-toast__dot tl-toast__dot--${type}` });
   const kids: (Node | string)[] = [dot, el("span", { class: "tl-toast__msg" }, [msg])];
   if (hash) {
-    const a = el("a", {
-      class: "tl-toast__link",
-      href: `https://stellar.expert/explorer/public/tx/${hash}`,
-      target: "_blank",
-      rel: "noopener",
-    }, ["View ↗"]);
+    const a = el(
+      "a",
+      {
+        class: "tl-toast__link",
+        href: `https://stellar.expert/explorer/public/tx/${hash}`,
+        target: "_blank",
+        rel: "noopener",
+      },
+      ["View ↗"],
+    );
     kids.push(a);
   }
   const node = el("div", { class: `tl-toast tl-toast--${type}` }, kids);

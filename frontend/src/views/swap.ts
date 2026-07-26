@@ -3,27 +3,31 @@ import "./swap.css";
  * Swap screen — best-rate token swap routed via Stellar Broker, with a DEX Rate
  * (Aquarius) cross-check.
  *
- * Data wiring ported 1:1 from /tmp/old-main.ts:
- *   - SWAP_ASSETS / getSwapAssetList()   → the broker-id asset list (classic CODE-ISSUER)
+ * Data wiring ported from /tmp/old-main.ts:
+ *   - asset list                         → ../swap-assets (top 50 by stellar.expert
+ *     rating, 24h cache, static fallback; contract IDs derived via Asset.contractId)
  *   - populateSwapAssets()               → Select option seeding + XLM→USDC defaults
  *   - fetchSwapQuote() + debounce        → estimateSwap() from @stellar-broker/client
  *   - compareAquariusRate()              → aquariusBestRate() from ../aquarius (DEX Rate well)
- *   - BROKER_TO_CONTRACT / updateSwapBalance() → fetchAssetBalance() from ../blend
+ *   - updateSwapBalance()                → fetchAssetBalance() from ../blend
  *
- * EXECUTE: the original never implemented an execute path — its swap button shows
- * "coming soon" and stays disabled. There is no swap-build/sign/submit XDR in
- * old-main.ts. So per the brief the quote is wired fully and execute is marked
- * TODO: the TxStepper + signAndSubmit scaffold is in place behind SWAP_EXECUTE_ENABLED
- * but the broker trade-XDR build is not yet available. See executeSwap() below.
+ * EXECUTE: implemented through the Stellar Broker mediator flow (mainnet only —
+ * api.stellar.broker trades against the public network). The user signs a single
+ * classic tx that creates + funds a temporary mediator account; the broker
+ * session then trades autonomously with the mediator's local keypair (no wallet
+ * popup per fill), and dispose() merges all proceeds + unused reserves back into
+ * the user's account. See executeSwap() below.
  */
 import { el, on, Button, Select, Tooltip } from "../ui";
-import { estimateSwap } from "@stellar-broker/client";
+import { estimateSwap, StellarBrokerClient, Mediator } from "@stellar-broker/client";
+import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import { aquariusBestRate } from "../aquarius";
-import { fetchAssetBalance } from "../blend";
+import { fetchAssetBalance, getActiveNetwork } from "../blend";
 import { getState } from "../app/state";
-import { signAndSubmitClassic } from "../app/wallet";
+import { signXdr } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { t } from "../i18n";
+import { getSwapAssets, FALLBACK_SWAP_ASSETS, type SwapAsset } from "../swap-assets";
 
 // ── i18n helper: fall back to the literal when the key isn't translated ───────
 const tx = (key: string, fallback: string) => {
@@ -31,42 +35,174 @@ const tx = (key: string, fallback: string) => {
   return v === key ? fallback : v;
 };
 
-// ── Asset list (classic CODE-ISSUER broker IDs, not Soroban contracts) ────────
-const SWAP_ASSETS: { symbol: string; brokerId: string }[] = [
-  { symbol: "XLM", brokerId: "XLM" },
-  { symbol: "USDC", brokerId: "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" },
-  { symbol: "EURC", brokerId: "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2" },
-  { symbol: "AQUA", brokerId: "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA" },
-  { symbol: "BLND", brokerId: "BLND-GDJEHTBE6ZHUXSWFI642DCGLUOECLHPF3KSXHPXTSTJ7E3JF6MQ5EZYY" },
-  { symbol: "yXLM", brokerId: "yXLM-GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55" },
-  { symbol: "USDGLO", brokerId: "USDGLO-GBBS25EGYQPGEZCGCFBKG4OAGFXU6DSOQBGTHELLJT3HZXZJ34HWS6XV" },
-];
+// Stellar Broker trades against the public network only (api.stellar.broker and
+// the mediator's Horizon endpoint are both hardcoded to mainnet in the client).
+const swapExecuteAvailable = () => getActiveNetwork() === "mainnet";
 
-function getSwapAssetList(): { symbol: string; brokerId: string }[] {
-  return [...SWAP_ASSETS];
+// ── Broker connection ─────────────────────────────────────────────────────────
+// In production the broker WebSocket goes through our Cloudflare worker relay
+// (GET /broker/ws), which injects the partner key server-side so it never ships
+// in this bundle. For local testing you can bypass the relay by setting
+// VITE_STELLAR_BROKER_PARTNER_KEY, which connects straight to api.stellar.broker.
+const DEV_PARTNER_KEY = import.meta.env.VITE_STELLAR_BROKER_PARTNER_KEY as string | undefined;
+const BROKER_RELAY_ORIGIN = `${
+  (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev"
+}/broker`;
+
+/** Build a broker client wired either to the relay (prod) or directly (dev). */
+function createBrokerClient(): StellarBrokerClient {
+  const client = new StellarBrokerClient({ partnerKey: DEV_PARTNER_KEY });
+  if (!DEV_PARTNER_KEY) {
+    // `origin` is a plain instance field the client concatenates with
+    // "/ws?partner=…"; pointing it at the worker yields "…/broker/ws".
+    (client as unknown as { origin: string }).origin = BROKER_RELAY_ORIGIN;
+  }
+  return client;
 }
 
-const symbolFor = (brokerId: string) =>
-  SWAP_ASSETS.find((a) => a.brokerId === brokerId)?.symbol ?? brokerId;
-
-// Map broker asset ID → Soroban contract ID for balance + Aquarius lookups.
-const BROKER_TO_CONTRACT: Record<string, string> = {
-  XLM: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
-  "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN":
-    "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
-  "EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IBER":
-    "CDTKPWPLOURQA2SGTKTUQOWRCBZEORB4BWBOMJ3D3ZTQQSGE5F6JBQLV",
-  "AQUA-GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA":
-    "CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK",
-};
-
-// EXECUTE TODO: gate the on-chain execute path. The broker trade-XDR build is not
-// yet available (old-main.ts left it as "coming soon"); flip on once it lands.
-const SWAP_EXECUTE_ENABLED = false;
+// Hard stop for a broker trading session that never finishes.
+const TRADE_TIMEOUT_MS = 180_000;
 
 const SLIPPAGE_CHIPS = ["0.1", "0.5", "1.0"];
 
 type QuoteResult = Awaited<ReturnType<typeof estimateSwap>>;
+
+// ── Broker session plumbing ───────────────────────────────────────────────────
+// The @stellar-broker/client d.ts references a non-exported `TransactionI`, so
+// its callback types collapse to `any`; we type our side of the seam explicitly.
+type Signable = { toXDR(): string; sign?: unknown };
+
+/**
+ * Authorization callback handed to the Mediator: signs classic txs with the
+ * connected wallet. Only full transactions ever reach this path (the trading
+ * session itself signs with the mediator's local keypair), so Soroban auth-entry
+ * buffers are rejected.
+ */
+async function walletAuthorize(payload: Signable | Uint8Array): Promise<unknown> {
+  if (payload instanceof Uint8Array || typeof payload.toXDR !== "function") {
+    throw new Error("Unsupported signing payload from Stellar Broker");
+  }
+  const signed = await signXdr(payload.toXDR());
+  // The Mediator submits the returned value straight to Horizon, so it must be
+  // a Transaction object — not the signed-XDR string the wallet kit returns.
+  return TransactionBuilder.fromXDR(signed, Networks.PUBLIC);
+}
+
+interface BrokerTradeResult {
+  status: string;
+  sold?: string;
+  bought?: string;
+}
+
+/** Pull Horizon result codes out of a submit error (e.g. "tx_bad_seq, op_underfunded"). */
+function horizonMessage(e: unknown): string {
+  const codes = (
+    e as { response?: { data?: { extras?: { result_codes?: { transaction?: string; operations?: string[] } } } } }
+  )?.response?.data?.extras?.result_codes;
+  if (codes) {
+    const parts = [codes.transaction, ...(codes.operations ?? [])].filter(Boolean);
+    if (parts.length) return parts.join(", ");
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Dispose the mediator with retries. The broker's `finished` event fires as soon
+ * as the last trade tx is accepted, but Horizon can still return a stale
+ * sequence/balances for the mediator for a ledger or two — a dispose fired too
+ * early then 400s with tx_bad_seq / op_underfunded. `settleMs` waits ~a ledger
+ * BEFORE the first attempt (the browser logs any failed POST to the console and
+ * that can't be suppressed, so we avoid sending a doomed request at all);
+ * `delayMs` spaces out the retries. A "doesn't exist on the ledger" error means
+ * the account was already merged (a previous attempt landed), which is success.
+ */
+async function disposeWithRetry(mediator: Mediator, settleMs = 6000, attempts = 5, delayMs = 5000): Promise<void> {
+  if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs));
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, delayMs));
+    try {
+      await mediator.dispose();
+      return;
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("doesn't exist on the ledger")) return;
+      lastErr = e;
+      console.warn(`Mediator dispose attempt ${i + 1}/${attempts} failed:`, horizonMessage(e));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * Run one interactive broker session: connect → quote → confirm the first
+ * success quote (must be <10s old per the protocol) → wait for `finished`.
+ * The mediator's secret key signs every trade tx locally, so no wallet popups.
+ */
+function runBrokerTrade(
+  client: StellarBrokerClient,
+  mediatorAddress: string,
+  mediatorSecret: string,
+  params: { sellingAsset: string; buyingAsset: string; sellingAmount: string; slippageTolerance: number },
+): Promise<BrokerTradeResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let confirmed = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      client.off("quote", onQuote);
+      client.off("finished", onFinished);
+      client.off("error", onError);
+    };
+    const fail = (e: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        client.stop();
+      } catch {
+        /* ignore */
+      }
+      reject(e instanceof Error ? e : new Error(String(e)));
+    };
+    const timer = setTimeout(() => fail(new Error("Swap timed out — no result from Stellar Broker")), TRADE_TIMEOUT_MS);
+
+    const onQuote = (e: unknown) => {
+      if (settled || confirmed) return;
+      const q = (e as { quote: QuoteResult }).quote;
+      if (q.status !== "success") {
+        fail(new Error(q.status === "unfeasible" ? "No viable route for this swap" : q.error || "Quote rejected"));
+        return;
+      }
+      confirmed = true;
+      try {
+        client.confirmQuote(mediatorAddress, mediatorSecret);
+      } catch (err) {
+        fail(err);
+      }
+    };
+    const onFinished = (e: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const r = (e as { result: BrokerTradeResult }).result;
+      if (r.status === "success") resolve(r);
+      else reject(new Error(`Swap ${r.status}${r.bought ? ` — bought ${r.bought} so far` : ""}`));
+    };
+    const onError = (e: unknown) => {
+      fail((e as { error?: unknown }).error ?? "Stellar Broker error");
+    };
+
+    client.on("quote", onQuote);
+    client.on("finished", onFinished);
+    client.on("error", onError);
+
+    client
+      .connect()
+      .then(() => client.quote(params))
+      .catch(() => fail(new Error("Could not connect to Stellar Broker")));
+  });
+}
 
 interface SwapUiState {
   sell: string; // broker id
@@ -85,7 +221,7 @@ export function swapScreen(): HTMLElement {
   // hint and the (already quote-only) execute action gate on connect. Mirrors
   // trade.ts: public data shows; wallet-specific bits gate.
 
-  const list = getSwapAssetList();
+  const list = FALLBACK_SWAP_ASSETS;
   const defaultSell = "XLM";
   const defaultBuy = list.find((a) => a.symbol === "USDC")?.brokerId ?? list[1].brokerId;
 
@@ -113,6 +249,13 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   let quoteTimer: ReturnType<typeof setTimeout> | null = null;
   let aqSeq = 0; // guards out-of-order Aquarius responses
+  let executing = false; // a broker trading session is in flight
+
+  // Asset registry: render with the static fallback immediately, then swap in
+  // the stellar.expert top-50 list once it loads (cache-first, so usually sync).
+  let assets: SwapAsset[] = FALLBACK_SWAP_ASSETS;
+  const assetFor = (brokerId: string) => assets.find((a) => a.brokerId === brokerId);
+  const symbolFor = (brokerId: string) => assetFor(brokerId)?.symbol ?? brokerId;
 
   const amountInput = el("input", {
     class: "tl-input__field",
@@ -134,7 +277,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   });
 
   // ── Asset selects ──────────────────────────────────────────────────────────
-  const assetOptions = SWAP_ASSETS.map((a) => ({ value: a.brokerId, label: a.symbol }));
+  const assetOptions = assets.map((a) => ({ value: a.brokerId, label: a.label }));
   const sellSelect = Select({
     options: assetOptions,
     value: ui.sell,
@@ -160,7 +303,12 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   // ── Reverse ─────────────────────────────────────────────────────────────────
   const reverseBtn = el(
     "button",
-    { class: "tl-swap__reverse", type: "button", title: tx("swap.reverse", "Reverse pair"), "aria-label": tx("swap.reverse", "Reverse pair") },
+    {
+      class: "tl-swap__reverse",
+      type: "button",
+      title: tx("swap.reverse", "Reverse pair"),
+      "aria-label": tx("swap.reverse", "Reverse pair"),
+    },
     ["↓"],
   ) as HTMLButtonElement;
   on(reverseBtn, "click", () => {
@@ -186,11 +334,9 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   // ── Slippage chips ──────────────────────────────────────────────────────────
   for (const s of SLIPPAGE_CHIPS) {
-    const chip = el(
-      "button",
-      { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" },
-      [`${s}%`],
-    ) as HTMLButtonElement;
+    const chip = el("button", { class: `tl-swap__chip${s === ui.slipPct ? " is-active" : ""}`, type: "button" }, [
+      `${s}%`,
+    ]) as HTMLButtonElement;
     on(chip, "click", () => {
       ui.slipPct = s;
       slipChips.forEach((c) => c.classList.toggle("is-active", c === chip));
@@ -208,11 +354,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   const slipVal = el("span", { class: "tl-swap__qrow-v" }, [`${ui.slipPct}%`]);
 
   well.replaceChildren(
-    qrow(
-      tx("swap.rate", "Rate"),
-      "The effective price you get for this swap via the best routed path.",
-      rateVal,
-    ),
+    qrow(tx("swap.rate", "Rate"), "The effective price you get for this swap via the best routed path.", rateVal),
     qrow(
       "DEX Rate",
       "For comparison: the direct quote on the Stellar DEX (Aquarius), without broker routing.",
@@ -236,10 +378,33 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     slipVal.textContent = `${ui.slipPct}%`;
   }
 
+  // ── Dynamic asset list ────────────────────────────────────────────────────────
+  function repopulateSelects() {
+    const mkOptions = () => assets.map((a) => el("option", { value: a.brokerId }, [a.label]));
+    sellSelect.replaceChildren(...mkOptions());
+    buySelect.replaceChildren(...mkOptions());
+    // Keep the current pair when it survives the refresh; else reset to defaults.
+    if (!assetFor(ui.sell)) ui.sell = "XLM";
+    if (!assetFor(ui.buy) || ui.buy === ui.sell) {
+      ui.buy = assets.find((a) => a.symbol === "USDC")?.brokerId ?? assets[1].brokerId;
+      ui.quote = null;
+    }
+    sellSelect.value = ui.sell;
+    buySelect.value = ui.buy;
+  }
+
+  void getSwapAssets().then((list) => {
+    if (list === assets) return;
+    assets = list;
+    repopulateSelects();
+    void refreshBalance();
+    updateButton();
+  });
+
   // ── Balance ──────────────────────────────────────────────────────────────────
   async function refreshBalance() {
     const addr = getState().userAddress;
-    const contractId = BROKER_TO_CONTRACT[ui.sell];
+    const contractId = assetFor(ui.sell)?.contractId;
     if (!addr || !contractId) {
       sellBalEl.textContent = "—";
       return;
@@ -254,25 +419,25 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
   // ── Button state machine (ported from updateSwapBtn) ─────────────────────────
   function updateButton() {
+    if (executing) {
+      setBtn(tx("swap.executing", "Swapping…"), true);
+      return;
+    }
     const hasAmount = !!ui.amount && Number.parseFloat(ui.amount) > 0;
     const samePair = ui.sell === ui.buy;
     // Get Quote works disconnected (estimateSwap needs no wallet). Only the
-    // execute action gates on connect, and it's already quote-only for now.
+    // execute action gates on connect.
     if (samePair) {
       setBtn(tx("swap.selectDifferent", "Select a different pair"), true);
     } else if (!hasAmount) {
       setBtn(tx("swap.enterAmount", "Enter an amount"), true);
     } else if (ui.quote && ui.quote.status === "success") {
-      // EXECUTE TODO: enable only once the broker trade-XDR build lands.
-      // When disconnected, prompt to connect before executing (execute is still
-      // disabled today regardless, so this is forward-looking).
       if (!getState().userAddress) {
         setBtn(tx("nav.connect", "Connect Wallet"), true);
+      } else if (!swapExecuteAvailable()) {
+        setBtn(tx("swap.mainnetOnly", "Swap execution is mainnet-only"), true);
       } else {
-        setBtn(
-          SWAP_EXECUTE_ENABLED ? tx("swap.execute", "Swap") : tx("swap.comingSoon", "Execution coming soon"),
-          !SWAP_EXECUTE_ENABLED,
-        );
+        setBtn(tx("swap.execute", "Swap"), false);
       }
     } else {
       setBtn(tx("swap.getQuote", "Get Quote"), false);
@@ -318,9 +483,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
 
         setReceive(buyNum.toLocaleString("en-US", { maximumFractionDigits: 4 }), false);
         rateVal.textContent = `1 ${sellSym} ≈ ${(buyNum / sellNum).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
-        advVal.textContent = quote.profit && Number.parseFloat(quote.profit) > 0
-          ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
-          : "—";
+        advVal.textContent =
+          quote.profit && Number.parseFloat(quote.profit) > 0
+            ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
+            : "—";
         showWell();
         // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
         void compareDexRate(sell, buy, sellNum, buySym);
@@ -341,15 +507,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── DEX (Aquarius) comparison ────────────────────────────────────────────────
-  async function compareDexRate(
-    sellBrokerId: string,
-    buyBrokerId: string,
-    sellNum: number,
-    buySym: string,
-  ) {
+  async function compareDexRate(sellBrokerId: string, buyBrokerId: string, sellNum: number, buySym: string) {
     const seq = ++aqSeq;
-    const sellC = BROKER_TO_CONTRACT[sellBrokerId];
-    const buyC = BROKER_TO_CONTRACT[buyBrokerId];
+    const sellC = assetFor(sellBrokerId)?.contractId;
+    const buyC = assetFor(buyBrokerId)?.contractId;
     if (!sellC || !buyC) {
       if (seq === aqSeq) {
         dexVal.textContent = tx("common.na", "N/A");
@@ -393,45 +554,116 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     await executeSwap();
   }
 
-  // ── EXECUTE (TODO) ───────────────────────────────────────────────────────────
-  // old-main.ts never built a broker trade-XDR — the button was permanently
-  // "coming soon". The TxStepper + sign/submit scaffold below is ready; the
-  // missing piece is a broker (or Aquarius router) trade-XDR builder that returns
-  // a signable transaction. Until SWAP_EXECUTE_ENABLED is flipped on with a real
-  // builder, this is unreachable (button stays disabled on a success quote).
+  // ── EXECUTE ───────────────────────────────────────────────────────────────────
+  // Mediator flow (see @stellar-broker/client README, "Delegated Signing"):
+  //  1. one wallet signature creates + funds a temporary mediator account
+  //     (selling amount + ~5 XLM fee reserve, refunded at the end);
+  //  2. the broker session trades autonomously, signing with the mediator's
+  //     local keypair — quotes expire in 10s, so wallet-popup-per-tx is not viable;
+  //  3. dispose() pays all proceeds + leftover reserves back and merges the
+  //     mediator into the user's account.
+  // If a previous session died before dispose, its mediator address stays in
+  // localStorage; we recover those funds before starting a new swap.
   async function executeSwap() {
-    if (!SWAP_EXECUTE_ENABLED) {
-      toast(tx("swap.comingSoon", "Swap execution is coming soon."), "info");
+    const addr = getState().userAddress;
+    if (!addr || !ui.quote || ui.quote.status !== "success" || executing) return;
+    if (!swapExecuteAvailable()) {
+      toast(tx("swap.mainnetOnly", "Swap execution is only available on mainnet."), "info");
       return;
     }
-    const addr = getState().userAddress;
-    if (!addr || !ui.quote || ui.quote.status !== "success") return;
 
+    const { sell, buy, amount } = ui;
     const steps = [
-      tx("tx.build", "Build"),
-      tx("tx.sign", "Sign"),
-      tx("tx.submit", "Submit"),
+      tx("swap.stepPrepare", "Prepare"),
+      tx("swap.stepTrade", "Trade"),
+      tx("swap.stepFinalize", "Finalize"),
       tx("tx.confirmed", "Confirmed"),
     ];
+    executing = true;
+    updateButton();
     txShow(steps);
+
+    const client = createBrokerClient();
+    let mediator: Mediator | null = null;
+    let funded = false;
     try {
       txStep(0);
-      // TODO: build the broker trade XDR for ui.quote here.
-      //   const xdr = await buildBrokerTradeXdr(ui.quote, addr);
-      const xdr = ""; // placeholder — no builder available yet
-      if (!xdr) throw new Error("Swap execution not yet implemented");
+      // Recover funds stranded in mediators from previous lost sessions first.
+      // Non-fatal: dispose() throws (after cleaning localStorage) when the
+      // account was already merged, and that must not block a new swap.
+      if (Mediator.hasObsoleteMediators(addr)) {
+        toast(tx("swap.recovering", "Recovering funds from a previous swap session…"), "info");
+        try {
+          await Mediator.disposeObsoleteMediators(addr, walletAuthorize as never);
+        } catch (recoverErr) {
+          console.warn("Obsolete mediator recovery:", horizonMessage(recoverErr));
+        }
+      }
+      mediator = new Mediator(addr, sell, buy, amount, walletAuthorize as never);
+      // Wallet signature + Horizon submit: create/fund the mediator account.
+      const mediatorSecret = await mediator.init();
+      funded = true;
 
       txStep(1);
-      const hash = await signAndSubmitClassic(xdr, `Swap ${symbolFor(ui.sell)} → ${symbolFor(ui.buy)}`);
+      const result = await runBrokerTrade(client, mediator.mediatorAddress, mediatorSecret, {
+        sellingAsset: sell,
+        buyingAsset: buy,
+        sellingAmount: amount,
+        slippageTolerance: slip(),
+      });
+
+      txStep(2);
+      // Send proceeds + unused XLM reserve back and merge the mediator account.
+      // The trade itself already succeeded, so a dispose failure must not surface
+      // as a swap error: funds sit safely on the mediator and the localStorage
+      // record guarantees recovery on the next swap.
+      funded = false;
+      let disposed = false;
+      try {
+        await disposeWithRetry(mediator);
+        disposed = true;
+      } catch (disposeErr) {
+        console.warn("Mediator dispose failed — will recover on next swap", horizonMessage(disposeErr));
+      }
+
       txStep(steps.length);
-      toast(tx("swap.done", "Swap submitted."), "success", hash);
+      const sold = result.sold ?? amount;
+      const bought = result.bought ?? "?";
+      toast(`${tx("swap.done", "Swap complete")}: ${sold} ${symbolFor(sell)} → ${bought} ${symbolFor(buy)}`, "success");
+      if (!disposed) {
+        toast(
+          tx(
+            "swap.recoverLater",
+            "Returning the funds timed out — they're held in a temporary account and will be recovered automatically on your next swap.",
+          ),
+          "info",
+        );
+      }
       txHide();
-      // Refresh the sell-side balance after a successful swap.
+      ui.quote = null;
       void refreshBalance();
     } catch (e) {
+      // Best-effort refund if the trade failed after the mediator was funded.
+      // If dispose fails too, the localStorage record keeps the mediator
+      // recoverable on the next swap attempt.
+      if (funded && mediator) {
+        try {
+          await disposeWithRetry(mediator);
+        } catch (disposeErr) {
+          console.warn("Mediator dispose failed — will recover on next swap", horizonMessage(disposeErr));
+        }
+      }
       txStep(steps.length - 1, true);
-      toast(e instanceof Error ? e.message : String(e), "error");
+      toast(horizonMessage(e), "error");
       txHide();
+    } finally {
+      try {
+        client.close();
+      } catch {
+        /* ignore */
+      }
+      executing = false;
+      updateButton();
     }
   }
 

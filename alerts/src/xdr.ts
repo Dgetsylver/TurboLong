@@ -88,11 +88,11 @@ class XdrWriter {
 
 // ── ScVal encoding ───────────────────────────────────────────────────────────
 
-// ScVal type codes (subset we need)
-const SCV_SYMBOL = 14;
+// ScVal type codes per the Stellar XDR spec (Stellar-contract.x, SCValType).
+const SCV_SYMBOL = 15;
 const SCV_VEC    = 16;
 const SCV_ADDRESS = 18;
-const SCV_U32    = 1;
+const SCV_U32    = 3;
 
 interface ScArg {
   type: "address" | "symbol" | "u32" | "vec";
@@ -275,72 +275,71 @@ function readString(data: Uint8Array, c: Cursor): string {
   return new TextDecoder().decode(bytes);
 }
 
-// ScVal type discriminants
-const SCV_BOOL      = 0;
-const SCV_VOID      = 0; // overlaps but void = -1 actually
-const SCV_U32_D     = 1;
-const SCV_I32       = 2;
-const SCV_U64       = 3;
-const SCV_I64       = 4;
-const SCV_TIMEPOINT = 5;
-const SCV_DURATION  = 6;
-const SCV_U128      = 7;
-const SCV_I128      = 8;
-const SCV_BYTES     = 10;
-const SCV_STRING    = 11;
-const SCV_SYMBOL_D  = 14;
-const SCV_VEC_D     = 16;
-const SCV_MAP       = 17;
-const SCV_ADDRESS_D = 18;
-const SCV_TRUE      = 0;
-const SCV_FALSE     = 0;
+// ScVal type discriminants per the Stellar XDR spec (SCValType in Stellar-contract.x):
+//   0 BOOL, 1 VOID, 2 ERROR, 3 U32, 4 I32, 5 U64, 6 I64, 7 TIMEPOINT,
+//   8 DURATION, 9 U128, 10 I128, 11 U256, 12 I256, 13 BYTES, 14 STRING,
+//   15 SYMBOL, 16 VEC, 17 MAP, 18 ADDRESS, 19 CONTRACT_INSTANCE,
+//   20 LEDGER_KEY_CONTRACT_INSTANCE, 21 LEDGER_KEY_NONCE
 
 export function decodeScVal(data: Uint8Array, c: Cursor): any {
   if (c.offset >= data.length) return null;
   const type = readInt32(data, c);
 
   switch (type) {
-    case 0: { // SCV_BOOL (true)
-      return true;
+    case 0: { // SCV_BOOL — payload is a 4-byte bool
+      return readUint32(data, c) !== 0;
     }
-    case -1: { // SCV_VOID (represented as type = -1 by some impls, but canonical is separate)
+    case 1: { // SCV_VOID
       return null;
     }
-    case 1: { // SCV_U32
+    case 2: { // SCV_ERROR — SCError: type (int32) + code (int32)
+      const errType = readInt32(data, c);
+      const errCode = readInt32(data, c);
+      return { error: errType, code: errCode };
+    }
+    case 3: { // SCV_U32
       return readUint32(data, c);
     }
-    case 2: { // SCV_I32
+    case 4: { // SCV_I32
       return readInt32(data, c);
     }
-    case 3: { // SCV_U64
+    case 5: { // SCV_U64
       return readUint64(data, c).toString();
     }
-    case 4: { // SCV_I64
+    case 6: { // SCV_I64
       return readInt64(data, c).toString();
     }
-    case 5: // SCV_TIMEPOINT
-    case 6: { // SCV_DURATION
+    case 7: // SCV_TIMEPOINT
+    case 8: { // SCV_DURATION
       return readUint64(data, c).toString();
     }
-    case 7: { // SCV_U128
-      const lo = readUint64(data, c);
+    case 9: { // SCV_U128 — UInt128Parts { hi: u64, lo: u64 }
       const hi = readUint64(data, c);
-      return ((hi << 64n) | lo).toString();
-    }
-    case 8: { // SCV_I128
       const lo = readUint64(data, c);
-      const hi = readInt64(data, c);
       return ((hi << 64n) | lo).toString();
     }
-    case 10: { // SCV_BYTES
+    case 10: { // SCV_I128 — Int128Parts { hi: i64, lo: u64 }
+      const hi = readInt64(data, c);
+      const lo = readUint64(data, c);
+      return ((hi << 64n) | lo).toString();
+    }
+    case 11: // SCV_U256 — 4 × u64 parts
+    case 12: { // SCV_I256
+      const p0 = type === 12 ? readInt64(data, c) : readUint64(data, c);
+      const p1 = readUint64(data, c);
+      const p2 = readUint64(data, c);
+      const p3 = readUint64(data, c);
+      return ((p0 << 192n) | (p1 << 128n) | (p2 << 64n) | p3).toString();
+    }
+    case 13: { // SCV_BYTES
       const len = readUint32(data, c);
       const bytes = readOpaque(data, c, len);
       return toBase64(bytes);
     }
-    case 11: { // SCV_STRING
+    case 14: { // SCV_STRING
       return readString(data, c);
     }
-    case 14: { // SCV_SYMBOL
+    case 15: { // SCV_SYMBOL
       return readString(data, c);
     }
     case 16: { // SCV_VEC
@@ -366,7 +365,10 @@ export function decodeScVal(data: Uint8Array, c: Cursor): any {
     }
     case 18: { // SCV_ADDRESS
       const addrType = readInt32(data, c);
-      readOpaque(data, c, 32); // skip the 32 bytes
+      // SC_ADDRESS_TYPE_ACCOUNT wraps a PublicKey union (extra 4-byte key type);
+      // SC_ADDRESS_TYPE_CONTRACT is a raw 32-byte hash.
+      if (addrType === 0) readInt32(data, c);
+      readOpaque(data, c, 32);
       return `<address:${addrType}>`;
     }
     default: {

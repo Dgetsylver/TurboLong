@@ -21,9 +21,5 @@ export function Badge(props: BadgeProps = {}): HTMLSpanElement {
   const content = Array.isArray(children) ? children : [children];
   kids.push(...content);
 
-  return el(
-    "span",
-    { class: cls, ...(title ? { title } : {}), ...(id ? { id } : {}) },
-    kids,
-  ) as HTMLSpanElement;
+  return el("span", { class: cls, ...(title ? { title } : {}), ...(id ? { id } : {}) }, kids) as HTMLSpanElement;
 }

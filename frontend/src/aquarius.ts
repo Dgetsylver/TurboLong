@@ -9,8 +9,7 @@
  */
 
 export const AQUARIUS_API =
-  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ??
-  "https://amm-api.aqua.network/api/external/v1";
+  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 
 /** Mainnet Aquarius router contract (on-chain fallback / execution). */
 export const AQUARIUS_ROUTER = "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK";

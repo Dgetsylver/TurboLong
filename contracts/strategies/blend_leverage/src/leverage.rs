@@ -258,6 +258,9 @@ pub fn check_deposit_safety(
 ///
 /// Returns `(repay_underlying, loops_needed)`.
 /// Returns `(0, 0)` if already at or above target_hf, or if no debt.
+/// `repay_underlying` is clamped at the outstanding debt value: for degenerate
+/// positions (equity <= 0, i.e. B <= D) the closed form yields x >= D, which
+/// means a full close — never an over-repay.
 pub fn compute_partial_unwind(
     b_tokens: i128,
     d_tokens: i128,
@@ -308,12 +311,15 @@ pub fn compute_partial_unwind(
     }
 
     // x = -numerator / denom  (numerator is negative when HF < target_hf)
-    let repay_underlying = numerator
+    // +1 stroop to clear the threshold; clamped at the debt so a zero/negative
+    // equity position resolves to a full close instead of an over-repay.
+    let repay_underlying = (numerator
         .checked_neg()
         .ok_or(StrategyError::ArithmeticError)?
         .checked_div(denom)
         .ok_or(StrategyError::DivisionByZero)?
-        + 1; // +1 stroop to ensure we clear the threshold
+        + 1)
+    .min(debt_value);
 
     // Convert repay amount to loop count.
     // Each loop layer ≈ initial × c_factor^k. The smallest layer (last borrow) ≈

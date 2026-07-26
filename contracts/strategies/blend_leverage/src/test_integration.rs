@@ -16,9 +16,9 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::{Address as _, BytesN as _, Ledger as _},
+    testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, BytesN, Env, IntoVal, String, Val, Vec,
+    vec, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 use crate::constants::{
@@ -783,6 +783,20 @@ fn register_real_strategy(
     asset: &Address,
     blnd: &Address,
 ) -> Address {
+    register_real_strategy_with_loops(e, pool_addr, asset, blnd, 3)
+}
+
+/// Same as `register_real_strategy` but with a configurable `target_loops`.
+/// At c = 0.90, 8 loops opens at HF ≈ 1.076 — above min_hf (1.05) so the
+/// deposit passes the safety check, but inside the orange zone (< 1.15), which
+/// is exactly the stressed fixture the auto-rebalance keeper tests need.
+fn register_real_strategy_with_loops(
+    e: &Env,
+    pool_addr: &Address,
+    asset: &Address,
+    blnd: &Address,
+    target_loops: u32,
+) -> Address {
     let router = Address::generate(e);
     let keeper = Address::generate(e);
     let admin = Address::generate(e);
@@ -793,8 +807,8 @@ fn register_real_strategy(
         router.into_val(e),
         1_0000000_i128.into_val(e), // reward_threshold
         keeper.into_val(e),
-        9_000_000_i128.into_val(e),  // c_factor 0.90
-        3u32.into_val(e),            // target_loops
+        9_000_000_i128.into_val(e), // c_factor 0.90
+        target_loops.into_val(e),
         10_500_000_i128.into_val(e), // min_hf 1.05
         11_500_000_i128.into_val(e), // orange_hf 1.15
         admin.into_val(e),
@@ -871,6 +885,24 @@ fn test_admin_set_keeper_rotates_keeper() {
     );
 }
 
+// The `config()` view must expose exactly the risk parameters the constructor
+// was given — it is the anti-drift source of truth for the frontend/keeper.
+#[test]
+fn test_config_view_exposes_constructor_risk_params() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Values from register_real_strategy's init_args.
+    let (c_factor, target_loops, min_hf, orange_hf) = sclient.config();
+    assert_eq!(c_factor, 9_000_000, "c_factor 0.90");
+    assert_eq!(target_loops, 3, "target_loops");
+    assert_eq!(min_hf, 10_500_000, "min_hf 1.05");
+    assert_eq!(orange_hf, 11_500_000, "orange_hf 1.15");
+}
+
 // ── Auto-rebalance keeper auth & rate-limit (T2.3) ────────────────────────────
 
 #[test]
@@ -895,6 +927,365 @@ fn test_rebalance_keeper_auth_gating_and_noop() {
 
     // The permissionless rebalance is also a safe no-op with no position.
     sclient.rebalance();
+}
+
+// Opens a REAL stressed position through the production `deposit` entrypoint:
+// 8 loops at c = 0.90 lands at HF ≈ 1.076 — above min_hf (1.05) so the deposit
+// safety check passes, but inside the orange zone (< orange_hf 1.15), so the
+// auto-rebalance keeper has genuine work to do. Returns the strategy address.
+fn open_stressed_strategy(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+) -> Address {
+    let strategy = register_real_strategy_with_loops(e, pool_addr, token, blnd, 8);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    strategy
+}
+
+/// Find the strategy's `("rebalance", caller)` event in the LAST invocation's
+/// event stream and decode its `(before_hf, after_hf, loops)` payload.
+///
+/// NOTE: `e.events().all()` only surfaces the last contract invocation's
+/// events, so this must be called immediately after the rebalance entrypoint,
+/// before any other contract call.
+fn find_rebalance_event(
+    e: &Env,
+    strategy: &Address,
+    caller: &Address,
+) -> Option<(i128, i128, u32)> {
+    use soroban_sdk::{xdr, TryFromVal, Val};
+    let events = e.events().all().filter_by_contract(strategy);
+    for ev in events.events() {
+        let xdr::ContractEventBody::V0(v0) = &ev.body;
+        if v0.topics.len() != 2 {
+            continue;
+        }
+        let t0 = Symbol::try_from_val(e, &v0.topics[0]);
+        let t1 = Address::try_from_val(e, &v0.topics[1]);
+        if t0 != Ok(Symbol::new(e, "rebalance")) || t1.as_ref() != Ok(caller) {
+            continue;
+        }
+        let data: Val = Val::try_from_val(e, &v0.data).ok()?;
+        return <(i128, i128, u32)>::try_from_val(e, &data).ok();
+    }
+    None
+}
+
+// T2.3 spec: "unwinds N loops to restore target when HF drops below the
+// configured threshold; emits events with before/after HF and loops unwound."
+// Drives the REAL `rebalance_keeper` entrypoint against a REAL stressed
+// position on the REAL Blend pool and asserts every observable in the spec:
+// HF restored to >= orange_hf, loops > 0 returned, the `rebalance` event
+// emitted with a payload consistent with the on-chain state transition, and
+// the rate-limit timestamp recorded.
+#[test]
+fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let (_, _, min_hf, orange_hf) = sclient.config();
+    let before_hf = sclient.health_factor();
+    assert!(
+        before_hf >= min_hf && before_hf < orange_hf,
+        "fixture must open inside the orange zone: hf={}, orange={}",
+        before_hf,
+        orange_hf
+    );
+
+    let loops = sclient.rebalance_keeper(&keeper);
+    assert!(loops >= 1, "stressed position must unwind loops");
+
+    // The `rebalance` event carries (before_hf, after_hf, loops). Captured
+    // FIRST: the test env only keeps the last invocation's events.
+    let (ev_before, ev_after, ev_loops) = find_rebalance_event(&e, &strategy, &keeper)
+        .expect("rebalance event must be emitted on every rebalance");
+
+    // HF restored to at least the configured target.
+    let after_hf = sclient.health_factor();
+    assert!(
+        after_hf >= orange_hf,
+        "HF must be restored: after={}, target={}",
+        after_hf,
+        orange_hf
+    );
+
+    assert_eq!(ev_before, before_hf, "event before_hf matches pre-state");
+    assert_eq!(ev_loops, loops, "event loops matches return value");
+    assert!(
+        ev_after >= orange_hf,
+        "event after_hf must be at/above target: {}",
+        ev_after
+    );
+    assert_eq!(ev_after, after_hf, "event after_hf matches post-state");
+
+    // The rate-limit timestamp was recorded (a real rebalance consumes it).
+    let last = e.as_contract(&strategy, || storage::get_last_rebalance(&e));
+    assert_eq!(
+        last,
+        Some(e.ledger().sequence()),
+        "LastRebalance must be set after a real unwind"
+    );
+
+    std::println!(
+        "keeper rebalance: hf {} -> {} (target {}), loops={}",
+        before_hf,
+        after_hf,
+        orange_hf,
+        loops
+    );
+}
+
+// T2.3 spec: "rate-limited". On-chain proof of the 60-ledger cooldown: after a
+// real (loops > 0) keeper rebalance, an immediate second call is rejected; once
+// REBALANCE_COOLDOWN_LEDGERS have elapsed the keeper may call again (a safe
+// no-op here since HF is already restored). The permissionless `rebalance`
+// stays available inside the cooldown window (anyone can always protect the
+// vault).
+#[test]
+fn test_rebalance_keeper_cooldown_rate_limits_on_chain() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    // First keeper rebalance does real work and arms the cooldown.
+    let loops = sclient.rebalance_keeper(&keeper);
+    assert!(loops >= 1, "first call must unwind");
+
+    // Second call inside the cooldown window is rejected — even for the keeper.
+    assert!(
+        sclient.try_rebalance_keeper(&keeper).is_err(),
+        "keeper must be rate-limited inside the cooldown window"
+    );
+
+    // One ledger short of expiry: still rejected.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += crate::constants::REBALANCE_COOLDOWN_LEDGERS - 1;
+    });
+    assert!(
+        sclient.try_rebalance_keeper(&keeper).is_err(),
+        "cooldown must hold until the full window has elapsed"
+    );
+
+    // The permissionless safety valve is NOT rate-limited.
+    sclient.rebalance();
+
+    // At exactly cooldown expiry the keeper may call again (no-op: HF restored).
+    e.ledger().with_mut(|li| {
+        li.sequence_number += 1;
+    });
+    assert_eq!(
+        sclient.rebalance_keeper(&keeper),
+        0,
+        "post-cooldown call succeeds (no-op, HF already at target)"
+    );
+}
+
+// T2.3 spec edge case: "already at floor". A healthy position (HF >= orange_hf,
+// debt outstanding) must be a clean no-op: zero loops unwound, no `rebalance`
+// event, and — critically — the cooldown NOT consumed, so the keeper is never
+// locked out of a real rebalance by an earlier no-op probe.
+#[test]
+fn test_rebalance_keeper_already_at_floor_noop_does_not_consume_cooldown() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let keeper = sclient.get_keeper();
+    let (_, _, _, orange_hf) = sclient.config();
+    let hf = sclient.health_factor();
+    let (_, _, _, d_tokens, _, _) = sclient.position();
+    assert!(d_tokens > 0, "fixture must carry debt");
+    assert!(hf >= orange_hf, "fixture must sit at/above the floor");
+
+    // No-op: zero loops, no event, position untouched.
+    assert_eq!(sclient.rebalance_keeper(&keeper), 0, "at floor → no-op");
+    assert!(
+        find_rebalance_event(&e, &strategy, &keeper).is_none(),
+        "no event on a no-op"
+    );
+    assert_eq!(sclient.health_factor(), hf, "position untouched");
+
+    // The no-op must not consume the cooldown: an immediate second keeper call
+    // is still allowed (also a no-op), and LastRebalance stays unset.
+    let last = e.as_contract(&strategy, || storage::get_last_rebalance(&e));
+    assert_eq!(last, None, "no-op must not arm the cooldown");
+    assert_eq!(
+        sclient.rebalance_keeper(&keeper),
+        0,
+        "immediate retry allowed after a no-op"
+    );
+}
+
+// T2.3 spec edge case: "locked reserves". When pool utilization exceeds
+// MAX_SAFE_UTILIZATION (0.95) the deposit path is deliberately locked
+// (#[Error #422]) — but liquidation protection must NOT be: the keeper's
+// rebalance still unwinds and restores HF. Deleveraging (withdraw == repay per
+// layer) reduces utilization, so it is safe at any utilization; this test pins
+// that property on the real pool with genuinely accrued rates.
+#[test]
+fn test_rebalance_keeper_works_while_deposits_locked_by_high_utilization() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    let token_admin = StellarAssetClient::new(&e, &token);
+
+    // Whale seeds 100k of liquidity (as collateral, so it can borrow later).
+    let whale = Address::generate(&e);
+    token_admin.mock_all_auths().mint(&whale, &100_000_0000000);
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    pool_client.mock_all_auths().submit(
+        &whale,
+        &whale,
+        &whale,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 100_000_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+    e.cost_estimate().budget().reset_unlimited();
+
+    // Strategy opens a stressed 8-loop position while the pool is still calm.
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    // Whale borrows near its collateral cap. Utilization cannot exceed the
+    // pool's per-account collateral factor by borrowing alone, so interest
+    // accrual does the rest: debt compounds faster than supply (backstop take
+    // rate), dragging utilization past MAX_SAFE_UTILIZATION. Accrue in 30-day
+    // steps (poking the reserve each step so rates materialise) until the
+    // threshold is crossed — adaptive because the 3-slope IR model + reactive
+    // ir_mod make a fixed jump unreliable.
+    pool_client.mock_all_auths().submit(
+        &whale,
+        &whale,
+        &whale,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 94_000_0000000,
+                request_type: REQUEST_TYPE_BORROW,
+            },
+        ],
+    );
+    let poker = Address::generate(&e);
+    token_admin.mock_all_auths().mint(&poker, &100_0000000);
+    let mut util = 0_i128;
+    for _ in 0..48 {
+        e.ledger().with_mut(|li| {
+            li.timestamp += 2_592_000; // 30 days
+            li.sequence_number += 500_000;
+        });
+        pool_client.mock_all_auths().submit(
+            &poker,
+            &poker,
+            &poker,
+            &vec![
+                &e,
+                pool::Request {
+                    address: token.clone(),
+                    amount: 1_0000000,
+                    request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+                },
+            ],
+        );
+        let (pool_supply, pool_borrow) =
+            e.as_contract(&strategy, || blend_pool::get_pool_utilization(&e, &config));
+        util = pool_borrow * SCALAR_7 / pool_supply;
+        if util > crate::constants::MAX_SAFE_UTILIZATION {
+            break;
+        }
+    }
+
+    // Precondition: reserves are "locked" for depositors.
+    assert!(
+        util > crate::constants::MAX_SAFE_UTILIZATION,
+        "fixture must exceed MAX_SAFE_UTILIZATION: util={}",
+        util
+    );
+    let depositor = Address::generate(&e);
+    token_admin.mock_all_auths().mint(&depositor, &100_0000000);
+    assert!(
+        sclient.try_deposit(&100_0000000, &depositor).is_err(),
+        "deposits must be locked above MAX_SAFE_UTILIZATION"
+    );
+
+    // The keeper's protection path must still work.
+    let (_, _, _, orange_hf) = sclient.config();
+    let before_hf = sclient.health_factor();
+    assert!(
+        before_hf < orange_hf,
+        "accrued rates must have dragged HF into the orange zone: {}",
+        before_hf
+    );
+
+    let loops = sclient.rebalance_keeper(&keeper);
+    assert!(
+        loops >= 1,
+        "rebalance must unwind even with locked reserves"
+    );
+    // Event captured first: the test env only keeps the last invocation's events.
+    let (ev_before, ev_after, ev_loops) =
+        find_rebalance_event(&e, &strategy, &keeper).expect("rebalance event must be emitted");
+    let after_hf = sclient.health_factor();
+    assert!(
+        after_hf >= orange_hf,
+        "HF must be restored despite locked reserves: {} < {}",
+        after_hf,
+        orange_hf
+    );
+    assert_eq!((ev_before, ev_loops), (before_hf, loops));
+    assert_eq!(ev_after, after_hf);
+
+    std::println!(
+        "locked-reserves rebalance: util={} hf {} -> {} loops={}",
+        util,
+        before_hf,
+        after_hf,
+        loops
+    );
 }
 
 // ── Split harvest entrypoints (T2.1) — auth gating + swap account ─────────────
@@ -1414,6 +1805,151 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         after_hf,
         target
     );
+}
+
+// T2.2 acceptance — dry-run ↔ on-chain parity within rounding.
+//
+// The dry-run prediction is the exact model the off-chain harness
+// (scripts/rebalance_sim.ts) uses: `compute_partial_unwind` for (repay, loops),
+// then the layered execution `submit_deleverage` performs (loops layers of
+// debt × (1 - c_factor) underlying, capped at the outstanding debt). This test
+// executes the real deleverage on the real Blend pool AFTER a year of interest
+// accrual (so b_rate/d_rate ≠ 1 and every underlying↔token conversion rounds)
+// and asserts the executed position matches the prediction to within a few
+// stroops per layer.
+#[test]
+fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let mut config = make_config(&e, &pool_addr, &token, &blnd);
+    // High leverage so the position sits inside the orange zone.
+    config.target_loops = 8;
+
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    let token_admin = StellarAssetClient::new(&e, &token);
+    let deposit = 1_000_0000000_i128;
+    token_admin.mint(&strategy, &deposit);
+    e.cost_estimate().budget().reset_unlimited();
+
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        deposit,
+        config.c_factor,
+        config.target_loops,
+    );
+
+    // Advance ~1 year and poke the reserve so interest is materialised and the
+    // rates diverge from 1.0 — the rounding-heavy regime.
+    e.ledger().with_mut(|li| {
+        li.timestamp += 31_536_000;
+        li.sequence_number += 6_000_000;
+    });
+    let poker = Address::generate(&e);
+    token_admin.mint(&poker, &1_0000000);
+    pool::Client::new(&e, &pool_addr).submit(
+        &poker,
+        &poker,
+        &poker,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
+
+    let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
+    let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
+
+    let target = config.orange_hf;
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    assert!(
+        before_hf < target,
+        "fixture must start in the orange zone: before_hf={}",
+        before_hf
+    );
+
+    // ── Dry-run prediction (same model as scripts/rebalance_sim.ts) ──────────
+    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    assert!(loops >= 1);
+
+    // Layered execution model (mirrors blend_pool::submit_deleverage).
+    let debt_underlying = d * d_rate / SCALAR_12;
+    let supply_underlying = b * b_rate / SCALAR_12;
+    let layer = debt_underlying * (SCALAR_7 - config.c_factor) / SCALAR_7;
+    let mut total_repay = 0_i128;
+    let mut remaining = debt_underlying;
+    for _ in 0..loops {
+        let amount = layer.min(remaining);
+        if amount <= 0 {
+            break;
+        }
+        total_repay += amount;
+        remaining -= amount;
+    }
+    let pred_supply = supply_underlying - total_repay;
+    let pred_debt = debt_underlying - total_repay;
+    let pred_hf = pred_supply * config.c_factor / pred_debt;
+
+    // ── Execute the real deleverage on the real pool ──────────────────────────
+    e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, loops, &config).unwrap();
+    });
+
+    let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let b2 = post.collateral.get(config.reserve_id).unwrap_or(0);
+    let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
+    let actual_supply = b2 * b_rate / SCALAR_12;
+    let actual_debt = d2 * d_rate / SCALAR_12;
+    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+
+    std::println!(
+        "loops={} pred_supply={} actual_supply={} pred_debt={} actual_debt={} pred_hf={} after_hf={}",
+        loops,
+        pred_supply,
+        actual_supply,
+        pred_debt,
+        actual_debt,
+        pred_hf,
+        after_hf
+    );
+
+    // Every underlying↔token conversion rounds by ≤1 stroop, twice per layer.
+    let tol = (loops as i128) * 3 + 5;
+    assert!(
+        (actual_supply - pred_supply).abs() <= tol,
+        "supply diverges beyond rounding: pred={}, actual={}, tol={}",
+        pred_supply,
+        actual_supply,
+        tol
+    );
+    assert!(
+        (actual_debt - pred_debt).abs() <= tol,
+        "debt diverges beyond rounding: pred={}, actual={}, tol={}",
+        pred_debt,
+        actual_debt,
+        tol
+    );
+    // HF parity: a few-stroop position drift moves the 1e7-scale HF by <<1e-4.
+    assert!(
+        (after_hf - pred_hf).abs() <= 1_000,
+        "HF diverges beyond rounding: pred={}, actual={}",
+        pred_hf,
+        after_hf
+    );
+    assert!(after_hf >= target, "restored: {} >= {}", after_hf, target);
 }
 
 #[test]

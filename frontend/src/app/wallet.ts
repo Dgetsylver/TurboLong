@@ -184,6 +184,14 @@ async function sign(xdr: string): Promise<string> {
   return signedTxXdr;
 }
 
+/**
+ * Sign-only helper for flows that submit elsewhere (e.g. the Stellar Broker
+ * mediator, which submits through its own Horizon call). Returns the signed XDR.
+ */
+export async function signXdr(xdr: string): Promise<string> {
+  return sign(xdr);
+}
+
 /** Sign a Soroban tx and submit via RPC. Toasts through the flow. Returns the tx hash. */
 export async function signAndSubmit(xdr: string, label: string): Promise<string> {
   toast(t("toast.signInWallet", { label }), "info");

@@ -76,9 +76,20 @@ Get the DeFindex team to co-sign the deployments.
   strategy IDs, supply `KEEPER_SECRET` behind a secrets manager / remote signer,
   and run with `--execute`. Schedule harvest + `rebalance_keeper` calls. (Do NOT
   put live signing on a GitHub Action — flaky cron + key-on-CI.)
+- **Auto-rebalance (T2.3):** `scripts/rebalance_keeper.ts` is the production
+  rebalance keeper. Probe first with no key:
+  `NETWORK=mainnet VAULTS_JSON='[{"symbol":"USDC","strategyId":"C…"}]' npm run rebalance-keeper`
+  (DRY-RUN: reads on-chain `config()` thresholds + `health_factor()`, simulates
+  only). Then run the live service:
+  `op run -- env NETWORK=mainnet VAULTS_JSON=… npx tsx rebalance_keeper.ts --execute --loop`
+  — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
+  the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
+  HF, loops unwound, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  For a permanent deployment, use the hardened systemd unit + env template in
+  `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the
   T2.1 A/B deliverable; the same keeper firing `rebalance_keeper` produces the
-  T2.3 live mainnet rebalance.
+  T2.3 live mainnet rebalance (captured in the JSONL evidence log).
 
 ## 7. Tranche reporting
 

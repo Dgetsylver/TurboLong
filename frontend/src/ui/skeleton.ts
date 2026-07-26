@@ -21,15 +21,12 @@ const dim = (v: number | string): string => (typeof v === "number" ? `${v}px` : 
 export function Skeleton(props: SkeletonProps = {}): HTMLSpanElement {
   const { width = "100%", height = 14, radius = 4, style, class: cls, id, title } = props;
 
-  const node = el(
-    "span",
-    {
-      class: ["tl-skel", cls].filter(Boolean).join(" "),
-      "aria-hidden": "true",
-      ...(id ? { id } : {}),
-      ...(title ? { title } : {}),
-    },
-  ) as HTMLSpanElement;
+  const node = el("span", {
+    class: ["tl-skel", cls].filter(Boolean).join(" "),
+    "aria-hidden": "true",
+    ...(id ? { id } : {}),
+    ...(title ? { title } : {}),
+  }) as HTMLSpanElement;
 
   node.style.width = dim(width);
   node.style.height = dim(height);

@@ -28,7 +28,8 @@ const en: Dict = {
   "nav.status": "Status",
   // landing / connect prompt
   "hero.title": "Leverage trading on Stellar. Simplified.",
-  "hero.subtitle": "Open leveraged long positions on Blend Protocol pools with a single click. No perps, no funding rates — just recursive lending loops.",
+  "hero.subtitle":
+    "Open leveraged long positions on Blend Protocol pools with a single click. No perps, no funding rates — just recursive lending loops.",
   "hero.launch": "Launch App",
   "hero.demo": "View Demo",
   "connect.prompt": "Connect your wallet to get started",
@@ -49,10 +50,12 @@ const en: Dict = {
   "settings.alerts": "Set up alerts",
   "settings.tour": "Take the tour",
   "settings.language": "Language",
-  "settings.expertTip": "Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only.",
+  "settings.expertTip":
+    "Expert mode: lowers the minimum health factor to 1.00001 (≈0.001% from liquidation). For active monitors only.",
   // expert-mode confirmation
   "expert.confirmTitle": "Enable Expert Mode?",
-  "expert.confirmBody": "This allows positions as low as HF 1.00001 — about 0.001% from liquidation. Only enable if you actively monitor your position and can repay/resupply instantly.",
+  "expert.confirmBody":
+    "This allows positions as low as HF 1.00001 — about 0.001% from liquidation. Only enable if you actively monitor your position and can repay/resupply instantly.",
   "expert.enable": "Enable",
   // pre-submit position confirmation
   "confirm.title": "Review your position",
@@ -73,28 +76,37 @@ const en: Dict = {
   "risk.nearLiq": "Near liquidation",
   // inline open-position warnings
   "warn.negApy": "⚠ Projected net APY is negative at this leverage — you'd pay more in borrow cost than you earn.",
-  "warn.frozenPool": "⚠ This pool is frozen. New positions can't be opened, and exiting may be hard — avoid adding exposure here.",
-  "warn.highUtil": "⚠ Pool utilization is very high. Liquidity is tight, so exiting may be hard and forced-liquidation risk rises.",
+  "warn.frozenPool":
+    "⚠ This pool is frozen. New positions can't be opened, and exiting may be hard — avoid adding exposure here.",
+  "warn.highUtil":
+    "⚠ Pool utilization is very high. Liquidity is tight, so exiting may be hard and forced-liquidation risk rises.",
   // inline jargon explainer
   "learn.title": "How leverage works / key terms",
-  "learn.body": "Leverage looping repeatedly supplies your asset as collateral and borrows against it, stacking exposure on a single deposit. Health Factor (HF) measures how safe the position is: when HF falls below 1.0 your position is liquidated and you lose collateral. The collateral factor (c_factor) caps how much you can borrow per unit of collateral — a higher c_factor allows more leverage. Adverse price moves or rising borrow rates lower your HF over time, pushing you toward liquidation.",
+  "learn.body":
+    "Leverage looping repeatedly supplies your asset as collateral and borrows against it, stacking exposure on a single deposit. Health Factor (HF) measures how safe the position is: when HF falls below 1.0 your position is liquidated and you lose collateral. The collateral factor (c_factor) caps how much you can borrow per unit of collateral — a higher c_factor allows more leverage. Adverse price moves or rising borrow rates lower your HF over time, pushing you toward liquidation.",
   // swap
   "swap.route": "Route",
   // alerts
   "alert.hfLabel": "Also notify when Health Factor falls below",
   // vault
-  "vault.keeperNote": "Auto-rebalance keeper — monitors health factor and partially unwinds the loop when HF drops below the minimum, protecting all depositors. Applies to Vault positions only.",
+  "vault.keeperNote":
+    "Auto-rebalance keeper monitors the health factor and partially unwinds the loop when HF drops into the orange zone",
+  "vault.keeperNoteTail":
+    ", restoring it to that threshold and protecting all depositors. Applies to Vault positions only; rebalance is permissionless.",
   "vault.yourPosition": "Your Position",
   "vault.yourEquity": "Your Equity",
   "vault.shareOfVault": "Share of Vault",
   "vault.tradeOnAquariusTitle": "Trade your position on Aquarius",
-  "vault.tradeOnAquariusSub": "Your vault deposit is a transferable SEP-41 receipt token. Once listed it trades against USDC on Aquarius, so you can exit without unwinding the leverage loop on-chain.",
+  "vault.tradeOnAquariusSub":
+    "Your vault deposit is a transferable SEP-41 receipt token. Once listed it trades against USDC on Aquarius, so you can exit without unwinding the leverage loop on-chain.",
   "vault.receiptToken": "Receipt token",
   "vault.tradeCta": "Trade on Aquarius",
-  "vault.listingPending": "Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.",
+  "vault.listingPending":
+    "Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.",
   // compare view
   "compare.title": "Compare Pools",
-  "compare.subtitle": "Live net APY across every Blend pool & asset, ranked by best leveraged yield. Best swap rate sourced from Aquarius. No wallet needed.",
+  "compare.subtitle":
+    "Live net APY across every Blend pool & asset, ranked by best leveraged yield. Best swap rate sourced from Aquarius. No wallet needed.",
   "compare.col.rank": "#",
   "compare.col.poolAsset": "Pool / Asset",
   "compare.col.baseApy": "Base APY",
@@ -106,7 +118,8 @@ const en: Dict = {
   "compare.loading": "Loading pools…",
   "compare.empty": "No pools available.",
   "compare.bestRate": "Best Rate",
-  "compare.foot": "Max Lev and Leveraged APY use the same minimum health factor as the trade form, so they match the position you can actually open; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.",
+  "compare.foot":
+    "Max Lev and Leveraged APY use the same minimum health factor as the trade form, so they match the position you can actually open; actual results depend on rate drift and gas. Aquarius rate is an indicative quote for 1 unit → USDC via the AMM router. Trend shows net supply APY history from the Turbolong snapshot service.",
   // onboarding tour
   "tour.skip": "Skip",
   "tour.next": "Next",
@@ -116,11 +129,14 @@ const en: Dict = {
   "tour.welcome.title": "Welcome to Turbolong",
   "tour.welcome.body": "One-click leveraged long positions on Stellar's Blend pools. Here's the 30-second tour.",
   "tour.trade.title": "Trade — open a leveraged loop",
-  "tour.trade.body": "Pick a pool and asset, choose your leverage, and open a position. The loop runs atomically. Your Health Factor (HF) shows how close you are to liquidation — if HF falls below 1.0 you lose collateral, so watch it as you raise leverage. Note: the auto-rebalance keeper protects Vault positions, not manual Trade positions — here you monitor and adjust your own HF.",
+  "tour.trade.body":
+    "Pick a pool and asset, choose your leverage, and open a position. The loop runs atomically. Your Health Factor (HF) shows how close you are to liquidation — if HF falls below 1.0 you lose collateral, so watch it as you raise leverage. Note: the auto-rebalance keeper protects Vault positions, not manual Trade positions — here you monitor and adjust your own HF.",
   "tour.vault.title": "Vault — passive leverage",
-  "tour.vault.body": "Deposit into a managed leveraged vault and receive a transferable SEP-41 receipt token you can later trade on Aquarius.",
+  "tour.vault.body":
+    "Deposit into a managed leveraged vault and receive a transferable SEP-41 receipt token you can later trade on Aquarius.",
   "tour.compare.title": "Compare — find the best yield",
-  "tour.compare.body": "Rank every pool and asset by leveraged net APY, with live Aquarius rates and history charts. No wallet needed.",
+  "tour.compare.body":
+    "Rank every pool and asset by leveraged net APY, with live Aquarius rates and history charts. No wallet needed.",
   // status page
   "status.title": "Turbolong Status",
   "status.subtitle": "Live health of the protocol's services and contracts.",
@@ -138,17 +154,20 @@ const en: Dict = {
   "status.autoRefresh": "auto-refreshes every 60s",
   // remove funds (proportional partial close)
   "action.removeFunds": "Remove Funds",
-  "removeFunds.disclaimer": "Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.",
+  "removeFunds.disclaimer":
+    "Withdraws part of your principal and unwinds proportionally — your leverage and health factor stay the same.",
   "removeFunds.inPosition": "In position",
   "removeFunds.useClose": "Use Close to exit fully.",
   // P4 — disclaimer modal
   "disclaimer.title": "Important Disclaimer",
-  "disclaimer.body1": "This is an experimental project. Using leveraged positions on DeFi protocols carries significant financial risk, including the complete loss of your deposited funds.",
+  "disclaimer.body1":
+    "This is an experimental project. Using leveraged positions on DeFi protocols carries significant financial risk, including the complete loss of your deposited funds.",
   "disclaimer.body2": "By proceeding, you acknowledge that:",
   "disclaimer.risk1": "You understand the risks of leveraged DeFi positions, including liquidation.",
   "disclaimer.risk2": "You use this tool entirely at your own risk. The developers accept no liability for any losses.",
   "disclaimer.risk3": "This software is provided as-is with no guarantees of correctness or availability.",
-  "disclaimer.risk4": "You are not accessing this from a jurisdiction where using decentralized finance tools or cryptocurrency is prohibited or restricted by law.",
+  "disclaimer.risk4":
+    "You are not accessing this from a jurisdiction where using decentralized finance tools or cryptocurrency is prohibited or restricted by law.",
   "disclaimer.accept": "I understand and accept these terms",
   "disclaimer.enter": "Enter App",
   // P4 — landing page
@@ -177,7 +196,8 @@ const en: Dict = {
   "landing.feat6.title": "Built on Stellar",
   "landing.feat6.body": "Fast finality, low fees, and battle-tested Soroban smart contracts.",
   "landing.risk.label": "Risk Disclosure:",
-  "landing.risk.body": "Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software — use at your own risk.",
+  "landing.risk.body":
+    "Leveraged positions can be liquidated if your Health Factor drops below 1.0. You may lose your entire deposit. This is experimental software — use at your own risk.",
   // P4 — mobile sidebar
   "sidebar.blend": "Blend Protocol",
   "sidebar.moreProtocols": "More Protocols",
@@ -211,7 +231,16 @@ const en: Dict = {
   "swap.getQuote": "Get Quote",
   "swap.selectDifferent": "Select different assets",
   "swap.enterAmount": "Enter amount",
-  "swap.comingSoon": "Swap (coming soon)",
+  "swap.execute": "Swap",
+  "swap.executing": "Swapping…",
+  "swap.mainnetOnly": "Swap execution is mainnet-only",
+  "swap.done": "Swap complete",
+  "swap.recovering": "Recovering funds from a previous swap session…",
+  "swap.recoverLater":
+    "Returning the funds timed out — they're held in a temporary account and will be recovered automatically on your next swap.",
+  "swap.stepPrepare": "Prepare",
+  "swap.stepTrade": "Trade",
+  "swap.stepFinalize": "Finalize",
   "swap.disclaimer1": "Swaps are executed through",
   "swap.disclaimer2": "for best-route aggregation across Stellar DEXes.",
   // P4 — vault view
@@ -221,7 +250,8 @@ const en: Dict = {
   "vault.sharePrice": "Share Price",
   "vault.netApy": "Net APY",
   "vault.leverageTip": "Current leverage multiplier = collateral / equity",
-  "vault.hfTip": "Strategy health factor. Below min HF, anyone can trigger rebalance to deleverage.",
+  "vault.hfTip":
+    "Strategy health factor. In the orange zone (below the rebalance threshold), anyone can trigger rebalance to deleverage.",
   "vault.healthFactor": "Health Factor",
   "vault.minHf": "Min HF",
   "vault.strategyPosition": "Strategy Position",
@@ -233,11 +263,13 @@ const en: Dict = {
   "vault.loops": "Loops",
   "vault.rebalance": "Rebalance",
   "vault.hfHealthy": "HF is healthy",
-  "vault.hfBelowMin": "HF below minimum — rebalance available",
+  "vault.hfInOrangeZone": "HF in the orange zone",
+  "vault.rebalanceAvailable": "rebalance available",
   "vault.liqLabel": "1.0 liq",
   "vault.inVault": "In vault",
   "vault.strategyLabel": "Strategy:",
-  "vault.disclaimer": "Deposits are managed by the Turbolong Strategy on Blend Protocol. Leverage loops are executed atomically. Rebalance is permissionless — anyone can trigger it when HF drops below the minimum threshold to protect all depositors.",
+  "vault.disclaimer":
+    "Deposits are managed by the Turbolong Strategy on Blend Protocol. Leverage loops are executed atomically. Rebalance is permissionless — anyone can trigger it when HF drops into the orange zone to protect all depositors.",
   // P4 — alert modal
   "alert.title": "APY Alerts",
   "alert.desc": "Get notified when your position's net APY turns negative.",
@@ -283,7 +315,8 @@ const en: Dict = {
   "dashboard.interestSpread": "Interest spread: {pct}%/yr (borrow − supply). Claim & convert BLND to extend runway.",
   // #294 — cross-collateralized / account-wide HF
   "pos.crossCollat": "Cross-collateralized",
-  "pos.crossExplainer": "Cross-collateralized position — your collateral and borrows are in different assets. Liquidation is based on your Account Health above, not the individual rows.",
+  "pos.crossExplainer":
+    "Cross-collateralized position — your collateral and borrows are in different assets. Liquidation is based on your Account Health above, not the individual rows.",
   "pos.loopHf": "Loop HF",
   // #297 — pool-centric ACCOUNT panel
   "pos.accountHealth": "Account Health",
@@ -298,12 +331,14 @@ const en: Dict = {
   "pool.role.collateral": "Collateral",
   "pool.role.borrow": "Borrow",
   "pool.accountNote": "One health factor liquidates this whole pool. Rows are a breakdown, not separate positions.",
-  "pool.apyTip": "Equity-weighted net APY across every position in this pool. Approximate — Blend interest does not auto-compound.",
+  "pool.apyTip":
+    "Equity-weighted net APY across every position in this pool. Approximate — Blend interest does not auto-compound.",
   // P4 — toasts
   "toast.demoMode": "Demo mode — connect a real wallet to transact",
   "toast.demoExplore": "Demo mode — explore the UI without a wallet",
   "toast.switchedNetwork": "Switched to {label}. Please also switch your wallet to {label} before connecting.",
-  "toast.networkMismatch": "Network mismatch: your wallet is on a different network. Please switch your wallet to {expected}.",
+  "toast.networkMismatch":
+    "Network mismatch: your wallet is on a different network. Please switch your wallet to {expected}.",
   "toast.funding": "Funding…",
   "toast.friendbotRequest": "Requesting testnet XLM from Friendbot…",
   "toast.friendbotExists": "Account already exists on testnet, skipping Friendbot",
@@ -312,23 +347,27 @@ const en: Dict = {
   "toast.fundSuccess": "Testnet wallet funded! USDC trustline opened and tokens acquired.",
   "toast.fundNoLiquidity": "USDC trustline opened but no DEX liquidity to swap. You may need to acquire USDC manually.",
   "toast.fundFailed": "Fund failed: {msg}",
-  "toast.signInWallet": "Sign \"{label}\" in your wallet…",
-  "toast.submitting": "Submitting \"{label}\"…",
-  "toast.confirmed": "\"{label}\" confirmed!",
+  "toast.signInWallet": 'Sign "{label}" in your wallet…',
+  "toast.submitting": 'Submitting "{label}"…',
+  "toast.confirmed": '"{label}" confirmed!',
   "toast.loadFailed": "Load failed: {msg}",
   "toast.poolFrozenOpen": "Pool is frozen — cannot open new positions",
   "toast.poolFrozenAddFunds": "Pool is frozen — cannot add funds",
   "toast.enterValidAmount": "Enter a valid amount",
   "toast.hfTooLow": "HF too low — reduce leverage",
-  "toast.firstBorrowExceeds": "First borrow step ({first}) exceeds pool available after deposit ({avail} {sym}). Reduce leverage.",
+  "toast.firstBorrowExceeds":
+    "First borrow step ({first}) exceeds pool available after deposit ({avail} {sym}). Reduce leverage.",
   "toast.trustlineCheckFailed": "Trustline check failed: {msg}",
-  "toast.trustlineLimit": "Adding {n} trustline(s) would exceed the Stellar limit of 1,000. You currently have {current}. Remove unused trustlines before depositing.",
+  "toast.trustlineLimit":
+    "Adding {n} trustline(s) would exceed the Stellar limit of 1,000. You currently have {current}. Remove unused trustlines before depositing.",
   "toast.txFailed": "Transaction failed",
   "toast.hfTooLowErr": "Health factor too low — reduce leverage.",
-  "toast.utilLimitBorrow": "Pool utilization limit reached — not enough liquidity for this borrow. Reduce leverage or deposit.",
+  "toast.utilLimitBorrow":
+    "Pool utilization limit reached — not enough liquidity for this borrow. Reduce leverage or deposit.",
   "toast.utilLimitAddFunds": "Pool utilization limit reached — not enough liquidity. Reduce leverage or deposit.",
   "toast.closeTwoSteps": "Pool utilization high — closing in two steps…",
-  "toast.utilWithdrawAll": "Pool utilization too high to withdraw all collateral. Debt was repaid — try withdrawing later when liquidity improves.",
+  "toast.utilWithdrawAll":
+    "Pool utilization too high to withdraw all collateral. Debt was repaid — try withdrawing later when liquidity improves.",
   "toast.utilCloseTooHigh": "Pool utilization too high — not enough liquidity to close. Try again later.",
   "toast.noPositionsClaim": "No positions to claim from",
   "toast.targetSameAsCurrent": "Target leverage is same as current",
@@ -371,7 +410,8 @@ const es: Dict = {
   "nav.settings": "Ajustes",
   "nav.status": "Estado",
   "hero.title": "Trading apalancado en Stellar. Simplificado.",
-  "hero.subtitle": "Abre posiciones largas apalancadas en los pools de Blend Protocol con un solo clic. Sin perps, sin tasas de financiación — solo bucles de préstamo recursivos.",
+  "hero.subtitle":
+    "Abre posiciones largas apalancadas en los pools de Blend Protocol con un solo clic. Sin perps, sin tasas de financiación — solo bucles de préstamo recursivos.",
   "hero.launch": "Abrir app",
   "hero.demo": "Ver demo",
   "connect.prompt": "Conecta tu billetera para empezar",
@@ -390,9 +430,11 @@ const es: Dict = {
   "settings.alerts": "Configurar alertas",
   "settings.tour": "Hacer el recorrido",
   "settings.language": "Idioma",
-  "settings.expertTip": "Modo experto: reduce el factor de salud mínimo a 1.00001 (≈0,001 % de la liquidación). Solo para quienes monitorean activamente.",
+  "settings.expertTip":
+    "Modo experto: reduce el factor de salud mínimo a 1.00001 (≈0,001 % de la liquidación). Solo para quienes monitorean activamente.",
   "expert.confirmTitle": "¿Activar el modo experto?",
-  "expert.confirmBody": "Esto permite posiciones con un HF tan bajo como 1.00001 — alrededor del 0,001 % de la liquidación. Actívalo solo si monitoreas activamente tu posición y puedes repagar/reaportar al instante.",
+  "expert.confirmBody":
+    "Esto permite posiciones con un HF tan bajo como 1.00001 — alrededor del 0,001 % de la liquidación. Actívalo solo si monitoreas activamente tu posición y puedes repagar/reaportar al instante.",
   "expert.enable": "Activar",
   "confirm.title": "Revisa tu posición",
   "confirm.leverage": "Apalancamiento",
@@ -409,24 +451,34 @@ const es: Dict = {
   "risk.caution": "Precaución",
   "risk.high": "Riesgo alto",
   "risk.nearLiq": "Cerca de liquidación",
-  "warn.negApy": "⚠ El APY neto proyectado es negativo con este apalancamiento — pagarías más en costo de préstamo de lo que ganas.",
-  "warn.frozenPool": "⚠ Este pool está congelado. No se pueden abrir nuevas posiciones y salir puede ser difícil — evita añadir exposición aquí.",
-  "warn.highUtil": "⚠ La utilización del pool es muy alta. La liquidez es escasa, por lo que salir puede ser difícil y aumenta el riesgo de liquidación forzosa.",
+  "warn.negApy":
+    "⚠ El APY neto proyectado es negativo con este apalancamiento — pagarías más en costo de préstamo de lo que ganas.",
+  "warn.frozenPool":
+    "⚠ Este pool está congelado. No se pueden abrir nuevas posiciones y salir puede ser difícil — evita añadir exposición aquí.",
+  "warn.highUtil":
+    "⚠ La utilización del pool es muy alta. La liquidez es escasa, por lo que salir puede ser difícil y aumenta el riesgo de liquidación forzosa.",
   "learn.title": "Cómo funciona el apalancamiento / términos clave",
-  "learn.body": "El bucle de apalancamiento aporta repetidamente tu activo como colateral y pide prestado contra él, acumulando exposición sobre un solo depósito. El factor de salud (HF) mide qué tan segura es la posición: cuando el HF cae por debajo de 1.0, tu posición se liquida y pierdes colateral. El factor de colateral (c_factor) limita cuánto puedes pedir prestado por unidad de colateral — un c_factor más alto permite más apalancamiento. Movimientos adversos de precio o tasas de préstamo crecientes reducen tu HF con el tiempo, acercándote a la liquidación.",
+  "learn.body":
+    "El bucle de apalancamiento aporta repetidamente tu activo como colateral y pide prestado contra él, acumulando exposición sobre un solo depósito. El factor de salud (HF) mide qué tan segura es la posición: cuando el HF cae por debajo de 1.0, tu posición se liquida y pierdes colateral. El factor de colateral (c_factor) limita cuánto puedes pedir prestado por unidad de colateral — un c_factor más alto permite más apalancamiento. Movimientos adversos de precio o tasas de préstamo crecientes reducen tu HF con el tiempo, acercándote a la liquidación.",
   "swap.route": "Ruta",
   "alert.hfLabel": "Notificar también cuando el factor de salud baje de",
-  "vault.keeperNote": "Keeper de rebalanceo automático — supervisa el factor de salud y deshace parcialmente el bucle cuando el HF cae por debajo del mínimo, protegiendo a todos los depositantes. Solo se aplica a las posiciones de bóveda.",
+  "vault.keeperNote":
+    "El keeper de rebalanceo automático supervisa el factor de salud y deshace parcialmente el bucle cuando el HF entra en la zona naranja",
+  "vault.keeperNoteTail":
+    ", restaurándolo a ese umbral y protegiendo a todos los depositantes. Solo se aplica a las posiciones de bóveda; el rebalanceo es sin permisos.",
   "vault.yourPosition": "Tu posición",
   "vault.yourEquity": "Tu capital",
   "vault.shareOfVault": "Parte de la bóveda",
   "vault.tradeOnAquariusTitle": "Negocia tu posición en Aquarius",
-  "vault.tradeOnAquariusSub": "Tu depósito en la bóveda es un token de recibo SEP-41 transferible. Una vez listado, se negocia contra USDC en Aquarius, para que puedas salir sin deshacer el bucle de apalancamiento en cadena.",
+  "vault.tradeOnAquariusSub":
+    "Tu depósito en la bóveda es un token de recibo SEP-41 transferible. Una vez listado, se negocia contra USDC en Aquarius, para que puedas salir sin deshacer el bucle de apalancamiento en cadena.",
   "vault.receiptToken": "Token de recibo",
   "vault.tradeCta": "Negociar en Aquarius",
-  "vault.listingPending": "Listado en Aquarius tras el lanzamiento de la bóveda en mainnet. El token de recibo se negociará contra USDC, para que puedas salir de tu posición apalancada sin deshacer el bucle en cadena.",
+  "vault.listingPending":
+    "Listado en Aquarius tras el lanzamiento de la bóveda en mainnet. El token de recibo se negociará contra USDC, para que puedas salir de tu posición apalancada sin deshacer el bucle en cadena.",
   "compare.title": "Comparar pools",
-  "compare.subtitle": "APY neto en vivo de cada pool y activo de Blend, ordenados por el mejor rendimiento apalancado. Mejor tasa de intercambio vía Aquarius. Sin billetera.",
+  "compare.subtitle":
+    "APY neto en vivo de cada pool y activo de Blend, ordenados por el mejor rendimiento apalancado. Mejor tasa de intercambio vía Aquarius. Sin billetera.",
   "compare.col.rank": "#",
   "compare.col.poolAsset": "Pool / Activo",
   "compare.col.baseApy": "APY base",
@@ -438,20 +490,25 @@ const es: Dict = {
   "compare.loading": "Cargando pools…",
   "compare.empty": "No hay pools disponibles.",
   "compare.bestRate": "Mejor tasa",
-  "compare.foot": "Apal. máx y APY apalancado usan el mismo factor de salud mínimo que el formulario de trading, así que coinciden con la posición que realmente puedes abrir; los resultados reales dependen de la variación de tasas y el gas. La tasa de Aquarius es una cotización indicativa de 1 unidad → USDC vía el router del AMM. La tendencia muestra el historial de APY de suministro neto del servicio de snapshots de Turbolong.",
+  "compare.foot":
+    "Apal. máx y APY apalancado usan el mismo factor de salud mínimo que el formulario de trading, así que coinciden con la posición que realmente puedes abrir; los resultados reales dependen de la variación de tasas y el gas. La tasa de Aquarius es una cotización indicativa de 1 unidad → USDC vía el router del AMM. La tendencia muestra el historial de APY de suministro neto del servicio de snapshots de Turbolong.",
   "tour.skip": "Omitir",
   "tour.next": "Siguiente",
   "tour.back": "Atrás",
   "tour.done": "Entendido",
   "tour.dontShow": "No volver a mostrar",
   "tour.welcome.title": "Bienvenido a Turbolong",
-  "tour.welcome.body": "Posiciones largas apalancadas en un clic en los pools de Blend en Stellar. Aquí tienes el recorrido de 30 segundos.",
+  "tour.welcome.body":
+    "Posiciones largas apalancadas en un clic en los pools de Blend en Stellar. Aquí tienes el recorrido de 30 segundos.",
   "tour.trade.title": "Operar — abre un bucle apalancado",
-  "tour.trade.body": "Elige un pool y un activo, selecciona tu apalancamiento y abre una posición. El bucle se ejecuta de forma atómica. Tu factor de salud (HF) muestra qué tan cerca estás de la liquidación — si el HF cae por debajo de 1.0 pierdes colateral, así que vigílalo al subir el apalancamiento. Nota: el keeper de rebalanceo automático protege las posiciones de bóveda, no las posiciones manuales de Operar — aquí monitoreas y ajustas tu propio HF.",
+  "tour.trade.body":
+    "Elige un pool y un activo, selecciona tu apalancamiento y abre una posición. El bucle se ejecuta de forma atómica. Tu factor de salud (HF) muestra qué tan cerca estás de la liquidación — si el HF cae por debajo de 1.0 pierdes colateral, así que vigílalo al subir el apalancamiento. Nota: el keeper de rebalanceo automático protege las posiciones de bóveda, no las posiciones manuales de Operar — aquí monitoreas y ajustas tu propio HF.",
   "tour.vault.title": "Bóveda — apalancamiento pasivo",
-  "tour.vault.body": "Deposita en una bóveda apalancada gestionada y recibe un token de recibo SEP-41 transferible que luego puedes negociar en Aquarius.",
+  "tour.vault.body":
+    "Deposita en una bóveda apalancada gestionada y recibe un token de recibo SEP-41 transferible que luego puedes negociar en Aquarius.",
   "tour.compare.title": "Comparar — encuentra el mejor rendimiento",
-  "tour.compare.body": "Ordena cada pool y activo por APY neto apalancado, con tasas de Aquarius en vivo y gráficos históricos. Sin billetera.",
+  "tour.compare.body":
+    "Ordena cada pool y activo por APY neto apalancado, con tasas de Aquarius en vivo y gráficos históricos. Sin billetera.",
   "status.title": "Estado de Turbolong",
   "status.subtitle": "Salud en vivo de los servicios y contratos del protocolo.",
   "status.operational": "Operativo",
@@ -467,17 +524,21 @@ const es: Dict = {
   "status.someIssues": "Algunos servicios están degradados",
   "status.autoRefresh": "se actualiza cada 60s",
   "action.removeFunds": "Retirar fondos",
-  "removeFunds.disclaimer": "Retira parte de tu capital y deshace la posición de forma proporcional — tu apalancamiento y factor de salud no cambian.",
+  "removeFunds.disclaimer":
+    "Retira parte de tu capital y deshace la posición de forma proporcional — tu apalancamiento y factor de salud no cambian.",
   "removeFunds.inPosition": "En posición",
   "removeFunds.useClose": "Usa Cerrar para salir por completo.",
   // P4 — disclaimer modal
   "disclaimer.title": "Aviso importante",
-  "disclaimer.body1": "Este es un proyecto experimental. Usar posiciones apalancadas en protocolos DeFi conlleva un riesgo financiero significativo, incluida la pérdida total de los fondos que deposites.",
+  "disclaimer.body1":
+    "Este es un proyecto experimental. Usar posiciones apalancadas en protocolos DeFi conlleva un riesgo financiero significativo, incluida la pérdida total de los fondos que deposites.",
   "disclaimer.body2": "Al continuar, reconoces que:",
   "disclaimer.risk1": "Entiendes los riesgos de las posiciones apalancadas en DeFi, incluida la liquidación.",
-  "disclaimer.risk2": "Usas esta herramienta enteramente bajo tu propio riesgo. Los desarrolladores no asumen responsabilidad por pérdidas.",
+  "disclaimer.risk2":
+    "Usas esta herramienta enteramente bajo tu propio riesgo. Los desarrolladores no asumen responsabilidad por pérdidas.",
   "disclaimer.risk3": "Este software se ofrece tal cual, sin garantías de exactitud ni de disponibilidad.",
-  "disclaimer.risk4": "No accedes desde una jurisdicción donde el uso de herramientas de finanzas descentralizadas o de criptomonedas esté prohibido o restringido por ley.",
+  "disclaimer.risk4":
+    "No accedes desde una jurisdicción donde el uso de herramientas de finanzas descentralizadas o de criptomonedas esté prohibido o restringido por ley.",
   "disclaimer.accept": "Entiendo y acepto estos términos",
   "disclaimer.enter": "Entrar a la app",
   // P4 — landing page
@@ -489,7 +550,8 @@ const es: Dict = {
   "landing.step1.title": "Conecta tu billetera",
   "landing.step1.body": "Usa Freighter, Lobstr, xBull o cualquier billetera Stellar para conectarte en segundos.",
   "landing.step2.title": "Elige activo y apalancamiento",
-  "landing.step2.body": "Selecciona un pool y un activo de Blend, luego ajusta tu multiplicador de apalancamiento con un deslizador.",
+  "landing.step2.body":
+    "Selecciona un pool y un activo de Blend, luego ajusta tu multiplicador de apalancamiento con un deslizador.",
   "landing.step3.title": "Posición en un clic",
   "landing.step3.body": "Turbolong ejecuta el bucle de préstamo recursivo de forma atómica. Aprueba y envía.",
   "landing.features.title": "Características",
@@ -506,7 +568,8 @@ const es: Dict = {
   "landing.feat6.title": "Construido sobre Stellar",
   "landing.feat6.body": "Finalidad rápida, comisiones bajas y contratos inteligentes Soroban probados en batalla.",
   "landing.risk.label": "Aviso de riesgo:",
-  "landing.risk.body": "Las posiciones apalancadas pueden liquidarse si tu factor de salud cae por debajo de 1.0. Podrías perder todo tu depósito. Este es software experimental — úsalo bajo tu propio riesgo.",
+  "landing.risk.body":
+    "Las posiciones apalancadas pueden liquidarse si tu factor de salud cae por debajo de 1.0. Podrías perder todo tu depósito. Este es software experimental — úsalo bajo tu propio riesgo.",
   // P4 — mobile sidebar
   "sidebar.blend": "Blend Protocol",
   "sidebar.moreProtocols": "Más protocolos",
@@ -540,7 +603,16 @@ const es: Dict = {
   "swap.getQuote": "Obtener cotización",
   "swap.selectDifferent": "Selecciona activos distintos",
   "swap.enterAmount": "Ingresa un monto",
-  "swap.comingSoon": "Intercambio (próximamente)",
+  "swap.execute": "Intercambiar",
+  "swap.executing": "Intercambiando…",
+  "swap.mainnetOnly": "La ejecución de intercambios solo está disponible en mainnet",
+  "swap.done": "Intercambio completado",
+  "swap.recovering": "Recuperando fondos de una sesión de intercambio anterior…",
+  "swap.recoverLater":
+    "La devolución de fondos expiró — están retenidos en una cuenta temporal y se recuperarán automáticamente en tu próximo intercambio.",
+  "swap.stepPrepare": "Preparar",
+  "swap.stepTrade": "Operar",
+  "swap.stepFinalize": "Finalizar",
   "swap.disclaimer1": "Los intercambios se ejecutan a través de",
   "swap.disclaimer2": "para agregación de la mejor ruta entre los DEX de Stellar.",
   // P4 — vault view
@@ -550,7 +622,8 @@ const es: Dict = {
   "vault.sharePrice": "Precio de la participación",
   "vault.netApy": "APY neto",
   "vault.leverageTip": "Multiplicador de apalancamiento actual = colateral / capital",
-  "vault.hfTip": "Factor de salud de la estrategia. Por debajo del HF mínimo, cualquiera puede activar el rebalanceo para desapalancar.",
+  "vault.hfTip":
+    "Factor de salud de la estrategia. En la zona naranja (por debajo del umbral de rebalanceo), cualquiera puede activar el rebalanceo para desapalancar.",
   "vault.healthFactor": "Factor de salud",
   "vault.minHf": "HF mín.",
   "vault.strategyPosition": "Posición de la estrategia",
@@ -562,11 +635,13 @@ const es: Dict = {
   "vault.loops": "Bucles",
   "vault.rebalance": "Rebalancear",
   "vault.hfHealthy": "El HF está saludable",
-  "vault.hfBelowMin": "HF por debajo del mínimo — rebalanceo disponible",
+  "vault.hfInOrangeZone": "HF en la zona naranja",
+  "vault.rebalanceAvailable": "rebalanceo disponible",
   "vault.liqLabel": "1.0 liq.",
   "vault.inVault": "En la bóveda",
   "vault.strategyLabel": "Estrategia:",
-  "vault.disclaimer": "Los depósitos los gestiona la Estrategia de Turbolong en Blend Protocol. Los bucles de apalancamiento se ejecutan de forma atómica. El rebalanceo es sin permisos — cualquiera puede activarlo cuando el HF cae por debajo del umbral mínimo para proteger a todos los depositantes.",
+  "vault.disclaimer":
+    "Los depósitos los gestiona la Estrategia de Turbolong en Blend Protocol. Los bucles de apalancamiento se ejecutan de forma atómica. El rebalanceo es sin permisos — cualquiera puede activarlo cuando el HF entra en la zona naranja para proteger a todos los depositantes.",
   // P4 — alert modal
   "alert.title": "Alertas de APY",
   "alert.desc": "Recibe una notificación cuando el APY neto de tu posición se vuelva negativo.",
@@ -609,10 +684,12 @@ const es: Dict = {
   "dashboard.never": "Nunca",
   "dashboard.over10y": ">10 años",
   "dashboard.daysApprox": "~{n} días",
-  "dashboard.interestSpread": "Diferencial de interés: {pct}%/año (préstamo − suministro). Reclama y convierte BLND para ampliar el margen.",
+  "dashboard.interestSpread":
+    "Diferencial de interés: {pct}%/año (préstamo − suministro). Reclama y convierte BLND para ampliar el margen.",
   // #294 — cross-collateralized / account-wide HF
   "pos.crossCollat": "Con garantía cruzada",
-  "pos.crossExplainer": "Posición con garantía cruzada — tu garantía y tus préstamos están en activos diferentes. La liquidación se basa en la Salud de tu Cuenta de arriba, no en las filas individuales.",
+  "pos.crossExplainer":
+    "Posición con garantía cruzada — tu garantía y tus préstamos están en activos diferentes. La liquidación se basa en la Salud de tu Cuenta de arriba, no en las filas individuales.",
   "pos.loopHf": "HF del bucle",
   // #297 — pool-centric ACCOUNT panel
   "pos.accountHealth": "Salud de la cuenta",
@@ -626,8 +703,10 @@ const es: Dict = {
   "pool.role.loop": "Bucle",
   "pool.role.collateral": "Garantía",
   "pool.role.borrow": "Préstamo",
-  "pool.accountNote": "Un solo factor de salud liquida todo este pool. Las filas son un desglose, no posiciones separadas.",
-  "pool.apyTip": "APY neto ponderado por capital de todas las posiciones de este pool. Aproximado — el interés de Blend no se capitaliza automáticamente.",
+  "pool.accountNote":
+    "Un solo factor de salud liquida todo este pool. Las filas son un desglose, no posiciones separadas.",
+  "pool.apyTip":
+    "APY neto ponderado por capital de todas las posiciones de este pool. Aproximado — el interés de Blend no se capitaliza automáticamente.",
   // P4 — toasts
   "toast.demoMode": "Modo demo — conecta una billetera real para operar",
   "toast.demoExplore": "Modo demo — explora la interfaz sin billetera",
@@ -639,32 +718,40 @@ const es: Dict = {
   "toast.friendbotReceived": "¡Recibidos XLM de testnet de Friendbot!",
   "toast.openingTrustline": "Abriendo trustline de USDC y adquiriendo USDC…",
   "toast.fundSuccess": "¡Billetera de testnet fondeada! Trustline de USDC abierta y tokens adquiridos.",
-  "toast.fundNoLiquidity": "Trustline de USDC abierta, pero sin liquidez en el DEX para intercambiar. Puede que debas adquirir USDC manualmente.",
+  "toast.fundNoLiquidity":
+    "Trustline de USDC abierta, pero sin liquidez en el DEX para intercambiar. Puede que debas adquirir USDC manualmente.",
   "toast.fundFailed": "Fondeo fallido: {msg}",
-  "toast.signInWallet": "Firma \"{label}\" en tu billetera…",
-  "toast.submitting": "Enviando \"{label}\"…",
-  "toast.confirmed": "¡\"{label}\" confirmada!",
+  "toast.signInWallet": 'Firma "{label}" en tu billetera…',
+  "toast.submitting": 'Enviando "{label}"…',
+  "toast.confirmed": '¡"{label}" confirmada!',
   "toast.loadFailed": "Carga fallida: {msg}",
   "toast.poolFrozenOpen": "El pool está congelado — no se pueden abrir nuevas posiciones",
   "toast.poolFrozenAddFunds": "El pool está congelado — no se pueden añadir fondos",
   "toast.enterValidAmount": "Ingresa un monto válido",
   "toast.hfTooLow": "HF demasiado bajo — reduce el apalancamiento",
-  "toast.firstBorrowExceeds": "El primer paso de préstamo ({first}) supera lo disponible en el pool tras el depósito ({avail} {sym}). Reduce el apalancamiento.",
+  "toast.firstBorrowExceeds":
+    "El primer paso de préstamo ({first}) supera lo disponible en el pool tras el depósito ({avail} {sym}). Reduce el apalancamiento.",
   "toast.trustlineCheckFailed": "Verificación de trustline fallida: {msg}",
-  "toast.trustlineLimit": "Añadir {n} trustline(s) superaría el límite de Stellar de 1.000. Actualmente tienes {current}. Elimina trustlines sin usar antes de depositar.",
+  "toast.trustlineLimit":
+    "Añadir {n} trustline(s) superaría el límite de Stellar de 1.000. Actualmente tienes {current}. Elimina trustlines sin usar antes de depositar.",
   "toast.txFailed": "Transacción fallida",
   "toast.hfTooLowErr": "Factor de salud demasiado bajo — reduce el apalancamiento.",
-  "toast.utilLimitBorrow": "Límite de utilización del pool alcanzado — no hay suficiente liquidez para este préstamo. Reduce el apalancamiento o deposita.",
-  "toast.utilLimitAddFunds": "Límite de utilización del pool alcanzado — no hay suficiente liquidez. Reduce el apalancamiento o deposita.",
+  "toast.utilLimitBorrow":
+    "Límite de utilización del pool alcanzado — no hay suficiente liquidez para este préstamo. Reduce el apalancamiento o deposita.",
+  "toast.utilLimitAddFunds":
+    "Límite de utilización del pool alcanzado — no hay suficiente liquidez. Reduce el apalancamiento o deposita.",
   "toast.closeTwoSteps": "Utilización del pool alta — cerrando en dos pasos…",
-  "toast.utilWithdrawAll": "Utilización del pool demasiado alta para retirar todo el colateral. La deuda se repagó — intenta retirar más tarde cuando mejore la liquidez.",
-  "toast.utilCloseTooHigh": "Utilización del pool demasiado alta — no hay suficiente liquidez para cerrar. Inténtalo más tarde.",
+  "toast.utilWithdrawAll":
+    "Utilización del pool demasiado alta para retirar todo el colateral. La deuda se repagó — intenta retirar más tarde cuando mejore la liquidez.",
+  "toast.utilCloseTooHigh":
+    "Utilización del pool demasiado alta — no hay suficiente liquidez para cerrar. Inténtalo más tarde.",
   "toast.noPositionsClaim": "No hay posiciones de las que reclamar",
   "toast.targetSameAsCurrent": "El apalancamiento objetivo es igual al actual",
   "toast.hfTooLowTarget": "HF demasiado bajo en el apalancamiento objetivo — reduce el objetivo",
   "toast.adjustFailed": "Ajuste de apalancamiento fallido",
   "toast.hfTooLowTargetErr": "Factor de salud demasiado bajo — reduce el apalancamiento objetivo.",
-  "toast.utilLimitTarget": "Límite de utilización del pool alcanzado — no hay suficiente liquidez. Reduce el apalancamiento objetivo.",
+  "toast.utilLimitTarget":
+    "Límite de utilización del pool alcanzado — no hay suficiente liquidez. Reduce el apalancamiento objetivo.",
   "toast.noAssetResupply": "No tienes {sym} en la billetera para reaportar",
   "toast.resupplyFailed": "Reaporte fallido",
   "toast.noBlndConvert": "No hay BLND para convertir",
@@ -700,7 +787,8 @@ const pt: Dict = {
   "nav.settings": "Configurações",
   "nav.status": "Status",
   "hero.title": "Trading alavancado na Stellar. Simplificado.",
-  "hero.subtitle": "Abra posições compradas alavancadas nos pools da Blend Protocol com um clique. Sem perps, sem taxas de financiamento — apenas loops de empréstimo recursivos.",
+  "hero.subtitle":
+    "Abra posições compradas alavancadas nos pools da Blend Protocol com um clique. Sem perps, sem taxas de financiamento — apenas loops de empréstimo recursivos.",
   "hero.launch": "Abrir app",
   "hero.demo": "Ver demo",
   "connect.prompt": "Conecte sua carteira para começar",
@@ -719,9 +807,11 @@ const pt: Dict = {
   "settings.alerts": "Configurar alertas",
   "settings.tour": "Fazer o tour",
   "settings.language": "Idioma",
-  "settings.expertTip": "Modo avançado: reduz o fator de saúde mínimo para 1.00001 (≈0,001% da liquidação). Apenas para quem monitora ativamente.",
+  "settings.expertTip":
+    "Modo avançado: reduz o fator de saúde mínimo para 1.00001 (≈0,001% da liquidação). Apenas para quem monitora ativamente.",
   "expert.confirmTitle": "Ativar o modo avançado?",
-  "expert.confirmBody": "Isso permite posições com HF tão baixo quanto 1.00001 — cerca de 0,001% da liquidação. Ative apenas se você monitora ativamente sua posição e consegue pagar/reaportar instantaneamente.",
+  "expert.confirmBody":
+    "Isso permite posições com HF tão baixo quanto 1.00001 — cerca de 0,001% da liquidação. Ative apenas se você monitora ativamente sua posição e consegue pagar/reaportar instantaneamente.",
   "expert.enable": "Ativar",
   "confirm.title": "Revise sua posição",
   "confirm.leverage": "Alavancagem",
@@ -738,24 +828,34 @@ const pt: Dict = {
   "risk.caution": "Cautela",
   "risk.high": "Risco alto",
   "risk.nearLiq": "Perto da liquidação",
-  "warn.negApy": "⚠ O APY líquido projetado é negativo nesta alavancagem — você pagaria mais em custo de empréstimo do que ganha.",
-  "warn.frozenPool": "⚠ Este pool está congelado. Novas posições não podem ser abertas e sair pode ser difícil — evite adicionar exposição aqui.",
-  "warn.highUtil": "⚠ A utilização do pool está muito alta. A liquidez está apertada, então sair pode ser difícil e o risco de liquidação forçada aumenta.",
+  "warn.negApy":
+    "⚠ O APY líquido projetado é negativo nesta alavancagem — você pagaria mais em custo de empréstimo do que ganha.",
+  "warn.frozenPool":
+    "⚠ Este pool está congelado. Novas posições não podem ser abertas e sair pode ser difícil — evite adicionar exposição aqui.",
+  "warn.highUtil":
+    "⚠ A utilização do pool está muito alta. A liquidez está apertada, então sair pode ser difícil e o risco de liquidação forçada aumenta.",
   "learn.title": "Como funciona a alavancagem / termos-chave",
-  "learn.body": "O loop de alavancagem fornece repetidamente seu ativo como colateral e toma emprestado contra ele, acumulando exposição sobre um único depósito. O fator de saúde (HF) mede quão segura é a posição: quando o HF cai abaixo de 1.0, sua posição é liquidada e você perde colateral. O fator de colateral (c_factor) limita quanto você pode tomar emprestado por unidade de colateral — um c_factor maior permite mais alavancagem. Movimentos de preço adversos ou taxas de empréstimo crescentes reduzem seu HF ao longo do tempo, aproximando você da liquidação.",
+  "learn.body":
+    "O loop de alavancagem fornece repetidamente seu ativo como colateral e toma emprestado contra ele, acumulando exposição sobre um único depósito. O fator de saúde (HF) mede quão segura é a posição: quando o HF cai abaixo de 1.0, sua posição é liquidada e você perde colateral. O fator de colateral (c_factor) limita quanto você pode tomar emprestado por unidade de colateral — um c_factor maior permite mais alavancagem. Movimentos de preço adversos ou taxas de empréstimo crescentes reduzem seu HF ao longo do tempo, aproximando você da liquidação.",
   "swap.route": "Rota",
   "alert.hfLabel": "Notificar também quando o fator de saúde cair abaixo de",
-  "vault.keeperNote": "Keeper de rebalanceamento automático — monitora o fator de saúde e desfaz parcialmente o loop quando o HF cai abaixo do mínimo, protegendo todos os depositantes. Aplica-se apenas às posições do cofre.",
+  "vault.keeperNote":
+    "O keeper de rebalanceamento automático monitora o fator de saúde e desfaz parcialmente o loop quando o HF entra na zona laranja",
+  "vault.keeperNoteTail":
+    ", restaurando-o a esse limite e protegendo todos os depositantes. Aplica-se apenas às posições do cofre; o rebalanceamento é sem permissão.",
   "vault.yourPosition": "Sua posição",
   "vault.yourEquity": "Seu patrimônio",
   "vault.shareOfVault": "Parte do cofre",
   "vault.tradeOnAquariusTitle": "Negocie sua posição na Aquarius",
-  "vault.tradeOnAquariusSub": "Seu depósito no cofre é um token de recibo SEP-41 transferível. Uma vez listado, ele é negociado contra USDC na Aquarius, para que você saia sem desfazer o loop de alavancagem on-chain.",
+  "vault.tradeOnAquariusSub":
+    "Seu depósito no cofre é um token de recibo SEP-41 transferível. Uma vez listado, ele é negociado contra USDC na Aquarius, para que você saia sem desfazer o loop de alavancagem on-chain.",
   "vault.receiptToken": "Token de recibo",
   "vault.tradeCta": "Negociar na Aquarius",
-  "vault.listingPending": "Listagem na Aquarius após o lançamento do cofre na mainnet. O token de recibo será negociado contra USDC, para que você saia da posição alavancada sem desfazer o loop on-chain.",
+  "vault.listingPending":
+    "Listagem na Aquarius após o lançamento do cofre na mainnet. O token de recibo será negociado contra USDC, para que você saia da posição alavancada sem desfazer o loop on-chain.",
   "compare.title": "Comparar pools",
-  "compare.subtitle": "APY líquido ao vivo de cada pool e ativo da Blend, ordenado pelo melhor rendimento alavancado. Melhor taxa de troca via Aquarius. Sem carteira.",
+  "compare.subtitle":
+    "APY líquido ao vivo de cada pool e ativo da Blend, ordenado pelo melhor rendimento alavancado. Melhor taxa de troca via Aquarius. Sem carteira.",
   "compare.col.rank": "#",
   "compare.col.poolAsset": "Pool / Ativo",
   "compare.col.baseApy": "APY base",
@@ -767,20 +867,25 @@ const pt: Dict = {
   "compare.loading": "Carregando pools…",
   "compare.empty": "Nenhum pool disponível.",
   "compare.bestRate": "Melhor taxa",
-  "compare.foot": "Alav. máx e APY alavancado usam o mesmo fator de saúde mínimo do formulário de trading, então correspondem à posição que você realmente pode abrir; os resultados reais dependem da variação das taxas e do gas. A taxa da Aquarius é uma cotação indicativa de 1 unidade → USDC via roteador do AMM. A tendência mostra o histórico de APY de fornecimento líquido do serviço de snapshots da Turbolong.",
+  "compare.foot":
+    "Alav. máx e APY alavancado usam o mesmo fator de saúde mínimo do formulário de trading, então correspondem à posição que você realmente pode abrir; os resultados reais dependem da variação das taxas e do gas. A taxa da Aquarius é uma cotação indicativa de 1 unidade → USDC via roteador do AMM. A tendência mostra o histórico de APY de fornecimento líquido do serviço de snapshots da Turbolong.",
   "tour.skip": "Pular",
   "tour.next": "Próximo",
   "tour.back": "Voltar",
   "tour.done": "Entendi",
   "tour.dontShow": "Não mostrar novamente",
   "tour.welcome.title": "Bem-vindo à Turbolong",
-  "tour.welcome.body": "Posições compradas alavancadas em um clique nos pools da Blend na Stellar. Aqui está o tour de 30 segundos.",
+  "tour.welcome.body":
+    "Posições compradas alavancadas em um clique nos pools da Blend na Stellar. Aqui está o tour de 30 segundos.",
   "tour.trade.title": "Operar — abra um loop alavancado",
-  "tour.trade.body": "Escolha um pool e um ativo, selecione sua alavancagem e abra uma posição. O loop roda de forma atômica. Seu fator de saúde (HF) mostra o quão perto você está da liquidação — se o HF cair abaixo de 1.0 você perde colateral, então acompanhe-o ao aumentar a alavancagem. Nota: o keeper de rebalanceamento automático protege as posições do cofre, não as posições manuais de Operar — aqui você monitora e ajusta seu próprio HF.",
+  "tour.trade.body":
+    "Escolha um pool e um ativo, selecione sua alavancagem e abra uma posição. O loop roda de forma atômica. Seu fator de saúde (HF) mostra o quão perto você está da liquidação — se o HF cair abaixo de 1.0 você perde colateral, então acompanhe-o ao aumentar a alavancagem. Nota: o keeper de rebalanceamento automático protege as posições do cofre, não as posições manuais de Operar — aqui você monitora e ajusta seu próprio HF.",
   "tour.vault.title": "Cofre — alavancagem passiva",
-  "tour.vault.body": "Deposite em um cofre alavancado gerenciado e receba um token de recibo SEP-41 transferível que você pode negociar na Aquarius depois.",
+  "tour.vault.body":
+    "Deposite em um cofre alavancado gerenciado e receba um token de recibo SEP-41 transferível que você pode negociar na Aquarius depois.",
   "tour.compare.title": "Comparar — encontre o melhor rendimento",
-  "tour.compare.body": "Ordene cada pool e ativo por APY líquido alavancado, com taxas da Aquarius ao vivo e gráficos históricos. Sem carteira.",
+  "tour.compare.body":
+    "Ordene cada pool e ativo por APY líquido alavancado, com taxas da Aquarius ao vivo e gráficos históricos. Sem carteira.",
   "status.title": "Status da Turbolong",
   "status.subtitle": "Saúde ao vivo dos serviços e contratos do protocolo.",
   "status.operational": "Operacional",
@@ -796,17 +901,21 @@ const pt: Dict = {
   "status.someIssues": "Alguns serviços estão degradados",
   "status.autoRefresh": "atualiza a cada 60s",
   "action.removeFunds": "Remover fundos",
-  "removeFunds.disclaimer": "Saca parte do seu principal e desfaz a posição proporcionalmente — sua alavancagem e fator de saúde permanecem iguais.",
+  "removeFunds.disclaimer":
+    "Saca parte do seu principal e desfaz a posição proporcionalmente — sua alavancagem e fator de saúde permanecem iguais.",
   "removeFunds.inPosition": "Na posição",
   "removeFunds.useClose": "Use Fechar para sair completamente.",
   // P4 — disclaimer modal
   "disclaimer.title": "Aviso importante",
-  "disclaimer.body1": "Este é um projeto experimental. Usar posições alavancadas em protocolos DeFi acarreta risco financeiro significativo, incluindo a perda total dos fundos depositados.",
+  "disclaimer.body1":
+    "Este é um projeto experimental. Usar posições alavancadas em protocolos DeFi acarreta risco financeiro significativo, incluindo a perda total dos fundos depositados.",
   "disclaimer.body2": "Ao continuar, você reconhece que:",
   "disclaimer.risk1": "Você entende os riscos das posições alavancadas em DeFi, incluindo a liquidação.",
-  "disclaimer.risk2": "Você usa esta ferramenta inteiramente por sua conta e risco. Os desenvolvedores não assumem responsabilidade por perdas.",
+  "disclaimer.risk2":
+    "Você usa esta ferramenta inteiramente por sua conta e risco. Os desenvolvedores não assumem responsabilidade por perdas.",
   "disclaimer.risk3": "Este software é fornecido como está, sem garantias de correção ou disponibilidade.",
-  "disclaimer.risk4": "Você não está acessando de uma jurisdição onde o uso de ferramentas de finanças descentralizadas ou de criptomoedas é proibido ou restrito por lei.",
+  "disclaimer.risk4":
+    "Você não está acessando de uma jurisdição onde o uso de ferramentas de finanças descentralizadas ou de criptomoedas é proibido ou restrito por lei.",
   "disclaimer.accept": "Entendo e aceito estes termos",
   "disclaimer.enter": "Entrar no app",
   // P4 — landing page
@@ -818,7 +927,8 @@ const pt: Dict = {
   "landing.step1.title": "Conecte a carteira",
   "landing.step1.body": "Use Freighter, Lobstr, xBull ou qualquer carteira Stellar para conectar em segundos.",
   "landing.step2.title": "Escolha ativo e alavancagem",
-  "landing.step2.body": "Selecione um pool e um ativo da Blend, depois defina seu multiplicador de alavancagem com um controle deslizante.",
+  "landing.step2.body":
+    "Selecione um pool e um ativo da Blend, depois defina seu multiplicador de alavancagem com um controle deslizante.",
   "landing.step3.title": "Posição em um clique",
   "landing.step3.body": "A Turbolong executa o loop de empréstimo recursivo de forma atômica. Aprove e envie.",
   "landing.features.title": "Recursos",
@@ -835,7 +945,8 @@ const pt: Dict = {
   "landing.feat6.title": "Construído na Stellar",
   "landing.feat6.body": "Finalidade rápida, taxas baixas e contratos inteligentes Soroban testados em produção.",
   "landing.risk.label": "Aviso de risco:",
-  "landing.risk.body": "Posições alavancadas podem ser liquidadas se o seu fator de saúde cair abaixo de 1.0. Você pode perder todo o seu depósito. Este é um software experimental — use por sua conta e risco.",
+  "landing.risk.body":
+    "Posições alavancadas podem ser liquidadas se o seu fator de saúde cair abaixo de 1.0. Você pode perder todo o seu depósito. Este é um software experimental — use por sua conta e risco.",
   // P4 — mobile sidebar
   "sidebar.blend": "Blend Protocol",
   "sidebar.moreProtocols": "Mais protocolos",
@@ -869,7 +980,16 @@ const pt: Dict = {
   "swap.getQuote": "Obter cotação",
   "swap.selectDifferent": "Selecione ativos diferentes",
   "swap.enterAmount": "Insira um valor",
-  "swap.comingSoon": "Troca (em breve)",
+  "swap.execute": "Trocar",
+  "swap.executing": "Trocando…",
+  "swap.mainnetOnly": "A execução de trocas está disponível apenas na mainnet",
+  "swap.done": "Troca concluída",
+  "swap.recovering": "Recuperando fundos de uma sessão de troca anterior…",
+  "swap.recoverLater":
+    "A devolução dos fundos expirou — eles estão em uma conta temporária e serão recuperados automaticamente na sua próxima troca.",
+  "swap.stepPrepare": "Preparar",
+  "swap.stepTrade": "Negociar",
+  "swap.stepFinalize": "Finalizar",
   "swap.disclaimer1": "As trocas são executadas via",
   "swap.disclaimer2": "para agregação da melhor rota entre as DEXes da Stellar.",
   // P4 — vault view
@@ -879,7 +999,8 @@ const pt: Dict = {
   "vault.sharePrice": "Preço da cota",
   "vault.netApy": "APY líquido",
   "vault.leverageTip": "Multiplicador de alavancagem atual = colateral / patrimônio",
-  "vault.hfTip": "Fator de saúde da estratégia. Abaixo do HF mínimo, qualquer um pode acionar o rebalanceamento para desalavancar.",
+  "vault.hfTip":
+    "Fator de saúde da estratégia. Na zona laranja (abaixo do limite de rebalanceamento), qualquer um pode acionar o rebalanceamento para desalavancar.",
   "vault.healthFactor": "Fator de saúde",
   "vault.minHf": "HF mín.",
   "vault.strategyPosition": "Posição da estratégia",
@@ -891,11 +1012,13 @@ const pt: Dict = {
   "vault.loops": "Loops",
   "vault.rebalance": "Rebalancear",
   "vault.hfHealthy": "O HF está saudável",
-  "vault.hfBelowMin": "HF abaixo do mínimo — rebalanceamento disponível",
+  "vault.hfInOrangeZone": "HF na zona laranja",
+  "vault.rebalanceAvailable": "rebalanceamento disponível",
   "vault.liqLabel": "1.0 liq.",
   "vault.inVault": "No cofre",
   "vault.strategyLabel": "Estratégia:",
-  "vault.disclaimer": "Os depósitos são geridos pela Estratégia da Turbolong na Blend Protocol. Os loops de alavancagem são executados de forma atômica. O rebalanceamento é sem permissão — qualquer um pode acioná-lo quando o HF cai abaixo do limite mínimo para proteger todos os depositantes.",
+  "vault.disclaimer":
+    "Os depósitos são geridos pela Estratégia da Turbolong na Blend Protocol. Os loops de alavancagem são executados de forma atômica. O rebalanceamento é sem permissão — qualquer um pode acioná-lo quando o HF entra na zona laranja para proteger todos os depositantes.",
   // P4 — alert modal
   "alert.title": "Alertas de APY",
   "alert.desc": "Seja notificado quando o APY líquido da sua posição ficar negativo.",
@@ -938,10 +1061,12 @@ const pt: Dict = {
   "dashboard.never": "Nunca",
   "dashboard.over10y": ">10 anos",
   "dashboard.daysApprox": "~{n} dias",
-  "dashboard.interestSpread": "Spread de juros: {pct}%/ano (empréstimo − fornecimento). Reivindique e converta BLND para estender a margem.",
+  "dashboard.interestSpread":
+    "Spread de juros: {pct}%/ano (empréstimo − fornecimento). Reivindique e converta BLND para estender a margem.",
   // #294 — cross-collateralized / account-wide HF
   "pos.crossCollat": "Com garantia cruzada",
-  "pos.crossExplainer": "Posição com garantia cruzada — sua garantia e seus empréstimos estão em ativos diferentes. A liquidação é baseada na Saúde da sua Conta acima, não nas linhas individuais.",
+  "pos.crossExplainer":
+    "Posição com garantia cruzada — sua garantia e seus empréstimos estão em ativos diferentes. A liquidação é baseada na Saúde da sua Conta acima, não nas linhas individuais.",
   "pos.loopHf": "HF do loop",
   // #297 — pool-centric ACCOUNT panel
   "pos.accountHealth": "Saúde da conta",
@@ -955,8 +1080,10 @@ const pt: Dict = {
   "pool.role.loop": "Loop",
   "pool.role.collateral": "Garantia",
   "pool.role.borrow": "Empréstimo",
-  "pool.accountNote": "Um único fator de saúde liquida todo este pool. As linhas são um detalhamento, não posições separadas.",
-  "pool.apyTip": "APY líquido ponderado pelo patrimônio de todas as posições deste pool. Aproximado — os juros da Blend não são capitalizados automaticamente.",
+  "pool.accountNote":
+    "Um único fator de saúde liquida todo este pool. As linhas são um detalhamento, não posições separadas.",
+  "pool.apyTip":
+    "APY líquido ponderado pelo patrimônio de todas as posições deste pool. Aproximado — os juros da Blend não são capitalizados automaticamente.",
   // P4 — toasts
   "toast.demoMode": "Modo demo — conecte uma carteira real para operar",
   "toast.demoExplore": "Modo demo — explore a interface sem carteira",
@@ -968,32 +1095,40 @@ const pt: Dict = {
   "toast.friendbotReceived": "XLM de testnet recebidos do Friendbot!",
   "toast.openingTrustline": "Abrindo trustline de USDC e adquirindo USDC…",
   "toast.fundSuccess": "Carteira de testnet abastecida! Trustline de USDC aberta e tokens adquiridos.",
-  "toast.fundNoLiquidity": "Trustline de USDC aberta, mas sem liquidez na DEX para trocar. Talvez seja necessário adquirir USDC manualmente.",
+  "toast.fundNoLiquidity":
+    "Trustline de USDC aberta, mas sem liquidez na DEX para trocar. Talvez seja necessário adquirir USDC manualmente.",
   "toast.fundFailed": "Abastecimento falhou: {msg}",
-  "toast.signInWallet": "Assine \"{label}\" na sua carteira…",
-  "toast.submitting": "Enviando \"{label}\"…",
-  "toast.confirmed": "\"{label}\" confirmada!",
+  "toast.signInWallet": 'Assine "{label}" na sua carteira…',
+  "toast.submitting": 'Enviando "{label}"…',
+  "toast.confirmed": '"{label}" confirmada!',
   "toast.loadFailed": "Falha ao carregar: {msg}",
   "toast.poolFrozenOpen": "O pool está congelado — não é possível abrir novas posições",
   "toast.poolFrozenAddFunds": "O pool está congelado — não é possível adicionar fundos",
   "toast.enterValidAmount": "Insira um valor válido",
   "toast.hfTooLow": "HF muito baixo — reduza a alavancagem",
-  "toast.firstBorrowExceeds": "O primeiro passo de empréstimo ({first}) excede o disponível no pool após o depósito ({avail} {sym}). Reduza a alavancagem.",
+  "toast.firstBorrowExceeds":
+    "O primeiro passo de empréstimo ({first}) excede o disponível no pool após o depósito ({avail} {sym}). Reduza a alavancagem.",
   "toast.trustlineCheckFailed": "Verificação de trustline falhou: {msg}",
-  "toast.trustlineLimit": "Adicionar {n} trustline(s) excederia o limite da Stellar de 1.000. Você tem {current} atualmente. Remova trustlines não usadas antes de depositar.",
+  "toast.trustlineLimit":
+    "Adicionar {n} trustline(s) excederia o limite da Stellar de 1.000. Você tem {current} atualmente. Remova trustlines não usadas antes de depositar.",
   "toast.txFailed": "Transação falhou",
   "toast.hfTooLowErr": "Fator de saúde muito baixo — reduza a alavancagem.",
-  "toast.utilLimitBorrow": "Limite de utilização do pool atingido — sem liquidez suficiente para este empréstimo. Reduza a alavancagem ou deposite.",
-  "toast.utilLimitAddFunds": "Limite de utilização do pool atingido — sem liquidez suficiente. Reduza a alavancagem ou deposite.",
+  "toast.utilLimitBorrow":
+    "Limite de utilização do pool atingido — sem liquidez suficiente para este empréstimo. Reduza a alavancagem ou deposite.",
+  "toast.utilLimitAddFunds":
+    "Limite de utilização do pool atingido — sem liquidez suficiente. Reduza a alavancagem ou deposite.",
   "toast.closeTwoSteps": "Utilização do pool alta — fechando em duas etapas…",
-  "toast.utilWithdrawAll": "Utilização do pool alta demais para sacar todo o colateral. A dívida foi paga — tente sacar mais tarde quando a liquidez melhorar.",
-  "toast.utilCloseTooHigh": "Utilização do pool alta demais — sem liquidez suficiente para fechar. Tente novamente mais tarde.",
+  "toast.utilWithdrawAll":
+    "Utilização do pool alta demais para sacar todo o colateral. A dívida foi paga — tente sacar mais tarde quando a liquidez melhorar.",
+  "toast.utilCloseTooHigh":
+    "Utilização do pool alta demais — sem liquidez suficiente para fechar. Tente novamente mais tarde.",
   "toast.noPositionsClaim": "Nenhuma posição para reivindicar",
   "toast.targetSameAsCurrent": "A alavancagem alvo é igual à atual",
   "toast.hfTooLowTarget": "HF muito baixo na alavancagem alvo — reduza o alvo",
   "toast.adjustFailed": "Ajuste de alavancagem falhou",
   "toast.hfTooLowTargetErr": "Fator de saúde muito baixo — reduza a alavancagem alvo.",
-  "toast.utilLimitTarget": "Limite de utilização do pool atingido — sem liquidez suficiente. Reduza a alavancagem alvo.",
+  "toast.utilLimitTarget":
+    "Limite de utilização do pool atingido — sem liquidez suficiente. Reduza a alavancagem alvo.",
   "toast.noAssetResupply": "Sem {sym} na carteira para reaportar",
   "toast.resupplyFailed": "Reaporte falhou",
   "toast.noBlndConvert": "Sem BLND para converter",

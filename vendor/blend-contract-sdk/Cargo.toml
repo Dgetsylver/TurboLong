@@ -1,0 +1,25 @@
+[package]
+name = "blend-contract-sdk"
+version = "2.25.0"
+description = "Traits, clients, types, and WASMs for the Blend Protocol for use in Soroban contract development."
+homepage = "https://github.com/blend-capital/blend-contract-sdk"
+repository = "https://github.com/blend-capital/blend-contract-sdk"
+license = "MIT"
+edition = "2021"
+readme = "README.md"
+keywords = ["no_std", "wasm", "soroban"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+testutils = [
+    "soroban-sdk/testutils",
+]
+
+[dependencies]
+soroban-sdk = { version = "26.0.1" }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }

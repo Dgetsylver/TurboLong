@@ -20,22 +20,11 @@ export interface ModalProps {
   children?: Child | Child[];
 }
 
-const kids = (c: Child | Child[] | undefined): Child[] =>
-  c == null ? [] : Array.isArray(c) ? c : [c];
+const kids = (c: Child | Child[] | undefined): Child[] => (c == null ? [] : Array.isArray(c) ? c : [c]);
 
 /** Centered dialog over a blurred scrim. Closes on Esc / backdrop / ✕. */
 export function Modal(props: ModalProps): HTMLElement | null {
-  const {
-    open,
-    onClose,
-    title,
-    icon,
-    footer,
-    width = 480,
-    closeOnBackdrop = true,
-    id,
-    children,
-  } = props;
+  const { open, onClose, title, icon, footer, width = 480, closeOnBackdrop = true, id, children } = props;
 
   if (!open) return null;
 
@@ -44,20 +33,12 @@ export function Modal(props: ModalProps): HTMLElement | null {
     title != null || onClose
       ? el("div", { class: "tl-modal__head" }, [
           el("div", { class: "tl-modal__heading" }, [
-            icon != null
-              ? el("span", { class: "tl-modal__icon", "aria-hidden": "true" }, kids(icon))
-              : null,
-            title != null
-              ? el("h2", { class: "tl-modal__title" }, kids(title))
-              : null,
+            icon != null ? el("span", { class: "tl-modal__icon", "aria-hidden": "true" }, kids(icon)) : null,
+            title != null ? el("h2", { class: "tl-modal__title" }, kids(title)) : null,
           ]),
           onClose
             ? (() => {
-                const x = el(
-                  "button",
-                  { class: "tl-modal__close", type: "button", "aria-label": "Close" },
-                  ["✕"],
-                );
+                const x = el("button", { class: "tl-modal__close", type: "button", "aria-label": "Close" }, ["✕"]);
                 x.addEventListener("click", onClose);
                 return x;
               })()
@@ -67,8 +48,7 @@ export function Modal(props: ModalProps): HTMLElement | null {
 
   const body = el("div", { class: "tl-modal__body" }, kids(children));
 
-  const foot =
-    footer != null ? el("div", { class: "tl-modal__footer" }, kids(footer)) : null;
+  const foot = footer != null ? el("div", { class: "tl-modal__footer" }, kids(footer)) : null;
 
   // ── Dialog card ──
   const card = el(

@@ -39,15 +39,7 @@ export function zoneFromHF(hf: number): HealthZone {
  * marker pulses red.
  */
 export function HealthFactor(props: HealthFactorProps): HTMLDivElement {
-  const {
-    value,
-    maxScale = 3,
-    showLabel = true,
-    label = "Health Factor",
-    labelTitle,
-    class: extraClass,
-    id,
-  } = props;
+  const { value, maxScale = 3, showLabel = true, label = "Health Factor", labelTitle, class: extraClass, id } = props;
 
   const z = zoneFromHF(value);
   const pos = Math.max(0, Math.min(1, (value - 1) / (maxScale - 1))) * 100;
@@ -71,7 +63,9 @@ export function HealthFactor(props: HealthFactorProps): HTMLDivElement {
         )
       : null,
     el("span", { class: "tl-hf__readout" }, [
-      el("span", { class: "tl-hf__value", style: `color:${z.tone}` }, [Number.isFinite(value) ? value.toFixed(4) : "∞"]),
+      el("span", { class: "tl-hf__value", style: `color:${z.tone}` }, [
+        Number.isFinite(value) ? value.toFixed(4) : "∞",
+      ]),
       el("span", { class: "tl-hf__zone", style: `color:${z.tone}` }, [z.label]),
     ]),
   ]);
@@ -82,20 +76,12 @@ export function HealthFactor(props: HealthFactorProps): HTMLDivElement {
     style: `left:${pos}%;background:${z.tone};box-shadow:0 0 var(--tl-space-3) ${z.tone}`,
   });
 
-  const track = el("div", { class: "tl-hf__track" }, [
-    el("div", { class: "tl-hf__gradient" }),
-    fill,
-    marker,
-  ]);
+  const track = el("div", { class: "tl-hf__track" }, [el("div", { class: "tl-hf__gradient" }), fill, marker]);
 
   const scale = el("div", { class: "tl-hf__scale" }, [
     el("span", { class: "tl-hf__scale-liq" }, ["1.0 liq"]),
     el("span", {}, [`${maxScale.toFixed(1)}+ safe`]),
   ]);
 
-  return el(
-    "div",
-    { class: cls, ...(id ? { id } : {}) },
-    [header, track, scale],
-  ) as HTMLDivElement;
+  return el("div", { class: cls, ...(id ? { id } : {}) }, [header, track, scale]) as HTMLDivElement;
 }

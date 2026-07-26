@@ -980,6 +980,118 @@ fn test_partial_unwind_restores_hf_to_target() {
 }
 
 #[test]
+fn test_partial_unwind_boundary_hf_exactly_at_target_is_noop() {
+    // HF lands EXACTLY on the target (1e7-scale equality): b/d = target/c.
+    // c = 0.90, target = 1.15 → b/d = 23/18. HF = 2300×0.9/1800 = 1.15 exactly.
+    let (repay, loops) = compute_partial_unwind(
+        2_300_0000000,
+        1_800_0000000,
+        SCALAR_12,
+        SCALAR_12,
+        9_000_000,
+        11_500_000,
+    )
+    .unwrap();
+    assert_eq!(repay, 0, "at-target boundary must be a no-op");
+    assert_eq!(loops, 0);
+}
+
+#[test]
+fn test_partial_unwind_one_stroop_below_target_minimal_repay() {
+    // One d-token stroop past the exact boundary: HF = floor just below target.
+    let b = 2_300_0000000_i128;
+    let d = 1_800_0000001_i128;
+    let c = 9_000_000_i128;
+    let target = 11_500_000_i128;
+
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+    assert!(hf0 < target, "fixture must sit just below target: {}", hf0);
+
+    let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+    assert!(loops >= 1);
+    assert!(
+        repay > 0 && repay < 100,
+        "a 1-stroop breach needs only a few stroops of repay, got {}",
+        repay
+    );
+
+    let hf_new = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+    assert!(hf_new >= target, "restored: {} >= {}", hf_new, target);
+}
+
+#[test]
+fn test_partial_unwind_zero_equity_clamps_to_full_close() {
+    // Zero equity (B == D): the closed form yields x >= D — must clamp to the
+    // debt (full close), never an over-repay.
+    let b = 1_000_0000000_i128;
+    let d = 1_000_0000000_i128;
+    let (repay, loops) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, 11_500_000).unwrap();
+    assert_eq!(
+        repay, d,
+        "zero equity resolves to a full close (repay == debt)"
+    );
+    assert!((1..=20).contains(&loops), "loops={} out of range", loops);
+}
+
+#[test]
+fn test_partial_unwind_negative_equity_clamps_to_full_close() {
+    // Underwater (B < D): x > D from the closed form — clamp at the debt so the
+    // caller can never be told to repay more than is owed.
+    let b = 900_0000000_i128;
+    let d = 1_000_0000000_i128;
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, 9_000_000).unwrap();
+    assert!(hf0 < SCALAR_7, "fixture must be underwater: {}", hf0);
+
+    let (repay, loops) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, 11_500_000).unwrap();
+    assert_eq!(repay, d, "never over-repay: clamp at the outstanding debt");
+    assert!((1..=20).contains(&loops), "loops={} out of range", loops);
+}
+
+#[test]
+fn test_partial_unwind_hf_below_one_but_salvageable() {
+    // HF < 1.0 (liquidatable) but equity still positive: a partial unwind can
+    // rescue the position without a full close.
+    let b = 1_000_0000000_i128;
+    let d = 940_0000000_i128;
+    let c = 9_000_000_i128;
+    let target = 11_500_000_i128;
+
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+    assert!(hf0 < SCALAR_7, "fixture must be below 1.0: {}", hf0);
+
+    let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+    assert!(
+        repay > 0 && repay < d,
+        "partial, not full close: repay={}",
+        repay
+    );
+    assert!((1..=20).contains(&loops));
+
+    let hf_new = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+    assert!(
+        hf_new >= target,
+        "rescued to target: {} >= {}",
+        hf_new,
+        target
+    );
+}
+
+#[test]
+fn test_partial_unwind_dust_position_layer_rounds_to_zero() {
+    // Dust position: the layer size (debt × (1-c)) floors to 0 stroops. The
+    // function must still return a sane (repay ≤ debt, loops = 1) answer
+    // instead of dividing by zero.
+    let b = 5_i128;
+    let d = 5_i128;
+    let (repay, loops) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_500_000, 11_500_000).unwrap();
+    assert!(repay > 0 && repay <= d, "repay within debt: {}", repay);
+    assert_eq!(loops, 1, "dust position unwinds in a single loop");
+}
+
+#[test]
 fn test_partial_unwind_with_accrued_rates_is_sane() {
     // Debt grew faster than supply (b_rate 1.05, d_rate 1.10) — HF degraded.
     let c = 9_000_000_i128;
