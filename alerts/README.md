@@ -41,7 +41,18 @@ npm install
 - `POST /push/subscribe` — body: `{ subscription, pool_id, asset_symbol, leverage_bracket }`
 - `GET /push/unsubscribe?token=` — remove subscription
 
-Cron (every 15 min) sends push for the same negative-APY events as email, with the same 24h throttle.
+Cron (every 15 min) sends push for the same negative-APY events as email, with the same one-per-episode latch.
+
+## Alert cadence
+
+Alerts are edge-triggered — one notification per breach episode, not one per cron tick:
+
+- A subscription fires when the condition is first breached, then latches (`alert_active = 1`) and stays quiet for as long as the condition holds.
+- It re-arms only after the metric recovers past a margin (net APY back above +0.25pp; health factor back above `threshold + 0.02`). The margin is hysteresis, so a value sitting right on the threshold can't mail on every flip.
+- `MIN_REALERT_HOURS` (1h) floors the gap between two sends for the same subscription even across a genuine recover-then-breach cycle.
+- Re-subscribing clears the latch.
+
+Existing databases need `migrations/0003_edge_triggered_alerts.sql`.
 
 ## Stellar Broker relay
 

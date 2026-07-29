@@ -23,6 +23,11 @@
  * Cron (every 15 min):
  *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
  *   → HF / liquidation-imminent alerts → prune snapshots past 365 days.
+ *
+ * Alerts are edge-triggered: a subscription gets one email (and one push) when
+ * the condition is first breached, then stays latched (`alert_active`) until
+ * the metric recovers past the re-arm margin. A position that stays underwater
+ * for a week produces one email, not one per tick or per day.
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
@@ -31,10 +36,23 @@ import { sendApyPush } from "./push.ts";
 
 /** Liquidation-imminent HF threshold. */
 const LIQUIDATION_HF = 1.05;
-/** Minimum hours between repeat HF/liquidation alerts for a subscription. */
-const HF_ALERT_DEBOUNCE_HOURS = 6;
 /** Snapshot retention window. */
 const SNAPSHOT_RETENTION_DAYS = 365;
+
+// ── Alert latching ───────────────────────────────────────────────────────────
+// Alerts are edge-triggered: one email (and one push) per breach episode, not
+// one per cron tick. A subscription latches (`alert_active = 1`) when it fires
+// and only re-arms once the metric recovers past a margin — the margin is
+// hysteresis, so a value hovering right at the threshold can't mail the user
+// on every flip. MIN_REALERT_HOURS is a floor on top of that: even a genuine
+// recover-then-breach cycle can't produce two emails inside the hour.
+
+/** Net APY (percentage points) a bracket must regain before APY alerts re-arm. */
+const APY_REARM_MARGIN_PCT = 0.25;
+/** Health factor a position must regain above its threshold before HF alerts re-arm. */
+const HF_REARM_MARGIN = 0.02;
+/** Floor between two sends for the same subscription, across episodes. */
+const MIN_REALERT_HOURS = 1;
 
 interface Env {
   DB: D1Database;
@@ -175,7 +193,8 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
       INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token, alert_type, hf_threshold)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket, alert_type) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, hf_threshold = ?8, verified = 0
+        SET verify_token = ?5, unsub_token = ?6, hf_threshold = ?8, verified = 0,
+            alert_active = 0, last_alerted_at = NULL, last_fired_at = NULL
     `).bind(email, pool_id, asset_symbol, target.lev, verifyToken, unsubToken, alertType, hfThreshold).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
@@ -221,7 +240,8 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 <head><meta charset="utf-8"><title>Verified</title></head>
 <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 60px 20px;">
   <h2 style="color: #2DE8A3;">Subscription Verified!</h2>
-  <p>You'll receive an alert when your position's net APY turns negative.</p>
+  <p>You'll receive an alert when your position's net APY turns negative — once per
+     episode, not repeatedly. We'll alert you again after rates recover and turn negative anew.</p>
 </body>
 </html>`);
 }
@@ -287,7 +307,7 @@ async function handlePushSubscribe(request: Request, env: Env): Promise<Response
       INSERT INTO push_subscriptions (endpoint, p256dh, auth, pool_id, asset_symbol, leverage_bracket, unsub_token)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
       ON CONFLICT(endpoint, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET p256dh = ?2, auth = ?3, unsub_token = ?7, last_alerted_at = NULL
+        SET p256dh = ?2, auth = ?3, unsub_token = ?7, last_alerted_at = NULL, alert_active = 0
     `).bind(endpoint, p256dh, auth, pool_id, asset_symbol, target.lev, unsubToken).run();
   } catch (e: any) {
     console.error("Push DB insert failed:", e);
@@ -346,7 +366,8 @@ async function alertEmailSubscribers(
       AND leverage_bracket = ?3
       AND alert_type = 'apy'
       AND verified = 1
-      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
+      AND alert_active = 0
+      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-${MIN_REALERT_HOURS} hours'))
   `).bind(pool.id, asset.symbol, bracket).all();
 
   if (!subs.results?.length) return;
@@ -372,7 +393,7 @@ async function alertEmailSubscribers(
 
     if (result.ok) {
       await env.DB.prepare(
-        "UPDATE subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+        "UPDATE subscriptions SET last_alerted_at = datetime('now'), alert_active = 1 WHERE id = ?1"
       ).bind(sub.id).run();
     } else {
       console.error(`[cron] Failed to send email alert to ${sub.email}:`, result.error);
@@ -395,7 +416,8 @@ async function alertPushSubscribers(
     WHERE pool_id = ?1
       AND asset_symbol = ?2
       AND leverage_bracket = ?3
-      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
+      AND alert_active = 0
+      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-${MIN_REALERT_HOURS} hours'))
   `).bind(pool.id, asset.symbol, bracket).all();
 
   if (!subs.results?.length) return;
@@ -421,7 +443,7 @@ async function alertPushSubscribers(
 
     if (result.ok) {
       await env.DB.prepare(
-        "UPDATE push_subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+        "UPDATE push_subscriptions SET last_alerted_at = datetime('now'), alert_active = 1 WHERE id = ?1"
       ).bind(sub.id).run();
     } else if (result.gone) {
       await env.DB.prepare("DELETE FROM push_subscriptions WHERE id = ?1").bind(sub.id).run();
@@ -429,6 +451,44 @@ async function alertPushSubscribers(
     } else {
       console.error(`[cron] Failed to send push alert to ${sub.endpoint}:`, result.error);
     }
+  }
+}
+
+/**
+ * Re-arm APY subscribers on every bracket whose net APY has recovered past the
+ * margin. Until this runs, a latched subscription stays silent — it is the only
+ * path back to "will alert again". Batched per asset: the common case is that
+ * nothing is latched, and this runs every tick for every asset.
+ */
+async function rearmApySubscribers(
+  env: Env,
+  pool: { id: string; name: string },
+  asset: { symbol: string },
+  brackets: number[],
+): Promise<void> {
+  if (!brackets.length) return;
+  const levList = brackets.map((_, i) => `?${i + 3}`).join(", ");
+
+  try {
+    const [email, push] = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE subscriptions SET alert_active = 0
+        WHERE pool_id = ?1 AND asset_symbol = ?2 AND leverage_bracket IN (${levList})
+          AND alert_type = 'apy' AND alert_active = 1
+      `).bind(pool.id, asset.symbol, ...brackets),
+      env.DB.prepare(`
+        UPDATE push_subscriptions SET alert_active = 0
+        WHERE pool_id = ?1 AND asset_symbol = ?2 AND leverage_bracket IN (${levList})
+          AND alert_active = 1
+      `).bind(pool.id, asset.symbol, ...brackets),
+    ]);
+
+    const cleared = (email.meta.changes ?? 0) + (push.meta.changes ?? 0);
+    if (cleared) {
+      console.log(`[cron] Re-armed ${cleared} APY subscription(s) for ${asset.symbol} on ${pool.name} at ${brackets.join("x, ")}x`);
+    }
+  } catch (e) {
+    console.error(`[cron] APY re-arm failed for ${asset.symbol} on ${pool.name}:`, e);
   }
 }
 
@@ -449,7 +509,11 @@ async function writeSnapshot(env: Env, pool: { id: string }, asset: { symbol: st
   }
 }
 
-/** Fire HF / liquidation-imminent alerts for verified subscribers. */
+/**
+ * Fire HF / liquidation-imminent alerts for verified subscribers — once per
+ * episode. A row that already alerted stays latched until its health factor
+ * climbs back above `threshold + HF_REARM_MARGIN`.
+ */
 async function alertHfSubscribers(
   env: Env,
   pool: { id: string; name: string },
@@ -460,7 +524,7 @@ async function alertHfSubscribers(
   let rows: any;
   try {
     rows = await env.DB.prepare(`
-      SELECT id, email, leverage_bracket, alert_type, hf_threshold, unsub_token, last_fired_at
+      SELECT id, email, leverage_bracket, alert_type, hf_threshold, unsub_token, last_fired_at, alert_active
       FROM subscriptions
       WHERE verified = 1 AND pool_id = ?1 AND asset_symbol = ?2 AND alert_type IN ('hf','liquidation')
     `).bind(pool.id, asset.symbol).all();
@@ -475,12 +539,25 @@ async function alertHfSubscribers(
     const hf = computeHealthFactor(rates, lev);
     const liquidation = row.alert_type === "liquidation";
     const threshold = liquidation ? LIQUIDATION_HF : Number(row.hf_threshold);
-    if (!Number.isFinite(threshold) || hf >= threshold) continue;
+    if (!Number.isFinite(threshold)) continue;
 
-    // Debounce.
+    if (hf >= threshold) {
+      // Recovered past the margin → re-arm for the next episode. In the band
+      // between threshold and margin we leave the latch alone (hysteresis).
+      if (row.alert_active && hf >= threshold + HF_REARM_MARGIN) {
+        await env.DB.prepare(`UPDATE subscriptions SET alert_active = 0 WHERE id = ?1`).bind(row.id).run();
+        console.log(`[cron] Re-armed HF subscription ${row.id} for ${asset.symbol}@${lev}x (HF ${hf.toFixed(3)})`);
+      }
+      continue;
+    }
+
+    // Breached — but this episode has already been mailed.
+    if (row.alert_active) continue;
+
+    // Floor between sends, so a fast recover/re-breach cycle can't double up.
     if (row.last_fired_at) {
       const lastMs = Date.parse((row.last_fired_at as string).replace(" ", "T") + "Z");
-      if (Number.isFinite(lastMs) && nowMs - lastMs < HF_ALERT_DEBOUNCE_HOURS * 3600_000) continue;
+      if (Number.isFinite(lastMs) && nowMs - lastMs < MIN_REALERT_HOURS * 3600_000) continue;
     }
 
     const result = await sendHfAlert(
@@ -498,7 +575,9 @@ async function alertHfSubscribers(
       },
     );
     if (result.ok) {
-      await env.DB.prepare(`UPDATE subscriptions SET last_fired_at = datetime('now') WHERE id = ?1`).bind(row.id).run();
+      await env.DB.prepare(
+        `UPDATE subscriptions SET last_fired_at = datetime('now'), alert_active = 1 WHERE id = ?1`,
+      ).bind(row.id).run();
     } else {
       console.error(`[cron] Failed to send HF alert to ${row.email}:`, result.error);
     }
@@ -538,14 +617,20 @@ async function handleCron(env: Env, requestBase?: string): Promise<void> {
       // Record the snapshot every tick (15 min).
       await writeSnapshot(env, pool, asset, rates);
 
-      // APY-negative alerts.
+      // APY-negative alerts — one per episode; recovery past the margin
+      // re-arms the subscription for the next one.
+      const recovered: number[] = [];
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
-        if (netApy >= 0) continue;
-        console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
-        await alertEmailSubscribers(env, pool, asset, bracket, netApy, rates, base);
-        await alertPushSubscribers(env, pool, asset, bracket, netApy);
+        if (netApy < 0) {
+          console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
+          await alertEmailSubscribers(env, pool, asset, bracket, netApy, rates, base);
+          await alertPushSubscribers(env, pool, asset, bracket, netApy);
+        } else if (netApy >= APY_REARM_MARGIN_PCT) {
+          recovered.push(bracket);
+        }
       }
+      await rearmApySubscribers(env, pool, asset, recovered);
 
       // Health-factor + liquidation-imminent alerts.
       await alertHfSubscribers(env, pool, asset, rates, base);
