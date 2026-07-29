@@ -10,7 +10,8 @@
  *   GET  /vapid-public-key       — VAPID public key for web push
  *   POST /push/subscribe         — register a web-push subscription
  *   GET  /push/unsubscribe?token= — remove web-push subscription
- *   GET  /snapshots              — paginated rate time-series
+ *   GET  /snapshots              — paginated rate time-series, incl. the
+ *                                  Aquarius dex_rate per tick (nullable)
  *                                  (?pool_id=&asset=&limit=&before=)
  *   GET  /swap-routes            — Broker-vs-Soroswap A/B report
  *                                  (?network=&strategy_id=&limit=)
@@ -21,8 +22,9 @@
  *                                  (secret: STELLAR_BROKER_PARTNER_KEY)
  *
  * Cron (every 15 min):
- *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
- *   → HF / liquidation-imminent alerts → prune snapshots past 365 days.
+ *   Fetch pool reserve rates + one Aquarius DEX rate per distinct asset → write
+ *   a rate_snapshots row → APY-negative alerts → HF / liquidation-imminent
+ *   alerts → prune snapshots past 365 days.
  *
  * Alerts are edge-triggered: a subscription gets one email (and one push) when
  * the condition is first breached, then stays latched (`alert_active`) until
@@ -32,6 +34,7 @@
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
 import { sendVerificationEmail, sendApyAlert, sendHfAlert } from "./email.ts";
+import { aquariusPrice } from "./aquarius.ts";
 import { sendApyPush } from "./push.ts";
 
 /** Liquidation-imminent HF threshold. */
@@ -493,20 +496,67 @@ async function rearmApySubscribers(
 }
 
 /** Persist a rate snapshot for the time-series endpoint + delta arrows. */
-async function writeSnapshot(env: Env, pool: { id: string }, asset: { symbol: string }, rates: ReserveRates): Promise<void> {
+async function writeSnapshot(
+  env: Env,
+  pool: { id: string },
+  asset: { symbol: string },
+  rates: ReserveRates,
+  dexRate: number | null,
+): Promise<void> {
   try {
     await env.DB.prepare(`
       INSERT INTO rate_snapshots
-        (pool_id, asset_symbol, net_supply_apr, net_borrow_cost, interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        (pool_id, asset_symbol, net_supply_apr, net_borrow_cost, interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor, dex_rate)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
     `).bind(
       pool.id, asset.symbol, rates.netSupplyApr, rates.netBorrowCost,
       rates.interestSupplyApr, rates.interestBorrowApr, rates.blndSupplyApr,
-      rates.blndBorrowApr, rates.util, rates.cFactor,
+      rates.blndBorrowApr, rates.util, rates.cFactor, dexRate,
     ).run();
   } catch (e) {
     console.error(`[cron] snapshot insert failed for ${asset.symbol}:`, e);
   }
+}
+
+/**
+ * Aquarius DEX rates for one cron tick, memoised by asset contract id.
+ *
+ * The rate is a property of the asset, not of the pool, but the same asset
+ * appears in several pools (XLM is in all three). Quoting per pool/asset would
+ * fire the same request 3× a tick and could even write two different prices for
+ * the same asset in the same tick. This quotes each distinct asset once and
+ * reuses the answer across pools, so a tick costs one Aquarius call per unique
+ * asset (9) rather than one per pool/asset row (16), and every row for that
+ * asset carries an identical rate.
+ *
+ * A null (no route / unreachable) is cached too — the point of the tick is one
+ * attempt per asset, and re-trying inside the same tick would just multiply
+ * load on an API that already failed.
+ *
+ * `prefetch` starts every asset's quote at the top of the tick WITHOUT awaiting
+ * them, which is what keeps the DEX rate off the critical path: HF and
+ * liquidation emails must not queue behind a decorative price lookup. The
+ * requests fly while the tick does its Soroban RPC work, and the `await` at
+ * insert time then resolves against an already-settled promise. Awaiting each
+ * quote inline instead would add up to (9 assets × 8s timeout) ≈ 72s to the
+ * tick, all of it in front of the alerting.
+ *
+ * Safe to leave unawaited: aquariusPrice never rejects (it resolves null on
+ * timeout/error), so no unhandled rejection can escape.
+ */
+function makeDexRateCache(): {
+  get: (assetId: string) => Promise<number | null>;
+  prefetch: (assetIds: readonly string[]) => void;
+} {
+  const pending = new Map<string, Promise<number | null>>();
+  const get = (assetId: string): Promise<number | null> => {
+    const hit = pending.get(assetId);
+    if (hit) return hit;
+    const p = aquariusPrice(assetId);
+    pending.set(assetId, p);
+    return p;
+  };
+  return { get, prefetch: (assetIds) => { for (const id of assetIds) void get(id); } };
 }
 
 /**
@@ -598,6 +648,11 @@ async function pruneSnapshots(env: Env): Promise<void> {
 async function handleCron(env: Env, requestBase?: string): Promise<void> {
   console.log("[cron] rate snapshot + alert check starting...");
   const base = requestBase ?? "https://turbolong-alerts.turbolong.workers.dev";
+  // One Aquarius quote per distinct asset for this tick, shared across pools.
+  // Kick them all off now so they resolve during the RPC work below — nothing
+  // in the alerting path waits on Aquarius. See makeDexRateCache.
+  const dexRates = makeDexRateCache();
+  dexRates.prefetch([...new Set(POOLS.flatMap((p) => p.assets.map((a) => a.id)))]);
 
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
@@ -614,8 +669,12 @@ async function handleCron(env: Env, requestBase?: string): Promise<void> {
         continue;
       }
 
-      // Record the snapshot every tick (15 min).
-      await writeSnapshot(env, pool, asset, rates);
+      // Record the snapshot every tick (15 min). The DEX rate is best-effort:
+      // aquariusPrice never throws, so an Aquarius outage writes NULL and the
+      // pool rates still land. Prefetched above, so this await is normally
+      // already settled.
+      const dexRate = await dexRates.get(asset.id);
+      await writeSnapshot(env, pool, asset, rates, dexRate);
 
       // APY-negative alerts — one per episode; recovery past the margin
       // re-arms the subscription for the next one.
@@ -662,7 +721,8 @@ async function handleSnapshots(request: Request, env: Env): Promise<Response> {
   try {
     const rows = await env.DB.prepare(
       `SELECT id, pool_id, asset_symbol, recorded_at, net_supply_apr, net_borrow_cost,
-              interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor
+              interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor,
+              dex_rate
        FROM rate_snapshots ${whereSql}
        ORDER BY id DESC LIMIT ?${binds.length + 1}`,
     ).bind(...binds, limit).all();

@@ -203,6 +203,63 @@
   color: var(--tl-text-3);
 }
 
+/* 24h / 7d delta arrows, driven by the snapshot series */
+.tl-cmp__deltas {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+}
+.tl-cmp__delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--tl-text-xs);
+  font-family: var(--tl-font-mono);
+  line-height: 1.2;
+}
+.tl-cmp__delta-lbl {
+  color: var(--tl-text-3);
+  width: 22px;
+  text-align: right;
+}
+.tl-cmp__delta-val {
+  width: 40px;
+  text-align: right;
+}
+.tl-cmp__delta-val--up {
+  color: var(--tl-success);
+}
+.tl-cmp__delta-val--down {
+  color: var(--tl-danger);
+}
+.tl-cmp__delta-val--flat {
+  color: var(--tl-text-3);
+}
+
+/* DEX Rate cell: the live rate, with its own 24h/7d movement beneath */
+.tl-cmp__rate-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+}
+.tl-cmp__rate-trend {
+  display: flex;
+  gap: var(--tl-space-2);
+}
+.tl-cmp__rate-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--tl-text-xs);
+  font-family: var(--tl-font-mono);
+  line-height: 1.2;
+}
+.tl-cmp__rate-delta .tl-cmp__delta-val {
+  width: auto;
+}
+
 .tl-cmp__state {
   text-align: center;
   color: var(--tl-text-3);

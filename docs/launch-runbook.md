@@ -52,11 +52,16 @@ capture hashes. The vault-view "Trade on Aquarius" CTA goes live automatically.
       loads no-wallet, Vault deposit/withdraw, Swap quote (Broker + Aquarius),
       language switch (EN/ES/PT-BR), first-visit onboarding tour.
 - [ ] `/status.html` shows all services operational.
+- [ ] `npx tsx scripts/aquarius_rate_report.ts` — verdict table all PASS with
+      ≥ 5 pairs priced; commit the refreshed
+      `docs/evidence/aquarius-rate-report.md`.
 
 ## 4. Monitoring & alerts
 
 - **Status page** (`/status.html`): RPC, alerts service, snapshot service,
-  Aquarius API. Auto-refreshes every 30s.
+  Aquarius API. Auto-refreshes every 30s. If the Aquarius row goes red, the DEX
+  Rate column degrades to "unavailable" and everything else keeps working — see
+  `docs/aquarius-rate-fallback.md` for the escalation path.
 - **Alerts service** (T2.5): APY-negative + HF/liquidation channels active;
   rate snapshots accruing (feeds Compare trends + history arrows).
 - **Rebalance keeper**: running (Cloudflare/GitHub Action per chosen setup),

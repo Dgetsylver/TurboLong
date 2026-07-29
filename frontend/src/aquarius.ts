@@ -28,17 +28,38 @@ export interface AquariusQuote {
 }
 
 /**
- * Best-rate (strict-send) quote: how much `tokenOut` you get for `amountIn` of
- * `tokenIn`. Token addresses are Soroban contract IDs (SAC for classic assets).
- * Returns null when Aquarius is unreachable or has no feasible route (caller
- * falls back to its other source / hides the Aquarius figure).
+ * Why a quote is missing. Callers render these differently: `no_route` is a
+ * property of the pair (Aquarius answered, there is just no path), while
+ * `unreachable` means the API itself is down and the caller should say so
+ * rather than implying the pair is untradeable. See
+ * `docs/aquarius-rate-fallback.md`.
  */
-export async function aquariusBestRate(
+export type AquariusStatus = "ok" | "no_route" | "unreachable";
+
+export interface AquariusQuoteResult {
+  quote: AquariusQuote | null;
+  status: AquariusStatus;
+}
+
+/** `amount` comes back as a JSON number on live mainnet and as a string in
+ *  some deployments — normalise both to stroops without going through float. */
+function toStroops(v: unknown): bigint | null {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return Number.isInteger(v) ? BigInt(v) : BigInt(Math.round(v));
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) return BigInt(v.trim());
+  return null;
+}
+
+/**
+ * Best-rate (strict-send) quote with an explicit reason when there is none.
+ * Token addresses are Soroban contract IDs (SAC for classic assets).
+ */
+export async function aquariusBestRateResult(
   tokenInId: string,
   tokenOutId: string,
   amountInStroops: bigint,
-): Promise<AquariusQuote | null> {
-  if (tokenInId === tokenOutId || amountInStroops <= 0n) return null;
+): Promise<AquariusQuoteResult> {
+  if (tokenInId === tokenOutId || amountInStroops <= 0n) return { quote: null, status: "no_route" };
   try {
     const res = await fetch(`${AQUARIUS_API}/find-path/`, {
       method: "POST",
@@ -50,32 +71,61 @@ export async function aquariusBestRate(
       }),
       signal: AbortSignal.timeout(6000),
     });
-    if (!res.ok) return null;
+    // 4xx = Aquarius answered and refused this pair; 5xx = the service is sick.
+    if (!res.ok) return { quote: null, status: res.status >= 500 ? "unreachable" : "no_route" };
     const d = (await res.json()) as Record<string, unknown>;
-    if (!d.success || d.amount == null) return null;
+    const amountOut = toStroops(d.amount);
+    if (!d.success || amountOut == null) return { quote: null, status: "no_route" };
     return {
-      amountOut: BigInt(d.amount as string),
-      amountWithFee: BigInt((d.amount_with_fee as string) ?? (d.amount as string)),
-      pools: (d.pools as string[]) ?? [],
-      tokens: (d.tokens as string[]) ?? [],
-      swapChainXdr: (d.swap_chain_xdr as string) ?? "",
+      quote: {
+        amountOut,
+        amountWithFee: toStroops(d.amount_with_fee) ?? amountOut,
+        pools: (d.pools as string[]) ?? [],
+        tokens: (d.tokens as string[]) ?? [],
+        swapChainXdr: (d.swap_chain_xdr as string) ?? "",
+      },
+      status: "ok",
     };
   } catch {
-    return null;
+    // Network error, DNS failure, CORS block or the 6s AbortSignal timeout.
+    return { quote: null, status: "unreachable" };
   }
 }
 
 /**
- * Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), or
- * null. Quotes a 1-unit (1e7 stroops) trade by default — adjust `probe` for
- * depth-sensitive pricing.
+ * Best-rate (strict-send) quote: how much `tokenOut` you get for `amountIn` of
+ * `tokenIn`. Returns null when Aquarius is unreachable or has no feasible route
+ * (caller falls back to its other source / hides the Aquarius figure). Use
+ * `aquariusBestRateResult` when you need to tell those two cases apart.
  */
+export async function aquariusBestRate(
+  tokenInId: string,
+  tokenOutId: string,
+  amountInStroops: bigint,
+): Promise<AquariusQuote | null> {
+  return (await aquariusBestRateResult(tokenInId, tokenOutId, amountInStroops)).quote;
+}
+
+/**
+ * Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), with
+ * the reason attached when there is no price. Quotes a 1-unit (1e7 stroops)
+ * trade by default — adjust `probeStroops` for depth-sensitive pricing.
+ */
+export async function aquariusPriceResult(
+  tokenInId: string,
+  tokenOutId: string,
+  probeStroops = 10_000_000n,
+): Promise<{ price: number | null; status: AquariusStatus }> {
+  const { quote, status } = await aquariusBestRateResult(tokenInId, tokenOutId, probeStroops);
+  if (!quote) return { price: null, status };
+  return { price: Number(quote.amountOut) / Number(probeStroops), status: "ok" };
+}
+
+/** Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), or null. */
 export async function aquariusPrice(
   tokenInId: string,
   tokenOutId: string,
   probeStroops = 10_000_000n,
 ): Promise<number | null> {
-  const q = await aquariusBestRate(tokenInId, tokenOutId, probeStroops);
-  if (!q) return null;
-  return Number(q.amountOut) / Number(probeStroops);
+  return (await aquariusPriceResult(tokenInId, tokenOutId, probeStroops)).price;
 }

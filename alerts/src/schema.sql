@@ -64,7 +64,12 @@ CREATE TABLE IF NOT EXISTS rate_snapshots (
   blnd_supply_apr REAL NOT NULL,
   blnd_borrow_apr REAL NOT NULL,
   util REAL NOT NULL,
-  c_factor REAL NOT NULL
+  c_factor REAL NOT NULL,
+  -- Aquarius best-route price of this asset in USDC (USDC per 1 unit), probed
+  -- once per asset per tick. NULL = Aquarius had no route or was unreachable at
+  -- that tick, which is why the column is nullable: a gap in the series is the
+  -- truth, a carried-forward price is not. Drives the 24h/7d DEX-rate arrows.
+  dex_rate REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_pool_asset_time

@@ -1,0 +1,22 @@
+-- SCF T3.1 — snapshot the Aquarius DEX rate alongside the pool rates.
+--
+-- Before this, `rate_snapshots` held only Blend pool rates, so the Compare
+-- view's DEX Rate column was a single live probe with no history behind it and
+-- the 24h/7d arrows could only trend the pool APR. This column stores the
+-- Aquarius best-route price (USDC per 1 unit of the asset) at each 15-min tick,
+-- which is what the DEX-rate trend arrows read.
+--
+-- Nullable on purpose: a tick where Aquarius had no route or was unreachable
+-- writes NULL. Rows predating this migration are NULL too, so the arrows stay
+-- blank until ~24h/7d of history has accrued rather than trending off a
+-- half-empty window.
+--
+-- Run ONCE against the existing production D1 (fresh deploys get it from
+-- src/schema.sql):
+--   wrangler d1 execute turbolong-alerts --remote \
+--     --file=migrations/0004_aquarius_dex_rate.sql
+--
+-- SQLite has no ADD COLUMN IF NOT EXISTS; if the column already exists the
+-- statement errors harmlessly — skip it.
+
+ALTER TABLE rate_snapshots ADD COLUMN dex_rate REAL;

@@ -21,7 +21,8 @@ import "./swap.css";
 import { el, on, Button, Select, Tooltip } from "../ui";
 import { estimateSwap, StellarBrokerClient, Mediator } from "@stellar-broker/client";
 import { Networks, TransactionBuilder } from "@stellar/stellar-sdk";
-import { aquariusBestRate } from "../aquarius";
+import { aquariusBestRateResult } from "../aquarius";
+import { compareQuotes } from "../swap_metrics";
 import { fetchAssetBalance, getActiveNetwork } from "../blend";
 import { getState } from "../app/state";
 import { signXdr } from "../app/wallet";
@@ -348,10 +349,33 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── Quote well rows ──────────────────────────────────────────────────────────
-  const rateVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
-  const dexVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
-  const advVal = el("span", { class: "tl-swap__qrow-v tl-swap__qrow-v--good" }, ["—"]);
+  // Rate and DEX Rate each carry a "Best rate" marker; whichever source quotes
+  // more output for the same input gets it. Text and badge are separate nodes so
+  // updating one never clobbers the other.
+  const rateTxt = el("span", {}, ["—"]);
+  const rateBest = el("span", { class: "tl-swap__best", hidden: "" }, [tx("swap.bestRate", "Best rate")]);
+  const rateVal = el("span", { class: "tl-swap__qrow-v" }, [rateTxt, rateBest]);
+
+  const dexTxt = el("span", {}, ["—"]);
+  const dexBest = el("span", { class: "tl-swap__best", hidden: "" }, [tx("swap.bestRate", "Best rate")]);
+  const dexVal = el("span", { class: "tl-swap__qrow-v" }, [dexTxt, dexBest]);
+
+  const advVal = el("span", { class: "tl-swap__qrow-v" }, ["—"]);
   const slipVal = el("span", { class: "tl-swap__qrow-v" }, [`${ui.slipPct}%`]);
+
+  /** Mark the winning source, or clear both when there is nothing to compare. */
+  function setBest(winner: "broker" | "aquarius" | null): void {
+    rateBest.toggleAttribute("hidden", winner !== "broker");
+    dexBest.toggleAttribute("hidden", winner !== "aquarius");
+  }
+
+  /** Reset the comparison rows — called whenever a fresh quote starts. */
+  function clearComparison(): void {
+    setBest(null);
+    advVal.textContent = "—";
+    advVal.classList.remove("tl-swap__qrow-v--good", "tl-swap__qrow-v--bad");
+    advVal.removeAttribute("title");
+  }
 
   well.replaceChildren(
     qrow(tx("swap.rate", "Rate"), "The effective price you get for this swap via the best routed path.", rateVal),
@@ -363,7 +387,7 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     ),
     qrow(
       tx("swap.brokerAdvantage", "Broker advantage"),
-      "How much better the broker’s routed rate is versus a direct DEX trade.",
+      "The broker’s quoted output minus Aquarius’ quoted output for this exact trade — positive means the broker’s routing beats a direct DEX swap. Needs both quotes, so it reads “—” when Aquarius has no route or is unreachable.",
       advVal,
     ),
     qrow(
@@ -482,14 +506,15 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
         const buySym = symbolFor(buy);
 
         setReceive(buyNum.toLocaleString("en-US", { maximumFractionDigits: 4 }), false);
-        rateVal.textContent = `1 ${sellSym} ≈ ${(buyNum / sellNum).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
-        advVal.textContent =
-          quote.profit && Number.parseFloat(quote.profit) > 0
-            ? `+${Number.parseFloat(quote.profit).toLocaleString("en-US", { maximumFractionDigits: 4 })} ${buySym}`
-            : "—";
+        rateTxt.textContent = `1 ${sellSym} ≈ ${(buyNum / sellNum).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
+        // The advantage is a comparison, so it can only be filled once Aquarius
+        // answers. Clear it now rather than leaving the previous pair's figure
+        // on screen while the new cross-check is in flight.
+        clearComparison();
         showWell();
-        // Cross-check against the DEX (Aquarius) and fill the DEX Rate row.
-        void compareDexRate(sell, buy, sellNum, buySym);
+        // Cross-check against the DEX (Aquarius): fills the DEX Rate row, the
+        // advantage, and the Best rate marker.
+        void compareDexRate(sell, buy, sellNum, buyNum, buySym);
       } else {
         ui.quote = null;
         setReceive(quote.status === "unfeasible" ? "No route" : "—", true);
@@ -507,28 +532,75 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   }
 
   // ── DEX (Aquarius) comparison ────────────────────────────────────────────────
-  async function compareDexRate(sellBrokerId: string, buyBrokerId: string, sellNum: number, buySym: string) {
+  /**
+   * Quote the same trade on Aquarius and compare it against the broker's.
+   *
+   * Both sides must be the SAME trade for the difference to mean anything:
+   * identical input amount, identical direction, quoted moments apart. That is
+   * why the broker's output is passed in rather than re-derived — the advantage
+   * is `brokerOut - aquariusOut`, not the broker's self-reported `profit`
+   * (which is its own estimate against its own baseline, not a comparison).
+   *
+   * The broker aggregates across Stellar DEXes including Aquarius, so it should
+   * usually win or match; Aquarius winning is worth surfacing honestly rather
+   * than hiding, since it points at a routing gap.
+   */
+  async function compareDexRate(
+    sellBrokerId: string,
+    buyBrokerId: string,
+    sellNum: number,
+    brokerOut: number,
+    buySym: string,
+  ) {
     const seq = ++aqSeq;
     const sellC = assetFor(sellBrokerId)?.contractId;
     const buyC = assetFor(buyBrokerId)?.contractId;
     if (!sellC || !buyC) {
       if (seq === aqSeq) {
-        dexVal.textContent = tx("common.na", "N/A");
+        dexTxt.textContent = tx("common.na", "N/A");
         dexVal.title = "No DEX route for this pair";
       }
       return;
     }
     const amountStroops = BigInt(Math.round(sellNum * 1e7));
-    const aq = await aquariusBestRate(sellC, buyC, amountStroops);
+    const { quote: aq, status } = await aquariusBestRateResult(sellC, buyC, amountStroops);
     if (seq !== aqSeq) return; // a newer quote superseded this one
     if (!aq) {
-      dexVal.textContent = tx("common.unavailable", "unavailable");
-      dexVal.removeAttribute("title");
+      // Broker's own quote above is unaffected — only the cross-check is missing.
+      // With one side absent there is nothing to compare, so the advantage stays
+      // "—" rather than implying the broker won by default.
+      // See docs/aquarius-rate-fallback.md.
+      dexTxt.textContent = status === "unreachable" ? tx("common.unavailable", "unavailable") : tx("common.na", "N/A");
+      dexVal.title =
+        status === "unreachable"
+          ? "Aquarius routing API is unreachable — the DEX cross-check is temporarily unavailable. Your quote above is unaffected."
+          : "Aquarius has no route for this pair right now.";
       return;
     }
     const aqOut = Number(aq.amountOut) / 1e7;
-    dexVal.textContent = `${aqOut.toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
+    dexTxt.textContent = `${aqOut.toLocaleString("en-US", { maximumFractionDigits: 6 })} ${buySym}`;
     dexVal.removeAttribute("title");
+
+    // ── The actual comparison ──
+    const { winner, diff, pct } = compareQuotes(brokerOut, aqOut);
+
+    if (winner === "tie") {
+      setBest(null);
+      advVal.textContent = tx("swap.matched", "matched");
+      advVal.title = "The broker and Aquarius quote the same output for this trade.";
+      return;
+    }
+
+    const brokerWins = winner === "broker";
+    setBest(winner);
+    const sign = diff > 0 ? "+" : "−";
+    const mag = Math.abs(diff).toLocaleString("en-US", { maximumFractionDigits: 6 });
+    advVal.textContent = `${sign}${mag} ${buySym} (${sign}${Math.abs(pct).toFixed(2)}%)`;
+    advVal.classList.toggle("tl-swap__qrow-v--good", brokerWins);
+    advVal.classList.toggle("tl-swap__qrow-v--bad", !brokerWins);
+    advVal.title = brokerWins
+      ? "The broker's routed quote beats a direct Aquarius swap by this much."
+      : "Aquarius quotes more than the broker for this trade. Swaps here still execute through the broker — this is shown for transparency.";
   }
 
   // ── Receive / well helpers ───────────────────────────────────────────────────
