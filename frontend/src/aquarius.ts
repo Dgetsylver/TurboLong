@@ -129,3 +129,70 @@ export async function aquariusPrice(
 ): Promise<number | null> {
   return (await aquariusPriceResult(tokenInId, tokenOutId, probeStroops)).price;
 }
+
+/**
+ * Trade size, in units of the *output* asset (USDC), that the Compare view's
+ * "Best Rate" badge measures price impact at.
+ *
+ * A fixed notional, not a fixed unit count: 1 unit of XLM and 1 unit of EURC are
+ * ~$0.17 and ~$1.14 of trade, so ranking assets by their impact at "1 unit"
+ * would compare wildly different trade sizes. It also has to be big enough to
+ * actually move a pool — measured against mainnet, a 1-vs-10-unit probe returns
+ * 0.0–5.6 bps of impact (noise, occasionally negative from rounding), while
+ * $10k separates the assets cleanly and monotonically.
+ */
+export const IMPACT_NOTIONAL = 10_000;
+
+export interface AquariusRateDepth {
+  /** USDC per 1 unit, from the 1-unit reference probe. Null when unquotable. */
+  rate: number | null;
+  /**
+   * How many basis points worse the per-unit rate gets when you trade
+   * `notional` instead of 1 unit — i.e. the gap between the headline rate and
+   * the rate you would actually receive at size. Lower is better; this is what
+   * the "Best Rate" badge ranks on.
+   *
+   * Null when either probe has no route, so a pair that only quotes at 1 unit is
+   * never badged on the strength of a rate nobody can trade.
+   */
+  impactBps: number | null;
+  status: AquariusStatus;
+}
+
+/**
+ * The two probes behind the "Best Rate" badge: a 1-unit reference rate (what the
+ * DEX Rate column shows) and the same route at `notional` of size (what the
+ * badge ranks on). Two calls, because Aquarius' response carries no depth or fee
+ * information of its own — `amount_with_fee` comes back equal to `amount` on
+ * every mainnet pair we quote, so it cannot stand in for this.
+ *
+ * Never throws, like the rest of this module. A failed second probe degrades to
+ * `impactBps: null` while keeping the reference `rate`, so an unbadgeable row
+ * still renders its rate.
+ */
+export async function aquariusRateWithImpact(
+  tokenInId: string,
+  tokenOutId: string,
+  notional = IMPACT_NOTIONAL,
+): Promise<AquariusRateDepth> {
+  const probeStroops = 10_000_000n;
+  const { price: rate, status } = await aquariusPriceResult(tokenInId, tokenOutId, probeStroops);
+  if (rate == null || rate <= 0) return { rate: null, impactBps: null, status };
+
+  // `notional` is denominated in the output asset, so units-in = notional / rate.
+  const stroopsAtSize = BigInt(Math.round((notional / rate) * Number(probeStroops)));
+  if (stroopsAtSize <= probeStroops) {
+    // The sized trade is no bigger than the reference probe (a very expensive
+    // input asset, or a tiny notional) — there is no impact to measure.
+    return { rate, impactBps: 0, status: "ok" };
+  }
+
+  const sized = await aquariusPriceResult(tokenInId, tokenOutId, stroopsAtSize);
+  if (sized.price == null || sized.price <= 0) return { rate, impactBps: null, status: sized.status };
+
+  // Clamped at zero: a bigger trade cannot genuinely get a *better* per-unit
+  // rate on an AMM, so the small negatives mainnet returns on deep stable pairs
+  // are rounding, not an edge. Reporting them would rank noise.
+  const impactBps = Math.max(0, ((rate - sized.price) / rate) * 10_000);
+  return { rate, impactBps, status: "ok" };
+}

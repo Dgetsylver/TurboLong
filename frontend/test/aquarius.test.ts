@@ -1,12 +1,33 @@
 // T3.1 module unit tests — aquarius.ts best-rate client.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { aquariusBestRate, aquariusBestRateResult, aquariusPrice, aquariusPriceResult } from "../src/aquarius.ts";
+import {
+  aquariusBestRate,
+  aquariusBestRateResult,
+  aquariusPrice,
+  aquariusPriceResult,
+  aquariusRateWithImpact,
+  IMPACT_NOTIONAL,
+} from "../src/aquarius.ts";
 
 const IN = "CAAA_IN";
 const OUT = "CBBB_OUT";
 
 function mockFetchOnce(impl: () => unknown) {
   vi.stubGlobal("fetch", vi.fn(async () => impl()));
+}
+
+/** Reply to successive find-path calls with `amount` read from the request's own
+ *  probe size, so a fake can express a rate that degrades with trade size. */
+function mockFetchByAmount(rateFor: (probeStroops: bigint) => number | null) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init: { body: string }) => {
+      const probe = BigInt(JSON.parse(init.body).amount as string);
+      const rate = rateFor(probe);
+      if (rate == null) return { ok: true, status: 200, json: async () => ({ success: false }) };
+      return { ok: true, status: 200, json: async () => ({ success: true, amount: String(Math.round(rate * Number(probe))) }) };
+    }),
+  );
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -137,5 +158,80 @@ describe("status reporting", () => {
     vi.stubGlobal("fetch", spy);
     expect((await aquariusBestRateResult(IN, IN, 10_000_000n)).status).toBe("no_route");
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// The two probes behind the Compare "Best Rate" badge. The badge ranks on
+// impactBps, so a wrong sign or a silent null here mis-badges the table.
+describe("aquariusRateWithImpact", () => {
+  it("measures impact as the per-unit rate lost at notional size", async () => {
+    // 1 unit quotes 2.0; the sized probe quotes 1.98 — a 1% (100 bps) drop.
+    mockFetchByAmount((probe) => (probe === 10_000_000n ? 2.0 : 1.98));
+    const r = await aquariusRateWithImpact(IN, OUT);
+    expect(r.status).toBe("ok");
+    expect(r.rate).toBeCloseTo(2.0, 9);
+    expect(r.impactBps).toBeCloseTo(100, 6);
+  });
+
+  it("sizes the second probe to the notional, not to a unit count", async () => {
+    const seen: bigint[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: string, init: { body: string }) => {
+        const probe = BigInt(JSON.parse(init.body).amount as string);
+        seen.push(probe);
+        return { ok: true, status: 200, json: async () => ({ success: true, amount: String(Number(probe) * 4) }) };
+      }),
+    );
+    await aquariusRateWithImpact(IN, OUT);
+    // rate = 4.0, so IMPACT_NOTIONAL of output needs notional/4 units in.
+    expect(seen[0]).toBe(10_000_000n);
+    expect(seen[1]).toBe(BigInt((IMPACT_NOTIONAL / 4) * 1e7));
+  });
+
+  it("reports zero impact, not a negative, when a bigger trade quotes better", async () => {
+    // Mainnet returns small negatives on deep stable pairs; that is rounding,
+    // and a negative would win the badge outright.
+    mockFetchByAmount((probe) => (probe === 10_000_000n ? 1.0 : 1.0001));
+    const r = await aquariusRateWithImpact(IN, OUT);
+    expect(r.impactBps).toBe(0);
+  });
+
+  it("keeps the reference rate but drops impact when the sized probe has no route", async () => {
+    // A pair that quotes 1 unit and nothing bigger must render its rate and stay
+    // unbadgeable, rather than being badged on a rate nobody can trade.
+    mockFetchByAmount((probe) => (probe === 10_000_000n ? 0.5 : null));
+    const r = await aquariusRateWithImpact(IN, OUT);
+    expect(r.rate).toBeCloseTo(0.5, 9);
+    expect(r.impactBps).toBeNull();
+  });
+
+  it("returns a null rate and null impact when the reference probe fails", async () => {
+    mockFetchOnce(() => ({ ok: false, status: 502, json: async () => ({}) }));
+    const r = await aquariusRateWithImpact(IN, OUT);
+    expect(r.rate).toBeNull();
+    expect(r.impactBps).toBeNull();
+    expect(r.status).toBe("unreachable");
+  });
+
+  it("skips the second probe when the sized trade is not bigger than the reference", async () => {
+    const spy = vi.fn(async (_u: string, init: { body: string }) => {
+      const probe = BigInt(JSON.parse(init.body).amount as string);
+      return { ok: true, status: 200, json: async () => ({ success: true, amount: String(Number(probe) * 1e9) }) };
+    });
+    vi.stubGlobal("fetch", spy);
+    // An absurdly valuable input asset: 1 unit already exceeds the notional.
+    const r = await aquariusRateWithImpact(IN, OUT);
+    expect(r.impactBps).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never throws when the network dies mid-probe", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network"); }));
+    await expect(aquariusRateWithImpact(IN, OUT)).resolves.toEqual({
+      rate: null,
+      impactBps: null,
+      status: "unreachable",
+    });
   });
 });

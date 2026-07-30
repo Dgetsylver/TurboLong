@@ -7,11 +7,16 @@ Aquarius supplies **rate comparison only**. It is never on the path of a
 deposit, a loop, a withdrawal, or a health-factor calculation. Nothing a user
 can lose money on depends on it being up.
 
+Two things it *does* drive, and both fail closed: the **DEX Rate** column and the
+**Best Rate** badge. The badge is Aquarius-determined by design — see
+[The Best Rate badge](#the-best-rate-badge) — so an outage removes it rather than
+moving it somewhere unverified.
+
 ## Where Aquarius is called
 
 | Surface | Call | What it feeds |
 | --- | --- | --- |
-| Compare Pools (`frontend/src/views/compare.ts`) | `aquariusPriceResult(asset → USDC)` | the **DEX Rate** column, one call per pool/asset row |
+| Compare Pools (`frontend/src/views/compare.ts`) | `aquariusRateWithImpact(asset → USDC)` | the **DEX Rate** column *and* the **Best Rate** badge; two calls per distinct asset |
 | Swap (`frontend/src/views/swap.ts`) | `aquariusBestRateResult(sell → buy)` | the **DEX Rate** cross-check under the Broker quote |
 | Alerts cron (`alerts/src/index.ts`, every 15 min) | `aquariusPrice(asset)` from `alerts/src/aquarius.ts` | the `rate_snapshots.dex_rate` column → the **24h/7d rate arrows** |
 | Status page (`frontend/src/views/status.ts`) | `reachable(AQUARIUS_API)` | the "Aquarius AMM API" health row |
@@ -21,6 +26,93 @@ The browser calls go through `frontend/src/aquarius.ts`; the worker has its own
 minimal copy in `alerts/src/aquarius.ts` (separate builds, no shared module —
 keep the request shape in sync if the Aquarius API changes). Both implement the
 same never-throw contract.
+
+### The Best Rate badge
+
+The badge marks the row with the **highest leveraged APY after the cost of
+getting in and out at Aquarius' current rates**:
+
+```
+netOfCostApy = levApy − (2 × impactBps / 100) / HOLD_YEARS
+```
+
+computed by `netOfCostApy` → `bestRateRowIndex` in
+`frontend/src/compare_metrics.ts`. `impactBps` is the price impact at
+`IMPACT_NOTIONAL` (~$10,000 of output), doubled for the entry and the exit leg,
+and spread over a one-year hold so it is on the same annual basis as the APY it
+is subtracted from.
+
+Worked from a real render: EURC 26.01% − 0.88pp = **25.13%**, USDC 19.15% − 0 =
+19.15%, USTRY 11.58% − 2.45pp = 9.13%, PYUSD 7.19% − 0.02pp = 7.17%, CETES 4.18%
+− 1.78pp = 2.40%, TESOURO 6.14% − 29.96pp = **−23.82%**.
+
+The impact costs a second quote per asset. `aquariusRateWithImpact` probes 1 unit
+for the reference rate the column displays, then the same route sized to the
+notional; the gap between the two per-unit rates is the impact. Both probes are
+memoised per asset id, so a render costs two calls per *distinct* asset, not per
+row.
+
+**Why not the highest `dexRate`.** That column is USDC per 1 unit, so its argmax
+is whichever asset is denominated highest — EURC at 1.14 would beat XLM at 0.17
+forever, regardless of which is actually better to hold or trade.
+
+**Why not the cheapest route to trade.** Ranking on impact alone badges the asset
+that is cheapest to swap, which is not what someone on a leveraged-lending screen
+is shopping for. A 1497 bps round trip genuinely destroys a 6% yield; a 0.3 bps
+one is irrelevant next to a 26% one. Only the combination ranks rows the way the
+money actually lands.
+
+**Why the notional is a dollar amount rather than a unit count.** 1 unit of XLM
+and 1 unit of EURC are ~$0.17 and ~$1.14 of trade. Measured against mainnet, a
+1-vs-10-**unit** probe returns 0.0–5.6 bps — noise, occasionally negative from
+rounding — while a fixed ~$10k notional separates the assets cleanly and
+monotonically.
+
+Four deliberate behaviours:
+
+- **The holding period is an assumption, and it is stated.** Entry/exit is a
+  one-time cost; the APY is annual. One year puts them on the same basis. A
+  shorter assumed hold weighs the cost more heavily and can change the winner,
+  so `HOLD_YEARS` is a named constant and the badge tooltip spells out the
+  arithmetic rather than hiding it.
+- **The exit is assumed to cost what the entry did.** We measure asset→USDC only
+  and double it; quoting the reverse leg separately would double the request
+  count for a second-order correction.
+- **Negative impact is clamped to zero.** A larger trade cannot genuinely get a
+  better per-unit rate on an AMM, so the small negatives mainnet returns on deep
+  stable pairs are rounding.
+- **USDC carries a real zero cost and is badge-eligible.** A USDC position needs
+  no swap in either direction. It still has to win on APY like any other row.
+
+The ranking is **row-level**, not asset-level: one asset in three pools shares an
+Aquarius rate but has three different `levApy`, so the badge lands on a specific
+row for a reason rather than by tiebreak. Ties within `NET_TIE_EPS_PP` (0.05pp)
+go to the earlier, higher-APY row.
+
+#### Known sensitivity: the reference route can change under you
+
+Impact is the gap between a 1-unit reference quote and a sized one, so it assumes
+both price the same route. Aquarius re-routes as pool states move, and the rate
+is stable *within* a routing regime but steps *between* them. Measured on
+mainnet, PYUSD/USDC quoted 0.998982 at 1 hop, then 0.9992623 at 3 hops (30/30
+identical probes), then 1.0029662 at 4 hops (10/10 identical) — the last of which
+reads as a USD stablecoin worth more than USDC. When the reference re-routes but
+the sized probe does not, part of the measured impact is that route change rather
+than depth: PYUSD's impact moved 1.2 → 39.7 bps across two runs for this reason,
+and EURC's 44.1 → 80.1 bps when its route went 3 → 4 hops.
+
+The badge tolerates this in proportion to the margin, which is checkable. In the
+latest run EURC led USDC by 21.21% vs 17.57% net — 3.64pp of headroom, so EURC's
+measured impact would have to rise by ~182 bps (from 80) to lose the badge. When
+two rows sit close on net APY, expect the badge to move between refreshes; that
+is the metric being honest about a real gap in what Aquarius is quoting, not a
+defect in the ranking. It is also why the badge is never derived from a cached or
+carried-forward rate.
+
+The badge and the ★ in the Rank column are still different markers — the ★ is
+rank 1 by leveraged APY *before* costs (`bestRowIndex`). They coincide whenever
+trading cost does not change the winner, and diverge exactly when it does, which
+is the case worth surfacing.
 
 ### Cron cost, and why it is off the critical path
 
@@ -72,11 +164,13 @@ Guarantees:
 
 ## What the user sees
 
-| Condition | Compare "DEX Rate" | Swap "DEX Rate" |
-| --- | --- | --- |
-| `ok` | the rate, 4 dp, with its 24h/7d movement beneath | Aquarius output amount |
-| `no_route` | `no route` (tooltip: "Aquarius has no route for this pair right now.") | `N/A` |
-| `unreachable` | `unavailable` (tooltip explains Aquarius is unreachable and pool APYs are unaffected) | `unavailable` |
+| Condition | Compare "DEX Rate" | Compare "Best Rate" badge | Swap "DEX Rate" |
+| --- | --- | --- | --- |
+| `ok` | the rate, 4 dp, with its 24h/7d movement beneath | on the best net-of-cost row | Aquarius output amount |
+| `no_route` | `no route` (tooltip: "Aquarius has no route for this pair right now.") | row is not eligible — its cost is unknown | `N/A` |
+| `unreachable` | `unavailable` (tooltip explains Aquarius is unreachable and pool APYs are unaffected) | row is not eligible | `unavailable` |
+| reference quote but no sized quote | the rate | row is not eligible — the rate exists but its cost at size is unmeasured | n/a |
+| every row ineligible | as above per row | **no badge anywhere** | as above |
 
 Strings are localised (`compare.dexNoRoute`, `compare.dexDown`,
 `common.unavailable`, `common.na`) in en / es / pt.
@@ -104,12 +198,18 @@ history has accrued.
 
 ## What keeps working during an Aquarius outage
 
-Everything except the DEX Rate column:
+Everything except the DEX Rate column and the Best Rate badge:
 
-- **Pool ranking and the "Best Rate" badge.** The badge marks rank 1 by
-  leveraged net APY (`compare_metrics.ts:compareSortRows` → `bestRowIndex`),
-  computed from Blend reserve data over Soroban RPC. It does not read the
-  Aquarius rate at all, so the ranking is unchanged by an outage.
+- **Pool ranking, including the ★ on rank 1.** Ranking is leveraged net APY
+  (`compare_metrics.ts:compareSortRows` → `bestRowIndex`) from Blend reserve data
+  over Soroban RPC. It does not read Aquarius at all, so row order and the ★ are
+  unchanged by an outage.
+- **The "Best Rate" badge disappears** — this is the one visible casualty.
+  `bestRateRowIndex` returns `-1` when no row has a measurable impact, so nothing
+  is badged. It deliberately does **not** fall back to rank 1: with no cost data,
+  netting cost off the yield is exactly the thing we cannot do, and silently
+  badging the APY leader would present a pre-cost number as a post-cost one. No
+  badge is the honest state, and the table is fully usable without it.
 - **24h / 7d APR trend arrows** (the Trend column). Sourced from
   `rate_snapshots.net_supply_apr` via the alerts Worker's `GET /snapshots`
   (`frontend/src/history.ts`) — Blend data, no Aquarius involvement. Only the
@@ -156,17 +256,36 @@ Everything except the DEX Rate column:
   struggling and delays the honest empty state.
 - **No blocking spinner.** The Compare table renders pool data first and fills
   the DEX Rate column when (and if) quotes arrive.
+- **No badge fallback to APY.** Covered above: an unbadged table beats a badge
+  that implies an unverified rate.
+- **No `amount_with_fee` shortcut for the badge.** It would have made the impact
+  measurement free, but Aquarius returns it equal to `amount` on every mainnet
+  pair we quote, so it carries no fee or depth signal. Hence the second probe.
 
 ## Verification
 
 - Unit tests: `frontend/test/aquarius.test.ts` — covers `ok` / `no_route` /
   `unreachable` classification, the 4xx-vs-5xx split, the numeric-`amount` live
-  response shape, and the throwing-fetch path.
-- Unit tests: `frontend/test/compare_metrics.test.ts` — the badge lands on the
-  argmax row, and the 24h/7d arrows come from the snapshot window.
+  response shape, the throwing-fetch path, and `aquariusRateWithImpact` (impact
+  sign and magnitude, notional-based probe sizing, the negative clamp, and
+  keeping the reference rate when only the sized probe fails).
+- Unit tests: `frontend/test/compare_metrics.test.ts` — `netOfCostApy`
+  arithmetic (both legs, annualised; a large enough cost turning a positive yield
+  negative); and the badge landing on the net-of-cost argmax on live-shaped data,
+  letting cost overturn the highest headline APY, *not* collapsing to "cheapest
+  to trade", ranking row-level so one asset in two pools is split by its own APY,
+  ignoring unquotable rows, badging nothing rather than defaulting to rank 1
+  during an outage, and breaking sub-tolerance ties toward the higher-APY row.
 - Unit tests: `frontend/test/history.test.ts` — NULL `dex_rate` rows are dropped
   rather than read as zero, and both columns come from a single request.
 - Migration: `alerts/migrations/0004_aquarius_dex_rate.sql` (run once against
   the deployed D1; fresh deploys get the column from `alerts/src/schema.sql`).
 - Live acceptance: `docs/evidence/aquarius-rate-report.md`, regenerated by
-  `scripts/aquarius_rate_report.ts`.
+  `scripts/aquarius_rate_report.ts`. It measures impact for every pair against
+  the live routing API and checks that half of the badge input unconditionally.
+  The **ranking** needs `--compare-json <dump of the rendered rows>`, because
+  `levApy` is Blend data the script does not query: the dump supplies the APYs
+  and which row was badged, the run supplies the live costs, and
+  `bestRateRowIndex` is **imported from the frontend** so the verdict cannot
+  drift from what ships. A wrong badge exits non-zero. Without a dump the script
+  says the ranking was not checked rather than inventing APYs to assert one.

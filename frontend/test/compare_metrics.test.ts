@@ -1,17 +1,24 @@
 // T3.1 / T3.3 — Compare Pools ranking + 24h/7d trend maths.
 //
-// Covers the two acceptance-relevant invariants: the "Best Rate" badge lands on
-// the argmax of leveraged net APY, and the 24h/7d arrows are computed from the
-// T2 snapshot series (and stay silent when the window is too thin to claim one).
+// Covers the acceptance-relevant invariants: rank 1 (★) is the argmax of
+// leveraged net APY, the "Best Rate" badge is the argmax of that yield *after*
+// the Aquarius round-trip cost of entering and exiting, and the 24h/7d arrows
+// are computed from the T2 snapshot series (and stay silent when the window is
+// too thin to claim one).
 import { describe, expect, it } from "vitest";
 import {
+  bestRateRowIndex,
   bestRowIndex,
   compareSortRows,
   deltaOverHours,
   FLAT_EPS,
   FLAT_EPS_PCT,
+  HOLD_YEARS,
+  NET_TIE_EPS_PP,
+  netOfCostApy,
   pctChangeOverHours,
   resample,
+  roundTripCostPp,
   trendOf,
   trendOfDelta,
   windowSlice,
@@ -28,7 +35,7 @@ function series(hours: number, valAt: (hoursAgo: number) => number): SnapshotPoi
   return out;
 }
 
-describe("compareSortRows / bestRowIndex — Best Rate badge", () => {
+describe("compareSortRows / bestRowIndex — rank 1 (★)", () => {
   const rows = [
     { name: "a", levApy: 4.2 },
     { name: "b", levApy: 18.9 },
@@ -70,6 +77,152 @@ describe("compareSortRows / bestRowIndex — Best Rate badge", () => {
       { name: "y", levApy: -2 },
     ]);
     expect(ranked[bestRowIndex(ranked)].name).toBe("y");
+  });
+});
+
+describe("netOfCostApy — yield after Aquarius round-trip cost", () => {
+  it("subtracts both legs of the trade, annualised over the holding period", () => {
+    // 44.1 bps each way = 88.2 bps = 0.882pp off a 26.01% APY.
+    expect(roundTripCostPp(44.1)).toBeCloseTo(0.882 / HOLD_YEARS, 9);
+    expect(netOfCostApy(26.01, 44.1)).toBeCloseTo(26.01 - 0.882 / HOLD_YEARS, 9);
+  });
+
+  it("is a no-op at zero cost", () => {
+    expect(netOfCostApy(19.15, 0)).toBe(19.15);
+  });
+
+  it("lets a large enough cost turn a positive yield negative", () => {
+    // TESOURO: 1497.9 bps round trip is ~30pp — it eats a 6.14% yield whole.
+    expect(netOfCostApy(6.14, 1497.9)).toBeCloseTo(6.14 - 29.958, 6);
+    expect(netOfCostApy(6.14, 1497.9)).toBeLessThan(0);
+  });
+});
+
+describe("bestRateRowIndex — the Aquarius-driven Best Rate badge", () => {
+  // Live figures from docs/evidence/aquarius-rate-report.md + a real render.
+  const live = [
+    { name: "EURC", levApy: 26.01, dexImpactBps: 44.1 }, // net 25.13
+    { name: "USDC", levApy: 19.15, dexImpactBps: 0 }, // net 19.15
+    { name: "USTRY", levApy: 11.58, dexImpactBps: 122.5 }, // net  9.13
+    { name: "PYUSD", levApy: 7.19, dexImpactBps: 1.2 }, // net  7.17
+    { name: "TESOURO", levApy: 6.14, dexImpactBps: 1497.9 }, // net -23.82
+    { name: "CETES", levApy: 4.18, dexImpactBps: 88.9 }, // net  2.40
+    { name: "XLM", levApy: 2.55, dexImpactBps: 46.2 }, // net  1.63
+  ];
+
+  it("badges the best yield net of cost on live-shaped data", () => {
+    const idx = bestRateRowIndex(live);
+    expect(live[idx].name).toBe("EURC");
+    const nets = live.map((r) => netOfCostApy(r.levApy, r.dexImpactBps));
+    expect(nets[idx]).toBe(Math.max(...nets));
+  });
+
+  it("lets trading cost overturn the highest headline APY", () => {
+    // TESOURO leads on APY but its round trip costs ~30pp; USDC wins on net.
+    const ranked = [
+      { name: "TESOURO", levApy: 20.0, dexImpactBps: 1497.9 },
+      { name: "USDC", levApy: 8.0, dexImpactBps: 0 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("USDC");
+    // ...and the ★ still goes to the APY leader — the two deliberately diverge.
+    expect(compareSortRows(ranked)[bestRowIndex(compareSortRows(ranked))].name).toBe("TESOURO");
+  });
+
+  it("does not simply badge the cheapest row to trade", () => {
+    // PYUSD is near-frictionless but yields far less; EURC wins on net despite
+    // paying 44 bps each way. This is the case that separates option E from a
+    // pure impact ranking.
+    const ranked = [
+      { name: "EURC", levApy: 26.01, dexImpactBps: 44.1 },
+      { name: "PYUSD", levApy: 7.19, dexImpactBps: 1.2 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("EURC");
+  });
+
+  it("is row-level: the same asset in two pools is ranked by its own APY", () => {
+    // One Aquarius rate, three levApy — the badge lands for a reason, not by
+    // tiebreak, which a pure asset-level impact ranking could not do.
+    const ranked = [
+      { name: "XLM@YieldBlox", levApy: 2.55, dexImpactBps: 46.2 },
+      { name: "XLM@Fixed", levApy: 0.06, dexImpactBps: 46.2 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("XLM@YieldBlox");
+  });
+
+  it("badges exactly one row", () => {
+    const idx = bestRateRowIndex(live);
+    expect(live.map((_, i) => i === idx).filter(Boolean)).toHaveLength(1);
+  });
+
+  it("ignores rows with no impact measurement", () => {
+    // nulls are unquotable pairs — a missing cost must not read as a free trade.
+    const ranked = [
+      { name: "unquotable", levApy: 99, dexImpactBps: null },
+      { name: "quoted", levApy: 12, dexImpactBps: 10 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("quoted");
+  });
+
+  it("badges nothing when Aquarius gave no impact for any row", () => {
+    expect(bestRateRowIndex([{ levApy: 5, dexImpactBps: null }, { levApy: 1, dexImpactBps: null }])).toBe(-1);
+    expect(bestRateRowIndex([])).toBe(-1);
+  });
+
+  it("does not fall back to rank 1 during an Aquarius outage", () => {
+    // An outage must badge nothing rather than implying we priced the entry cost.
+    const ranked = [
+      { levApy: 18.9, dexImpactBps: null },
+      { levApy: 4.2, dexImpactBps: null },
+    ];
+    expect(bestRateRowIndex(ranked)).toBe(-1);
+  });
+
+  it("ignores non-finite inputs", () => {
+    expect(bestRateRowIndex([{ levApy: 9, dexImpactBps: Number.NaN }, { levApy: 3, dexImpactBps: 5 }])).toBe(1);
+    expect(
+      bestRateRowIndex([{ levApy: 9, dexImpactBps: Number.POSITIVE_INFINITY }, { levApy: 3, dexImpactBps: 5 }]),
+    ).toBe(1);
+    expect(bestRateRowIndex([{ levApy: Number.NaN, dexImpactBps: 0 }, { levApy: 3, dexImpactBps: 5 }])).toBe(1);
+  });
+
+  it("still badges the top row when every net return is negative", () => {
+    const ranked = [
+      { name: "less bad", levApy: -2, dexImpactBps: 10 },
+      { name: "worse", levApy: -12, dexImpactBps: 10 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("less bad");
+  });
+
+  it("breaks a sub-tolerance tie toward the higher-APY (earlier) row", () => {
+    // Rows arrive APY-sorted; a dead heat on net should not flicker tick to tick.
+    const ranked = [
+      { name: "a", levApy: 10.0, dexImpactBps: 0 },
+      { name: "b", levApy: 10.02, dexImpactBps: 0 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("a");
+  });
+
+  it("still moves the badge when the gap clears the tie band", () => {
+    const ranked = [
+      { name: "a", levApy: 10.0, dexImpactBps: 0 },
+      { name: "b", levApy: 10.0 + NET_TIE_EPS_PP * 3, dexImpactBps: 0 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("b");
+  });
+
+  it("requires a third row to beat the real maximum, not the incumbent", () => {
+    // a and b tie; c must beat b's net, not a's.
+    const ranked = [
+      { name: "a", levApy: 10.0, dexImpactBps: 0 },
+      { name: "b", levApy: 10.04, dexImpactBps: 0 },
+      { name: "c", levApy: 10.02, dexImpactBps: 0 },
+    ];
+    expect(ranked[bestRateRowIndex(ranked)].name).toBe("a");
+  });
+
+  it("treats a zero-cost row as eligible, not as missing data", () => {
+    // USDC needs no swap in either direction; that is a real zero, not a null.
+    expect(bestRateRowIndex([{ levApy: 1, dexImpactBps: null }, { levApy: 2, dexImpactBps: 0 }])).toBe(1);
   });
 });
 

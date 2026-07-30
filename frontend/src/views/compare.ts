@@ -6,7 +6,8 @@ import "./compare.css";
  * (compareLevApy / compareSortRows / renderCompareTable / renderCompareView):
  *   - reserves per pool via fetchAllReserves
  *   - carry-optimal leverage + levApy at the same minHF the Trade form uses
- *   - indicative "DEX Rate" (1 unit → USDC) via aquariusPriceResult
+ *   - indicative "DEX Rate" (1 unit → USDC) + the price impact at size that the
+ *     "Best Rate" badge nets off the yield, via aquariusRateWithImpact
  *   - net-supply-APR history sparkline via fetchSnapshotSeries
  * The data/service layer is reused unchanged; only the rendering is new.
  */
@@ -19,15 +20,19 @@ import {
   type ReserveStats,
   type AssetInfo,
 } from "../blend";
-import { aquariusPriceResult, type AquariusStatus } from "../aquarius";
+import { aquariusRateWithImpact, IMPACT_NOTIONAL, type AquariusStatus } from "../aquarius";
 import { fetchSnapshotSeriesMulti, type SnapshotPoint } from "../history";
 import {
+  bestRateRowIndex,
   bestRowIndex,
   compareSortRows,
   deltaOverHours,
   FLAT_EPS_PCT,
+  HOLD_YEARS,
+  netOfCostApy,
   pctChangeOverHours,
   resample,
+  roundTripCostPp,
   trendOf,
   trendOfDelta,
   windowSlice,
@@ -59,6 +64,7 @@ interface CompareRow {
   levApy: number; // net APY at the carry-optimal leverage
   dexRate: number | null; // indicative 1 unit → USDC; null = no rate
   dexStatus: AquariusStatus; // why there is no rate: no_route vs Aquarius down
+  dexImpactBps: number | null; // Aquarius price impact at IMPACT_NOTIONAL; drives the badge
   series: SnapshotPoint[]; // net supply APR history within the window
   dexSeries: SnapshotPoint[]; // Aquarius rate history (dex_rate) within the window
 }
@@ -156,9 +162,15 @@ function stateRow(text: string): HTMLElement {
   return el("tr", {}, [el("td", { class: "tl-cmp__state", colspan: "7" }, [text])]);
 }
 
-function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLElement {
+/**
+ * One table row. `rankOne` is the APY leader (★ + row highlight); `bestRate` is
+ * the Aquarius execution leader (the "Best Rate" badge). They are separate flags
+ * because they answer different questions and often land on different rows — see
+ * bestRowIndex / bestRateRowIndex in compare_metrics.ts.
+ */
+function dataRow(r: CompareRow, idx: number, rankOne: boolean, bestRate: boolean, win: Win): HTMLElement {
   const cls = ["tl-cmp__row"];
-  if (best) cls.push("is-best");
+  if (rankOne) cls.push("is-best");
 
   // Sparkline is scoped to the selected chip; the 24h/7d arrows are fixed
   // windows so the deltas stay comparable across rows whatever chip is active.
@@ -176,12 +188,26 @@ function dataRow(r: CompareRow, idx: number, best: boolean, win: Win): HTMLEleme
     el("span", { class: "tl-cmp__sym" }, [r.asset.symbol]),
     el("span", { class: "tl-cmp__pool" }, [r.poolName]),
   ];
-  if (best) {
+  if (bestRate) {
+    // State the arithmetic and the assumption. A bare "Best Rate" next to a
+    // number that silently nets off a cost would be the misleading version.
+    const bps = r.dexImpactBps ?? 0;
+    const cost = roundTripCostPp(bps);
+    const net = netOfCostApy(r.levApy, bps);
+    const holdTxt = HOLD_YEARS === 1 ? "a 1-year hold" : `a ${HOLD_YEARS}-year hold`;
     assetChildren.push(Badge({ tone: "success", children: tx("compare.bestRate", "Best Rate") }));
-    assetChildren.push(Tooltip({ text: "Highest leveraged net APY across all pools and assets right now." }));
+    assetChildren.push(
+      Tooltip({
+        text:
+          `Best return after trading costs: ${r.levApy.toFixed(2)}% leveraged APY less ${cost.toFixed(2)}pp to enter ` +
+          `and exit via the Stellar DEX (Aquarius quotes ${bps.toFixed(1)} bps of price impact each way on a ` +
+          `~$${IMPACT_NOTIONAL.toLocaleString("en-US")} trade) = ${net.toFixed(2)}% net, assuming ${holdTxt} ` +
+          `from and back to USDC. Highest of any row here.`,
+      }),
+    );
   }
 
-  const rankCell = best
+  const rankCell = rankOne
     ? el("td", { class: "tl-cmp__td tl-cmp__mono tl-cmp__rank" }, [
         el("span", { class: "tl-cmp__star", "aria-hidden": "true" }, ["★"]),
         el("span", { class: "sr-only" }, ["Rank 1"]),
@@ -256,7 +282,10 @@ export function compareScreen(): HTMLElement {
     }
     const ranked = compareSortRows(rows);
     const bestIdx = bestRowIndex(ranked);
-    tbody.replaceChildren(...ranked.map((r, i) => dataRow(r, i, i === bestIdx, win)));
+    // Ranked order matters: bestRateRowIndex breaks execution-quality ties
+    // toward the earlier (higher-APY) row.
+    const bestRateIdx = bestRateRowIndex(ranked);
+    tbody.replaceChildren(...ranked.map((r, i) => dataRow(r, i, i === bestIdx, i === bestRateIdx, win)));
   };
 
   // Header window chips → re-render the sparklines (scopes trend, not columns).
@@ -303,7 +332,7 @@ export function compareScreen(): HTMLElement {
         ),
         th(
           tx("compare.col.aquaRate", "DEX Rate"),
-          "Live Aquarius quote for swapping 1 unit of this asset → USDC, routed across the aggregated Stellar DEX surface. The 24h / 7d figures are the rate's movement over those windows, from the Turbolong snapshot service.",
+          `Live Aquarius quote for swapping 1 unit of this asset → USDC, routed across the aggregated Stellar DEX surface. The 24h / 7d figures are the rate's movement over those windows, from the Turbolong snapshot service. The “Best Rate” badge marks the row with the highest leveraged APY after the cost of entering and exiting at these rates (~$${IMPACT_NOTIONAL.toLocaleString("en-US")} trade, ${HOLD_YEARS}-year hold).`,
           "r",
         ),
         th(
@@ -359,6 +388,7 @@ export function compareScreen(): HTMLElement {
           levApy,
           dexRate: null,
           dexStatus: "no_route",
+          dexImpactBps: null,
           series: [],
           dexSeries: [],
         });
@@ -368,6 +398,19 @@ export function compareScreen(): HTMLElement {
     loading = false;
     renderBody();
 
+    // The rate is a property of the asset, not the pool, and the same asset sits
+    // in several pools (XLM is in all three). Memoising per asset id keeps the
+    // cost at two Aquarius calls per *distinct* asset rather than two per row.
+    const quotes = new Map<string, ReturnType<typeof aquariusRateWithImpact>>();
+    const quoteFor = (assetId: string) => {
+      let q = quotes.get(assetId);
+      if (!q) {
+        q = aquariusRateWithImpact(assetId, usdc as string);
+        quotes.set(assetId, q);
+      }
+      return q;
+    };
+
     // 2. Enrich each row with a DEX rate + history sparkline, all in parallel.
     await Promise.allSettled(
       rows.map(async (r) => {
@@ -376,12 +419,18 @@ export function compareScreen(): HTMLElement {
         if (sym === "USDC") {
           r.dexRate = 1; // identity — no route needed
           r.dexStatus = "ok";
+          // Badge-eligible at zero cost, and that is not a technicality: the
+          // badge ranks yield net of getting in and out from USDC, and a USDC
+          // position needs no swap in either direction. It still has to win on
+          // APY like any other row.
+          r.dexImpactBps = 0;
         } else if (usdc && r.asset.id !== usdc) {
           tasks.push(
-            aquariusPriceResult(r.asset.id, usdc)
-              .then(({ price, status }) => {
-                r.dexRate = price;
+            quoteFor(r.asset.id)
+              .then(({ rate, impactBps, status }) => {
+                r.dexRate = rate;
                 r.dexStatus = status;
+                r.dexImpactBps = impactBps;
               })
               .catch(() => {
                 r.dexStatus = "unreachable";
