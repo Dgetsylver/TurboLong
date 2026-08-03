@@ -98,11 +98,18 @@ const en: Dict = {
   "vault.shareOfVault": "Share of Vault",
   "vault.tradeOnAquariusTitle": "Trade your position on Aquarius",
   "vault.tradeOnAquariusSub":
-    "Your vault deposit is a transferable SEP-41 receipt token. Once listed it trades against USDC on Aquarius, so you can exit without unwinding the leverage loop on-chain.",
+    "Sells your receipt token on Aquarius instead of unwinding the loop. Settles against the pool at the quoted price.",
   "vault.receiptToken": "Receipt token",
-  "vault.tradeCta": "Trade on Aquarius",
+  "vault.tradeCta": "Sell shares for",
   "vault.listingPending":
-    "Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.",
+    "Not yet listed on Aquarius for this network. Once listed, the receipt token trades here, so you can exit your leveraged position without unwinding the loop on-chain.",
+  "vault.tradeSell": "Sell receipt token",
+  "vault.shares": "shares",
+  "vault.tradeQuoteHint": "Enter an amount to see what you would receive.",
+  "vault.tradeQuoting": "Fetching quote…",
+  "vault.tradeNoQuote": "No quote available",
+  "vault.tradeConnect": "Connect your wallet to trade your receipt token.",
+  "vault.tradePool": "Pool ↗",
   // compare view
   "compare.title": "Compare Pools",
   "compare.subtitle":
@@ -471,11 +478,18 @@ const es: Dict = {
   "vault.shareOfVault": "Parte de la bóveda",
   "vault.tradeOnAquariusTitle": "Negocia tu posición en Aquarius",
   "vault.tradeOnAquariusSub":
-    "Tu depósito en la bóveda es un token de recibo SEP-41 transferible. Una vez listado, se negocia contra USDC en Aquarius, para que puedas salir sin deshacer el bucle de apalancamiento en cadena.",
+    "Vende tu token de recibo en Aquarius en lugar de deshacer el bucle. Se liquida contra el pool al precio cotizado.",
   "vault.receiptToken": "Token de recibo",
-  "vault.tradeCta": "Negociar en Aquarius",
+  "vault.tradeCta": "Vender participaciones por",
   "vault.listingPending":
-    "Listado en Aquarius tras el lanzamiento de la bóveda en mainnet. El token de recibo se negociará contra USDC, para que puedas salir de tu posición apalancada sin deshacer el bucle en cadena.",
+    "Aún no está listado en Aquarius para esta red. Una vez listado, el token de recibo se negocia aquí, para que puedas salir de tu posición apalancada sin deshacer el bucle en cadena.",
+  "vault.tradeSell": "Vender token de recibo",
+  "vault.shares": "participaciones",
+  "vault.tradeQuoteHint": "Introduce un importe para ver lo que recibirías.",
+  "vault.tradeQuoting": "Obteniendo cotización…",
+  "vault.tradeNoQuote": "Cotización no disponible",
+  "vault.tradeConnect": "Conecta tu billetera para negociar tu token de recibo.",
+  "vault.tradePool": "Pool ↗",
   "compare.title": "Comparar pools",
   "compare.subtitle":
     "APY neto en vivo de cada pool y activo de Blend, ordenados por el mejor rendimiento apalancado. Mejor tasa de intercambio vía Aquarius. Sin billetera.",
@@ -848,11 +862,18 @@ const pt: Dict = {
   "vault.shareOfVault": "Parte do cofre",
   "vault.tradeOnAquariusTitle": "Negocie sua posição na Aquarius",
   "vault.tradeOnAquariusSub":
-    "Seu depósito no cofre é um token de recibo SEP-41 transferível. Uma vez listado, ele é negociado contra USDC na Aquarius, para que você saia sem desfazer o loop de alavancagem on-chain.",
+    "Vende seu token de recibo na Aquarius em vez de desfazer o loop. Liquida contra o pool ao preço cotado.",
   "vault.receiptToken": "Token de recibo",
-  "vault.tradeCta": "Negociar na Aquarius",
+  "vault.tradeCta": "Vender cotas por",
   "vault.listingPending":
-    "Listagem na Aquarius após o lançamento do cofre na mainnet. O token de recibo será negociado contra USDC, para que você saia da posição alavancada sem desfazer o loop on-chain.",
+    "Ainda não listado na Aquarius para esta rede. Uma vez listado, o token de recibo é negociado aqui, para que você saia da posição alavancada sem desfazer o loop on-chain.",
+  "vault.tradeSell": "Vender token de recibo",
+  "vault.shares": "cotas",
+  "vault.tradeQuoteHint": "Informe um valor para ver quanto você receberia.",
+  "vault.tradeQuoting": "Obtendo cotação…",
+  "vault.tradeNoQuote": "Cotação indisponível",
+  "vault.tradeConnect": "Conecte sua carteira para negociar seu token de recibo.",
+  "vault.tradePool": "Pool ↗",
   "compare.title": "Comparar pools",
   "compare.subtitle":
     "APY líquido ao vivo de cada pool e ativo da Blend, ordenado pelo melhor rendimento alavancado. Melhor taxa de troca via Aquarius. Sem carteira.",

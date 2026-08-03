@@ -10,6 +10,11 @@ import { initI18n, applyTranslations, t, cycleLang } from "./i18n.ts";
 const RPC_URL = (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
 const ALERTS_URL =
   (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
+// Mainnet-pinned on purpose. This page reports the health of the *production*
+// deployment and has no network switcher, so it must not import aquarius.ts —
+// that would pull blend.ts and the Stellar SDK into a bundle whose whole point
+// is to stay up when the app bundle doesn't. The in-app screen
+// (views/status.ts) is the network-aware one.
 const AQUARIUS_API =
   (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 

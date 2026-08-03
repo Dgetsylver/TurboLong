@@ -8,11 +8,58 @@
  * No npm SDK exists — plain HTTP + @stellar/stellar-sdk is the supported path.
  */
 
-export const AQUARIUS_API =
-  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
+import { getActiveNetwork, type NetworkMode } from "./blend.ts";
 
-/** Mainnet Aquarius router contract (on-chain fallback / execution). */
-export const AQUARIUS_ROUTER = "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK";
+export interface AquariusEndpoints {
+  /** Base URL of the Aquarius AMM REST API (find-path lives under it). */
+  api: string;
+  /** Aquarius router contract — quotes resolve to it and swaps execute on it. */
+  router: string;
+}
+
+/**
+ * Aquarius runs a separate deployment per network, and they share no state: the
+ * mainnet API 400s on a testnet contract ID (`Object with address=… does not
+ * exist`) rather than returning "no route". Sending testnet addresses to the
+ * mainnet endpoint therefore renders every pair as untradeable — which is what
+ * happened before these were network-scoped.
+ *
+ * Both deployments expose an `external/v1` and an `external/v2` find-path that
+ * return byte-identical payloads on the pairs we quote. We stay on v1: it is
+ * what the T3.1 mainnet acceptance evidence was generated against
+ * (`docs/evidence/aquarius-rate-report.md`), and v2 buys us nothing today.
+ */
+const AQUARIUS_ENDPOINTS: Record<NetworkMode, AquariusEndpoints> = {
+  mainnet: {
+    api: "https://amm-api.aqua.network/api/external/v1",
+    router: "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK",
+  },
+  testnet: {
+    // Aquarius rotates the testnet router on network resets. This one is
+    // documented (Feb 2026) as stable across resets, and is verified live — the
+    // pre-2026 address in older docs (CDGX6Q3Z…) is dead. Re-verify with
+    // `stellar contract info interface --id … --network testnet` before a
+    // listing run; see docs/aquarius-listing-runbook.md.
+    api: "https://amm-api-testnet.aqua.network/api/external/v1",
+    router: "CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD",
+  },
+};
+
+/** Aquarius API + router for the currently selected network. */
+export function aquariusEndpoints(): AquariusEndpoints {
+  const net = getActiveNetwork();
+  const base = AQUARIUS_ENDPOINTS[net];
+  // The env override stays mainnet-only: it exists to point the app at a
+  // proxy/mirror of the production API, and applying it on testnet too would
+  // silently send testnet addresses to a mainnet-shaped override.
+  const override = import.meta.env.VITE_AQUARIUS_API as string | undefined;
+  return net === "mainnet" && override ? { ...base, api: override } : base;
+}
+
+/** Aquarius router contract for the active network (execution + on-chain reads). */
+export function aquariusRouter(): string {
+  return aquariusEndpoints().router;
+}
 
 export interface AquariusQuote {
   /** Best output amount, in stroops (7-dp). */
@@ -40,7 +87,7 @@ export async function aquariusBestRate(
 ): Promise<AquariusQuote | null> {
   if (tokenInId === tokenOutId || amountInStroops <= 0n) return null;
   try {
-    const res = await fetch(`${AQUARIUS_API}/find-path/`, {
+    const res = await fetch(`${aquariusEndpoints().api}/find-path/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

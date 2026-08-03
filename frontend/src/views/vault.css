@@ -251,6 +251,13 @@
   color: var(--tl-blnd);
   font-size: var(--tl-text-xs);
 }
+/* Live swap quote. Tabular figures so the number doesn't jitter horizontally
+   as it re-quotes on each keystroke. */
+.vault-receipt__quote {
+  font-variant-numeric: tabular-nums;
+  color: var(--tl-text-2);
+  min-height: 1.2em;
+}
 .vault-receipt__explorer {
   font-size: var(--tl-text-xs);
   color: var(--tl-text-3);
