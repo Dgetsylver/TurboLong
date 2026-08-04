@@ -29,20 +29,19 @@ useDefault = true
 # ── Custom rules ───────────────────────────────────────────────────────────────
 
 # Stellar secret keys start with 'S' followed by 55 uppercase base32 chars.
+#
+# NOTE on case sensitivity: the key body MUST stay case-sensitive. Stellar
+# strkeys are base32 (RFC 4648) and are always uppercase [A-Z2-7]. A blanket
+# (?i) here makes `S[A-Z2-7]{55}` match any 56-char mixed-case alphanumeric
+# run, which false-positives on ordinary base64 blobs (it previously fired on
+# the VAPID *public* key in alerts/wrangler.toml). The (?i) is therefore
+# scoped to the optional label prefix only, via the (?i:...) group.
 [[rules]]
 id          = "stellar-secret-key"
 description = "Stellar secret key (Ed25519 seed)"
-regex       = '''(?i)(stellar[_\-]?(secret|private|seed|sk)[_\-]?key[\"\':\s=]+)?S[A-Z2-7]{55}'''
+regex       = '''(?:(?i:stellar[_\-]?(?:secret|private|seed|sk)[_\-]?key)[\"\':\s=]+)?S[A-Z2-7]{55}'''
 tags        = ["stellar", "key", "secret"]
 severity    = "CRITICAL"
-
-  [rules.allowlist]
-  description = "Known test / public key values that are not secrets"
-  regexes     = [
-    # Stellar address space - public keys start with G, not S, so this is a
-    # safety net for regex overlap only
-    "^G[A-Z2-7]{55}$",
-  ]
 
 # Resend API key pattern (used in alerts worker)
 [[rules]]
@@ -70,10 +69,22 @@ severity    = "CRITICAL"
 
 # ── Global allowlist ───────────────────────────────────────────────────────────
 # Paths, commits, and regex patterns that should NEVER trigger an alert.
+#
+# ⚠ MUST use the SINGULAR [allowlist] table, not the plural [[allowlists]]
+# array-of-tables. The plural form is silently IGNORED by gitleaks 8.24.x —
+# the version pinned by gitleaks/gitleaks-action@v3 in
+# .github/workflows/secret-scan.yml — so entries placed there have no effect
+# in CI even though they work with a newer gitleaks installed locally. That
+# discrepancy previously made this whole section dead weight in CI.
+#
+# Because only ONE global [allowlist] table may exist, all global exemptions
+# (paths and regexes) are merged below. If you bump the action/gitleaks
+# version, re-verify before switching forms.
 
-[[allowlists]]
-description = "Test fixtures, snapshots, and lock files"
-paths       = [
+[allowlist]
+description = "Global exemptions: generated/vendored files and public Stellar strkeys"
+
+paths = [
   # Cargo.lock and package-lock files contain hashes that look like secrets
   '''Cargo\.lock''',
   '''package-lock\.json''',
@@ -83,20 +94,28 @@ paths       = [
   '''.*\.docx''',
 ]
 
-[[allowlists]]
-description = "Known public Stellar addresses used in docs and tests (not secret keys)"
-regexes     = [
-  # Pool contract IDs and oracle addresses referenced throughout the codebase
-  '''CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI''',
-  '''CAVRP26CWW6IUEXBRA3Q2T2SHBUVBC2DF43M4E23LEZGW5ZEIB62HALS''',
-  '''CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75''',
-  '''CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY''',
-  '''CAUIKL3IYGMERDRUN6YSCLWVAKIFG5Q4YJHUKM4S4NJZQIA3BAS6OJPK''',
-]
-
-[[allowlists]]
-description = "On-chain proof-of-concept wallet addresses in bug bounty report (public, not secrets)"
-regexes     = [
-  '''GBHD3V2XKX6DXHYZDSHA2UYZTO4MKB2R6QNSCDT4XEKNGTLPXT7A36EA''',
-  '''GCR3VBVLYM5ZUBX63XMYBEY4EMAPVNCLORA4CWPA64CYEQQT53UCIQ36''',
+# Public Stellar strkeys — contract IDs (C…) and account addresses (G…).
+#
+# Stellar encodes a type byte in the first character of every strkey:
+#   G = ed25519 account public key   (public — an address)
+#   C = contract ID                  (public — an address)
+#   M = muxed account                (public)
+#   S = ed25519 SECRET seed          (SECRET — never allowlist)
+#
+# So a 56-char base32 strkey beginning with G or C is, by construction, a
+# public on-chain identifier and can never be a credential. This codebase
+# refers to vault share tokens, underlying assets, pool and oracle contracts
+# by their C… address in source, JSON manifests, and docs; gitleaks' built-in
+# `generic-api-key` rule flags them purely because they sit next to an
+# identifier containing the word "token" (e.g. `shareToken: "C…"`).
+#
+# This supersedes the previous list of individually enumerated addresses,
+# which had to be extended by hand on every new deploy.
+#
+# Anchored so only a complete strkey is exempt, never a substring of some
+# longer high-entropy value. Actual secret seeds start with S and are still
+# caught by the `stellar-secret-key` rule above.
+regexes = [
+  '''^C[A-Z2-7]{55}$''',
+  '''^G[A-Z2-7]{55}$''',
 ]

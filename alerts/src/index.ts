@@ -595,22 +595,51 @@ async function pruneSnapshots(env: Env): Promise<void> {
   }
 }
 
+/** Total pool/asset rows one tick is responsible for. */
+const CRON_ROWS = POOLS.reduce((n, p) => n + p.assets.length, 0);
+
+/**
+ * Which row of the pool/asset loop gets its BLND emissions refreshed this tick.
+ *
+ * A Worker invocation gets 50 subrequests. Reading emissions for every row costs
+ * 4 reads each (2 emissions + the oracle price they need + BLND spot) and blew
+ * that budget: the tick died after 10 of 16 rows and the remaining 6 silently
+ * got no snapshot *and* no HF/liquidation alert check. Refreshing one row per
+ * tick keeps the steady-state cost at 1 read per asset and still sweeps every
+ * row every CRON_ROWS ticks (16 rows = 4 hours).
+ *
+ * Derived from the clock rather than stored state because the Worker is
+ * stateless between invocations, and an approximate rotation is all this needs —
+ * the guarantee that matters is that no asset goes unchecked indefinitely, not
+ * that the order survives a deploy.
+ */
+function emissionsRowForTick(now = Date.now()): number {
+  return Math.floor(now / 900_000) % CRON_ROWS;
+}
+
 async function handleCron(env: Env, requestBase?: string): Promise<void> {
   console.log("[cron] rate snapshot + alert check starting...");
   const base = requestBase ?? "https://turbolong-alerts.turbolong.workers.dev";
 
+  const emissionsRow = emissionsRowForTick();
+  const skipped: string[] = [];
+  let row = -1;
+
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
+      row++;
       let rates: ReserveRates | null = null;
       try {
-        rates = await fetchReserveRates(pool, asset);
+        rates = await fetchReserveRates(pool, asset, { withEmissions: row === emissionsRow });
       } catch (e) {
         console.error(`[cron] Failed to fetch rates for ${asset.symbol} on ${pool.name}:`, e);
+        skipped.push(`${pool.name}/${asset.symbol}`);
         continue;
       }
 
       if (!rates) {
         console.warn(`[cron] No rates returned for ${asset.symbol} on ${pool.name}`);
+        skipped.push(`${pool.name}/${asset.symbol}`);
         continue;
       }
 
@@ -638,7 +667,21 @@ async function handleCron(env: Env, requestBase?: string): Promise<void> {
   }
 
   await pruneSnapshots(env);
-  console.log("[cron] rate snapshot + alert check complete.");
+
+  // A partial tick used to look exactly like a healthy one: the per-asset catch
+  // swallows the failure, the loop moves on and this handler still logs
+  // "complete" and returns outcome=ok. That hid a subrequest-budget overrun for
+  // ~2 weeks, during which 4-6 pool/assets got no snapshot AND no HF or
+  // liquidation alert check. Coverage is now stated on every tick, and anything
+  // short of full coverage is an error, not a shrug.
+  const covered = CRON_ROWS - skipped.length;
+  if (skipped.length > 0) {
+    console.error(
+      `[cron] INCOMPLETE: covered ${covered}/${CRON_ROWS} pool/assets. ` +
+      `Got no snapshot and no HF/liquidation alert check: ${skipped.join(", ")}`,
+    );
+  }
+  console.log(`[cron] rate snapshot + alert check complete (${covered}/${CRON_ROWS} pool/assets).`);
 }
 
 /**

@@ -157,15 +157,35 @@ async function fetchBlndPrice(): Promise<number> {
   return 0;
 }
 
-/** Fetch reserve stats for a single asset in a pool and compute APR. */
-export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symbol: string; reserveIndex: number }): Promise<ReserveRates | null> {
+/**
+ * Fetch reserve stats for a single asset in a pool and compute APR.
+ *
+ * `withEmissions` controls the expensive three-quarters of the call. The BLND
+ * emissions APRs need the two `get_reserve_emissions` reads *and* the oracle
+ * `lastprice` that turns them into a rate (it feeds nothing else — see the
+ * totalSupplyUsd/totalBorrowUsd use below), plus the BLND spot price. With
+ * `withEmissions: false` all four are skipped and both BLND APRs come back 0 —
+ * which is what they have measured on every pool/asset to date.
+ *
+ * This knob exists because a Worker invocation gets 50 subrequests and the cron
+ * has 16 pool/assets to cover; at 4 reads each it ran out after 10 and the rest
+ * got neither a snapshot nor an alert check. See the rotation in
+ * index.ts:emissionsRowForTick.
+ */
+export async function fetchReserveRates(
+  pool: PoolDef,
+  asset: { id: string; symbol: string; reserveIndex: number },
+  { withEmissions = true }: { withEmissions?: boolean } = {},
+): Promise<ReserveRates | null> {
   try {
     const [reserveRaw, priceRaw, supplyEmissions, borrowEmissions, blndPrice] = await Promise.all([
       simulate(pool.id, "get_reserve", [{ type: "address", value: asset.id }]),
-      simulate(pool.oracleId, "lastprice", [{ type: "vec", value: [{ type: "symbol", value: "Stellar" }, { type: "address", value: asset.id }] }]),
-      simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 + 1 }]),
-      simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 }]),
-      fetchBlndPrice(),
+      withEmissions
+        ? simulate(pool.oracleId, "lastprice", [{ type: "vec", value: [{ type: "symbol", value: "Stellar" }, { type: "address", value: asset.id }] }])
+        : null,
+      withEmissions ? simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 + 1 }]) : null,
+      withEmissions ? simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 }]) : null,
+      withEmissions ? fetchBlndPrice() : 0,
     ]);
 
     if (!reserveRaw) return null;

@@ -13,13 +13,12 @@ import "./status.css";
  */
 import { el, Badge } from "../ui";
 import { t } from "../i18n";
+import { aquariusEndpoints } from "../aquarius";
 
 // ── Endpoints / env vars (identical to src/status.ts) ────────────────────────
 const RPC_URL = (import.meta.env.VITE_RPC_URL as string | undefined) ?? "https://soroban-rpc.creit.tech/";
 const ALERTS_URL =
   (import.meta.env.VITE_ALERTS_WORKER_URL as string | undefined) ?? "https://turbolong-alerts.turbolong.workers.dev";
-const AQUARIUS_API =
-  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
 
 type State = "operational" | "degraded" | "down" | "checking";
 
@@ -56,7 +55,9 @@ const SERVICES: Service[] = [
     labelKey: "status.svc.snapshots",
     check: () => reachable(`${ALERTS_URL}/snapshots?asset=USDC&limit=1`),
   },
-  { id: "aquarius", labelKey: "status.svc.aquarius", check: () => reachable(AQUARIUS_API) },
+  // Resolved per check, not at module load: the user can switch networks while
+  // the status screen is mounted, and Aquarius is a different host per network.
+  { id: "aquarius", labelKey: "status.svc.aquarius", check: () => reachable(aquariusEndpoints().api) },
 ];
 
 // ── state → presentation ─────────────────────────────────────────────────────
