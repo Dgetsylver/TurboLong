@@ -275,6 +275,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
 
+        // Pre-reinvest snapshot: `reserves::harvest` adds the measured deltas to
+        // this, so it must be read before the pool settles the reinvest.
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
         // Claim BLND from both supply and borrow sides
         let harvested_blnd = blend_pool::claim(&e, &config);
 
@@ -294,7 +298,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
-            let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &config)?;
+            let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
             event::emit_harvest(
                 &e,
                 String::from_str(&e, STRATEGY_NAME),
@@ -422,8 +426,13 @@ fn unwind_to(
         return Ok((before_hf, before_hf, 0));
     }
 
+    // Pre-unwind snapshot, built from the pool values already read above rather
+    // than re-fetching them; `reserves::deleverage` subtracts the measured
+    // removal from it.
+    let pre_unwind = reserves::reconcile(e, b_tokens, d_tokens, b_rate, d_rate);
+
     let (b_removed, d_removed) = blend_pool::submit_deleverage(e, loops, config)?;
-    reserves::deleverage(e, b_removed, d_removed, config)?;
+    reserves::deleverage(e, b_removed, d_removed, &pre_unwind)?;
 
     // Recompute HF on the post-unwind position for the event / return.
     let (b2, d2) = blend_pool::get_strategy_positions(e, config);
@@ -463,6 +472,42 @@ impl BlendLeverageStrategy {
         Ok(())
     }
 
+    /// Reconcile the tracked position with the pool's measured one, persisting
+    /// the correction. Permissionless — like `rebalance`, it can only move the
+    /// vault's accounting towards the truth, so anyone may call it.
+    ///
+    /// Share pricing does not *depend* on this being called: every read path
+    /// reconciles on the fly (`reserves::reconcile`), so a liquidation is priced
+    /// in from the moment it happens. This entrypoint exists to make the
+    /// correction **observable** — the tracked totals are written down and a
+    /// `reserves_sync` event is emitted, giving the `alerts/` stack a signal that
+    /// the strategy's position changed without the strategy asking. Without it a
+    /// liquidation is handled correctly but silently.
+    ///
+    /// Returns `(b_written_down, d_written_down)`; `(0, 0)` when already in sync.
+    /// Emits `reserves_sync` with topics `("reserves_sync",)` and data
+    /// `(b_before, b_after, d_before, d_after)` only when a correction is made.
+    pub fn sync_reserves(e: Env) -> Result<(i128, i128), StrategyError> {
+        extend_instance_ttl(&e);
+        let config = storage::get_config(&e);
+        let before = storage::get_strategy_reserves(&e);
+        let (b_correction, d_correction) = reserves::sync(&e, &config);
+
+        if b_correction != 0 || d_correction != 0 {
+            e.events().publish(
+                (Symbol::new(&e, "reserves_sync"),),
+                (
+                    before.total_b_tokens,
+                    before.total_b_tokens - b_correction,
+                    before.total_d_tokens,
+                    before.total_d_tokens - d_correction,
+                ),
+            );
+        }
+
+        Ok((b_correction, d_correction))
+    }
+
     /// Keeper-authorised, rate-limited auto-rebalance. Unwinds the minimal loops
     /// to restore HF to orange_hf when HF has dropped into the orange zone.
     /// Limited to once per `REBALANCE_COOLDOWN_LEDGERS`; emits a `rebalance`
@@ -494,8 +539,14 @@ impl BlendLeverageStrategy {
 
     /// Partial-unwind liquidation protection: unwind just enough loops to restore
     /// HF to `target_hf`. Callable by the keeper, or by anyone when HF is already
-    /// in the orange zone. `target_hf` is floored at config.orange_hf to prevent
-    /// over-unwinding. Emits a `rebalance` event when loops are unwound.
+    /// in the orange zone.
+    ///
+    /// `target_hf` is honoured only for the keeper, and is floored at
+    /// `config.orange_hf` so it can never *under*-unwind. A permissionless caller
+    /// gets `config.orange_hf` regardless of the `target_hf` they pass: the
+    /// unauthenticated branch is deliberately no more powerful than `rebalance()`,
+    /// so it cannot be used to force leverage below the configured floor. Emits a
+    /// `rebalance` event when loops are unwound.
     pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<u32, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
@@ -516,15 +567,20 @@ impl BlendLeverageStrategy {
         )?;
 
         // Only the keeper can trigger above the orange zone; anyone can inside it.
-        if hf >= config.orange_hf {
-            let keeper = storage::get_keeper(&e);
-            if caller != keeper {
-                return Err(StrategyError::NotAuthorized);
-            }
+        let is_keeper = caller == storage::get_keeper(&e);
+        if hf >= config.orange_hf && !is_keeper {
+            return Err(StrategyError::NotAuthorized);
         }
         caller.require_auth();
 
-        let effective_target = target_hf.max(config.orange_hf);
+        // The keeper picks its own target (floored at orange_hf); a permissionless
+        // caller is capped there too, so an arbitrarily large `target_hf` cannot be
+        // used to deleverage the vault past the configured floor.
+        let effective_target = if is_keeper {
+            target_hf.max(config.orange_hf)
+        } else {
+            config.orange_hf
+        };
         let (before_hf, after_hf, loops) = unwind_to(&e, &config, effective_target)?;
         if loops > 0 {
             emit_rebalance(&e, &caller, before_hf, after_hf, loops);
@@ -762,6 +818,10 @@ impl BlendLeverageStrategy {
         check_positive_amount(amount_in)?;
         let config = storage::get_config(&e);
 
+        // Pre-reinvest snapshot — see the trait `harvest` for why it must be
+        // taken before the pool settles.
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+
         let (b_delta, d_delta, realized) = if via_soroswap {
             // Mandatory slippage protection on the on-chain swap.
             if amount_out_min <= 0 {
@@ -774,7 +834,7 @@ impl BlendLeverageStrategy {
         };
 
         if b_delta > 0 {
-            let updated = reserves::harvest(&e, b_delta, d_delta, &config)?;
+            let updated = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
             event::emit_harvest(
                 &e,
                 String::from_str(&e, STRATEGY_NAME),

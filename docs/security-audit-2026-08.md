@@ -25,8 +25,8 @@ a result, and one finding was withdrawn. Corrections are marked inline.
 | ID | Severity | Title | Status |
 |----|----------|-------|--------|
 | H-1 | High | HF formula omits Blend's `l_factor`; safety margin is unverified per asset | **Fixed** 2026-08-05 |
-| M-1 | Medium | `partial_unwind` accepts unbounded `target_hf` — anyone can force a full deleverage | Open |
-| M-2 | Medium | Stored reserves never reconcile with the real Blend position | Open |
+| M-1 | Medium | `partial_unwind` accepts unbounded `target_hf` — anyone can force a full deleverage | **Fixed** 2026-08-05 |
+| M-2 | Medium | Stored reserves never reconcile with the real Blend position | **Fixed** 2026-08-05 |
 | M-3 | Medium | No re-leverage path — leverage ratchets monotonically down | Open |
 | M-4 | Medium | Broker harvest path has no on-chain settlement floor | Open |
 | M-5 | Medium | Trait `harvest` defaults to zero slippage protection | Open |
@@ -187,6 +187,54 @@ costs only a transaction fee, and combined with M-3 the damage does not self-hea
 `rebalance()` already implements exactly the right restricted behaviour; the
 permissionless branch of `partial_unwind` should be no more powerful than it.
 
+**Resolution (2026-08-05).** Fixed as recommended (`lib.rs:499-544`). The keeper identity
+is now resolved once, before the auth gate, and drives both decisions:
+
+```rust
+let is_keeper = caller == storage::get_keeper(&e);
+if hf >= config.orange_hf && !is_keeper {
+    return Err(StrategyError::NotAuthorized);
+}
+caller.require_auth();
+
+let effective_target = if is_keeper {
+    target_hf.max(config.orange_hf)   // keeper: own target, floored
+} else {
+    config.orange_hf                  // anyone: exactly rebalance()'s behaviour
+};
+```
+
+A permissionless caller's `target_hf` is now ignored outright rather than floored, so the
+unauthenticated branch is bounded by construction — it cannot express anything
+`rebalance()` cannot. The keeper path is unchanged: it is a trusted role and still gets
+the target it asks for, so it can deleverage past `orange_hf` when it judges that
+necessary. Cost is one extra storage read on the permissionless path (the keeper address
+was previously read only above the orange zone).
+
+No off-chain caller is affected — the keeper drives `rebalance_keeper`, and the only other
+references to `partial_unwind` outside the contract are `scripts/rebalance_sim.ts`'s mirror
+of the pure `compute_partial_unwind` math, which is untouched.
+
+Three integration tests in `test_integration.rs` pin the behaviour against the real Blend
+pool, using the existing 8-loop stressed fixture (HF ≈ 1.076, inside the orange zone so no
+keeper role is needed):
+
+- `test_partial_unwind_ignores_target_from_permissionless_caller` — the finding's exact
+  attack: a stranger calls with `target_hf` = 100. Debt survives and HF lands at the
+  floor (1.1507 against `orange_hf` 1.15); under the old code the closed form clamped to a
+  full repay and retired the position. The follow-up assertions pin the "no more powerful
+  than `rebalance()`" property: a subsequent `rebalance()` is a no-op, and the stranger's
+  retry is now rejected outright, since restoring HF puts the position back outside the
+  permissionless window.
+- `test_partial_unwind_honours_keeper_target_above_orange` — the keeper asking for
+  `orange_hf + 0.20` still gets it, so the cap did not disarm the trusted path.
+- `test_partial_unwind_rejects_non_keeper_above_orange_zone` — the pre-existing auth gate,
+  pinned so it is not lost while the target bounding moves around it.
+
+M-3 remains open, so the caveat above still stands: leverage removed by a rebalance does
+not restore itself. The fix bounds what a stranger can force to one rebalance's worth of
+deleveraging, not to zero.
+
 ### M-2 — Stored reserves never reconcile with the real Blend position
 
 **Files:** `contracts/strategies/blend_leverage/src/reserves.rs:15-21`, `:42-109`,
@@ -219,6 +267,85 @@ down to the measured position and emits an event on any downward correction, so 
 *(The first draft listed a separate M-5 for `deposit`'s safety gate reading stored
 accounting rather than the live position. That is the same defect observed at a second
 site, not an independent finding, so it is folded in here.)*
+
+**Resolution (2026-08-05).** Both halves of the recommendation are implemented, because
+they do different jobs: reconciliation on read makes the *pricing* correct, and
+`sync_reserves()` makes the correction *visible*.
+
+Reconciliation is now a single rule, applied wherever the position is read
+(`reserves.rs:22-95`):
+
+```rust
+reserves.total_b_tokens = reserves.total_b_tokens.min(pool_b);
+reserves.total_d_tokens = reserves.total_d_tokens.min(pool_d);
+```
+
+`get_strategy_reserves_updated` fetches `blend_pool::get_strategy_positions` alongside the
+rates it already fetched and clamps through `reconcile`. Every consumer inherits it —
+`balance`, `position`, `withdraw`'s pricing, and `deposit`'s safety gate, which closes the
+folded-in second site without a separate change. It deliberately does **not** persist:
+`balance` and `position` are views, and a view must not write.
+
+**The clamp is downward-only, and that asymmetry is the load-bearing part.** Following the
+pool *up* would mean any collateral credited to the strategy's position moved the share
+price, which is precisely the lever an inflation attack needs — and it would invalidate
+this report's own "not exploitable" entry that a donation cannot move the share price. As
+things stand there is no such path: Blend's `submit` routes `to` to outgoing transfers
+only, so a `SupplyCollateral` sent with `to = strategy` credits the *sender*. The test
+below pins that observation, then constructs the upward gap directly and pins the rule
+that would contain it if the assumption ever stopped holding.
+
+One asymmetry is worth stating rather than hiding: a third party *repaying* the
+strategy's debt lowers `pool_d`, which does clamp down and does raise equity. That is a
+donation of value that moves the share price, but it is bounded by the vault's own
+outstanding debt rather than unbounded like a collateral donation — and the alternative,
+leaving `total_d_tokens` high after a liquidation, would systematically under-price every
+holder's shares until the position closed.
+
+Two consequential changes fell out of making the read path live:
+
+- `reserves::harvest` and `reserves::deleverage` used to re-read reserves *after* their
+  pool operation had settled and then apply the delta again. Against a stored-only ledger
+  that was harmless; against a reconciled read it double-counts. Both now take the
+  pre-operation snapshot as a parameter, exactly as `deposit` and `commit_withdraw`
+  already did, so the whole crate follows one discipline: `stored = reconcile(previous) ±
+  measured delta`. `unwind_to` builds its snapshot from the pool values it had already
+  read, so this costs no extra cross-contract call on the rebalance path.
+- `deleverage` switched from `checked_sub` to `saturating_sub`, matching `commit_withdraw`.
+  The measured removal comes from the pool while the snapshot is clamped to the pool's
+  pre-unwind position, so if the tracked total ever sat below the pool's the subtraction
+  could underflow — and a revert there would brick liquidation protection.
+
+`sync_reserves()` (`lib.rs:490-521`) is the observability half: permissionless (like
+`rebalance`, it can only move the accounting towards the truth), it persists the write-down
+and emits `reserves_sync` with `(b_before, b_after, d_before, d_after)`, returning the
+correction. It is idempotent and silent when there is nothing to correct. Pricing does not
+depend on anyone calling it — that is what the read path is for; its job is to leave an
+on-chain trace that the position moved without the strategy asking.
+
+Three integration tests against the real Blend fixture (`test_integration.rs`), all driven
+through the production entrypoints. They model the seizure as a direct pool
+`WithdrawCollateral` submitted as the strategy — not a liquidation auction, but the same
+event as far as the strategy's accounting is concerned:
+
+- `test_seized_collateral_is_priced_into_balance_immediately` — the finding itself. After
+  ~10% of collateral leaves, the test first asserts the raw stored ledger is *unchanged*
+  (otherwise it would be proving nothing), then that `position()` reports the pool's
+  collateral, that equity and the holder's `balance()` both fall, and that the write-down
+  equals the underlying value of exactly the collateral that left.
+- `test_sync_reserves_writes_down_seizure_and_emits_event` — no correction and no event on
+  a healthy position; after the seizure, stored totals are written down to the pool's, the
+  event payload matches the transition, the return value is the amount written down, and a
+  second call is a no-op.
+- `test_reconciliation_never_revises_the_position_upward` — the anti-donation property
+  described above.
+
+**Not done, and deliberately.** The recommendation's rationale for the event was "so the
+`alerts/` stack can detect a liquidation". `alerts/` has no event ingestion at all today —
+it simulates pool `get_reserve`/`lastprice` calls on a schedule and computes HF from a
+config leverage number. Consuming `reserves_sync` means building event subscription there,
+which is a separate piece of work rather than part of this fix. The contract now emits the
+signal; nothing yet listens for it.
 
 ### M-3 — No re-leverage path; leverage ratchets monotonically down
 
@@ -351,8 +478,11 @@ Recorded because these close common failure modes in this contract class:
   instead of assuming rate 1.0.
 - **Withdraw rounding runs the right way.** `shares_to_burn` uses `fixed_mul_ceil` while
   token removals use `fixed_mul_floor` (`reserves.rs:150-164`) — against the withdrawer.
-- **Inflation attack is structurally dead.** Equity derives from pool b/d tokens, not the
-  contract's token balance, so a donation cannot move the share price.
+- **Inflation attack is structurally dead.** Equity derives from tracked b/d tokens, not
+  the contract's token balance, so a donation cannot move the share price. *(M-2's fix
+  reconciles those tracked totals against the pool. It clamps downward only, specifically
+  so this entry keeps holding — see that Resolution for the reasoning and the test that
+  pins it.)*
 - **Constructor validates risk parameters** (`lib.rs:119-128`), including the
   `orange_hf > min_hf > 1.0 > c_factor` ordering `compute_partial_unwind` depends on.
 - **Deployed parameters are genuinely conservative** — `target_loops` 2–4 against a
@@ -363,11 +493,13 @@ Recorded because these close common failure modes in this contract class:
 
 ## Suggested remediation order
 
-1. **M-1** — cap `target_hf` for non-keeper callers. One-line fix, unauthenticated vector.
+1. ~~**M-1** — cap `target_hf` for non-keeper callers~~ — done, see *Resolution* above.
 2. ~~**H-1** — add `l_factor` to the HF formula~~ — done, see *Resolution* above.
-3. **M-2** — reconcile reserves against the pool, or add `sync_reserves()` + alerting.
+3. ~~**M-2** — reconcile reserves against the pool~~ — done, see *Resolution* above. The
+   `alerts/` side of it (consume `reserves_sync`) is still outstanding.
 4. **M-4 / M-5** — settlement floor on the Broker path, mandatory slippage on `harvest`.
-5. **M-3** — `releverage()`, or make displayed APY track measured leverage.
+5. **M-3** — `releverage()`, or make displayed APY track measured leverage. Now the top
+   remaining item: with M-1 capped, the ratchet is the residual half of that pair.
 6. Lows as cleanup; **L-2**'s comment fix is worth doing promptly since it is a claim made
    to holders.
 
@@ -382,4 +514,8 @@ were **not** queried and should be confirmed independently.
 The `tests-snapshot-source` mainnet-fork harness is the right vehicle for H-1 (fixture
 with `l_factor < 1.0`, assert the strategy's HF against Blend's own health check), M-1
 (call `partial_unwind` from a stranger with a large target, assert leverage survives), and
-M-2 (simulate a liquidation, assert `balance()` against the real pool position).
+M-2 (simulate a liquidation, assert `balance()` against the real pool position). All three
+have since been covered this way against the in-repo Blend fixture. M-2's tests model the
+seizure as a direct collateral withdrawal rather than a real liquidation auction; running
+the same assertions through an actual auction on a mainnet fork would be a stronger proof
+and is the one piece still worth adding.
