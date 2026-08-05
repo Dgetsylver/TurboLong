@@ -29,7 +29,7 @@ a result, and one finding was withdrawn. Corrections are marked inline.
 | M-2 | Medium | Stored reserves never reconcile with the real Blend position | **Fixed** 2026-08-05 |
 | M-3 | Medium | No re-leverage path — leverage ratchets monotonically down | **Fixed** 2026-08-05 |
 | M-4 | Medium | Broker harvest path has no on-chain settlement floor | **Fixed** 2026-08-05 |
-| M-5 | Medium | Trait `harvest` defaults to zero slippage protection | Open |
+| M-5 | Medium | Trait `harvest` defaults to zero slippage protection | **Fixed** 2026-08-05 |
 | L-1 | Low | Public `burn`/`burn_from` strand equity and break the supply invariant | Open |
 | L-2 | Low | `set_share_token` re-pointable (subsumed by `upgrade`) | Open |
 | L-3 | Low | Silent `unwrap_or` fallbacks degrade the deposit safety projection | Open |
@@ -602,6 +602,59 @@ removed.
 **Recommendation.** Reject `None`/empty `data`, or derive a floor on-chain from
 `router_get_amounts_out` minus a stored max-slippage bps. Deprecating `harvest` in favour
 of `harvest_reinvest` is also reasonable.
+
+**Resolution (2026-08-05).** Fixed by giving the swap a floor from a source the caller
+does not control, and refusing the swap when there is none (`lib.rs:305-341`):
+
+```rust
+let blnd_balance = TokenClient::new(&e, &config.blend_token).balance(&strategy);
+let amount_out_min = if blnd_balance >= config.reward_threshold {
+    let floor = match storage::get_min_harvest_rate(&e) {
+        Some(rate) => leverage::harvest_floor(blnd_balance, rate)?,
+        None => 0,
+    };
+    let effective = caller_min.max(floor);
+    if effective <= 0 { return Err(StrategyError::OnlyPositiveAmountAllowed); }
+    effective
+} else { caller_min.max(0) };
+```
+
+*The floor is the one M-4 already introduced.* `min_harvest_rate` answers "what is this
+BLND worth, at minimum" — the same question this entrypoint needed answered, so a second
+admin knob (a max-slippage bps against `router_get_amounts_out`, as the recommendation
+suggested) would have been a second thing to keep calibrated for no additional coverage.
+Deriving the bound from the router's own quote was rejected on top of that: it asks the
+venue being guarded against to price the guard. `harvest_floor` is denominated per
+`SCALAR_7` of BLND and `perform_reinvest` swaps the whole balance, so the rate converts
+directly into this call's `amount_out_min`, priced over the balance actually being
+swapped.
+
+*`max`, not "either/or".* The keeper may be stricter than the admin — it can see the live
+price, which a floor deliberately set at a fraction of market cannot — but it cannot be
+slacker, or the fix would be one crafted `data` away from moot. A negative `amount_out_min`
+decoded from malformed `data` is now also caught by the same comparison, where it
+previously went straight to the router.
+
+*Fails closed, on the same principle as M-4.* No rate and no `data` ⇒ refused
+(`OnlyPositiveAmountAllowed`), not swapped. The cost of an un-reconfigured deployment is
+a paused harvest that the admin reopens with `set_min_harvest_rate` — or that the keeper
+works around immediately by passing its own `amount_out_min` — rather than a swap
+executed at whatever the route quotes. The guard is scoped to harvests that actually
+swap: below `reward_threshold` `perform_reinvest` is a no-op, so requiring a floor there
+would convert a no-op into a revert for nothing.
+
+`harvest` was left in place rather than deprecated. It is keeper-gated and is now the
+strictly-floored path it always should have been; removing it would break the DeFindex
+trait surface to no benefit.
+
+Covered by five integration tests (`test_integration.rs:2975-3165`), which needed a mock
+Soroswap router — the first in this suite — since the assertion that matters is *what
+`amount_out_min` reached the router*: the unfloored call is refused and swaps nothing, an
+explicit zero is refused the same way, `None` sends the admin's floor, a slack caller min
+loses to it and a strict one beats it, a quote below the floor reverts, and a sub-threshold
+harvest still no-ops. Off-chain, both deploy scripts and the go-live runbook now describe
+`min_harvest_rate` as governing both routes; `harvest_router.ts` is unaffected — it drives
+the split `harvest_claim`/`harvest_reinvest` path, not this one.
 
 ---
 

@@ -9,12 +9,14 @@ Prerequisites you provide:
   rebalance + pulls BLND for Broker swaps.
 - `ADMIN_PUBKEY` — admin (controls upgrades + `set_share_token`/`set_swap_account`/
   `set_min_harvest_rate`); ideally multisig/hardware.
-- `MIN_HARVEST_RATE_<SYMBOL>` — settlement floor for the Broker harvest path
-  (audit M-4), one per asset: minimum underlying stroops owed per 1e7 BLND
-  stroops. Derive from live prices at deploy time —
+- `MIN_HARVEST_RATE_<SYMBOL>` — harvest floor, one per asset: minimum underlying
+  stroops owed per 1e7 BLND stroops. It is the Broker path's settlement floor
+  (audit M-4) and the trait `harvest`'s default slippage bound (audit M-5).
+  Derive from live prices at deploy time —
   `floor((BLND_price / underlying_price) × 1e7 × (1 − haircut))`, haircut ~50% —
   and re-check it before deploying. Omit an asset and its Broker path stays
-  closed (harvests run through Soroswap); it is admin-settable afterwards.
+  closed and its trait `harvest` requires the keeper to pass an explicit
+  `amount_out_min`; it is admin-settable afterwards.
 - `DEPLOY_SECRET_KEY` — deployer secret (pays deploy fees), via `op run`.
 - Sign-off on the per-asset config in `scripts/deploy_strategy_mainnet.ts`.
 
@@ -60,7 +62,8 @@ Writes `deployed-vaults.mainnet.json` with `{strategy, token}` per asset. It als
 runs `set_share_token` + `set_swap_account` for each, plus
 `set_min_harvest_rate` for every asset with a `MIN_HARVEST_RATE_<SYMBOL>` set —
 watch the log for `⚠ <SYMBOL>: … Broker harvest path left CLOSED`, which means
-that vault will harvest via Soroswap only until an admin sets the rate.
+that vault harvests via Soroswap only — and only with a keeper-supplied
+`amount_out_min` — until an admin sets the rate.
 
 ## 4. Wire the frontend
 

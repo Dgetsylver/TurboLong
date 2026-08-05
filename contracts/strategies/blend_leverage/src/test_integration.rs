@@ -18,7 +18,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+    vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 use crate::constants::{
@@ -798,6 +798,63 @@ impl MockShareToken {
     }
 }
 
+// ── Mock Soroswap router ─────────────────────────────────────────────────────
+
+#[contracttype]
+enum RouterKey {
+    Rate,
+    LastMin,
+}
+
+/// Minimal stand-in for the Soroswap router, enough to exercise the strategy's
+/// swap leg: it quotes at a fixed rate, **enforces `amount_out_min`** the way
+/// the real router does, and records the last one it was handed so a test can
+/// assert what floor the strategy actually sent. It plays the pair as well as
+/// the router — `router_pair_for` returns its own address, so the input tokens
+/// land here and the output is paid from its own balance.
+#[contract]
+pub struct MockSoroswapRouter;
+
+#[contractimpl]
+impl MockSoroswapRouter {
+    /// `rate` is output per `SCALAR_7` of input, matching `min_harvest_rate`'s
+    /// units so tests can put the quote directly either side of the floor.
+    pub fn __constructor(e: Env, rate: i128) {
+        e.storage().instance().set(&RouterKey::Rate, &rate);
+    }
+
+    pub fn router_pair_for(e: Env, _token_a: Address, _token_b: Address) -> Address {
+        e.current_contract_address()
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        e: Env,
+        amount_in: i128,
+        amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> Vec<i128> {
+        e.storage()
+            .instance()
+            .set(&RouterKey::LastMin, &amount_out_min);
+        let rate: i128 = e.storage().instance().get(&RouterKey::Rate).unwrap();
+        let amount_out = amount_in * rate / SCALAR_7;
+        if amount_out < amount_out_min {
+            panic!("soroswap: insufficient output amount");
+        }
+        let pair = e.current_contract_address();
+        TokenClient::new(&e, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
+        TokenClient::new(&e, &path.get(1).unwrap()).transfer(&pair, &to, &amount_out);
+        vec![&e, amount_in, amount_out]
+    }
+
+    /// The `amount_out_min` of the most recent swap.
+    pub fn last_amount_out_min(e: Env) -> i128 {
+        e.storage().instance().get(&RouterKey::LastMin).unwrap_or(0)
+    }
+}
+
 /// Register the real strategy via its constructor against the Blend fixture.
 fn register_real_strategy(
     e: &Env,
@@ -819,7 +876,29 @@ fn register_real_strategy_with_loops(
     blnd: &Address,
     target_loops: u32,
 ) -> Address {
-    let router = Address::generate(e);
+    register_real_strategy_with_loops_and_router(
+        e,
+        pool_addr,
+        asset,
+        blnd,
+        target_loops,
+        &Address::generate(e),
+    )
+}
+
+/// Same again with the Soroswap router under the test's control. Everywhere
+/// else the router is an unregistered generated address — fine, because no
+/// other test reaches the swap — but the trait-`harvest` slippage tests need a
+/// router that actually quotes and enforces `amount_out_min`.
+fn register_real_strategy_with_loops_and_router(
+    e: &Env,
+    pool_addr: &Address,
+    asset: &Address,
+    blnd: &Address,
+    target_loops: u32,
+    router: &Address,
+) -> Address {
+    let router = router.clone();
     let keeper = Address::generate(e);
     let admin = Address::generate(e);
     let init_args: Vec<Val> = vec![
@@ -2891,6 +2970,198 @@ fn test_unsettled_claim_is_reported_when_a_later_claim_replaces_it() {
     let (blnd_claimed, _, floor, _) = sclient.pending_harvest();
     assert_eq!(blnd_claimed, 500_0000000);
     assert_eq!(floor, 10_0000000);
+}
+
+// ── Audit M-5: the trait `harvest` must never swap unprotected ────────────────
+//
+// `harvest(from, None)` — the natural call for a DeFindex-trait caller that does
+// not know this contract's private 16-byte `data` encoding — used to reach
+// Soroswap with `amount_out_min = 0`, while `harvest_reinvest` had refused
+// exactly that since M-4. The fix closes the asymmetry: the admin's
+// `min_harvest_rate` prices a floor over the BLND being swapped, the stricter of
+// that and the caller's own number is what reaches the router, and a swap with
+// neither is refused rather than run at zero protection.
+
+/// The private `data` encoding: `amount_out_min` as 16 big-endian bytes.
+fn min_out_data(e: &Env, amount_out_min: i128) -> Bytes {
+    Bytes::from_array(e, &amount_out_min.to_be_bytes())
+}
+
+/// A strategy with a real position, `blnd_amount` of BLND in hand and a mock
+/// Soroswap router quoting `rate` (underlying per `SCALAR_7` of BLND — the same
+/// units as `min_harvest_rate`, so a test can put the quote either side of the
+/// floor). Returns `(strategy, sclient, router, keeper)`.
+fn setup_trait_harvest<'a>(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+    blnd_amount: i128,
+    rate: i128,
+) -> (
+    Address,
+    crate::BlendLeverageStrategyClient<'a>,
+    MockSoroswapRouterClient<'a>,
+    Address,
+) {
+    let router = e.register(MockSoroswapRouter, (rate,));
+    let strategy =
+        register_real_strategy_with_loops_and_router(e, pool_addr, token, blnd, 3, &router);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    // The router pays the swap output out of its own balance.
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&router, &10_000_0000000);
+    StellarAssetClient::new(e, blnd)
+        .mock_all_auths()
+        .mint(&strategy, &blnd_amount);
+
+    let keeper = sclient.get_keeper();
+    (
+        strategy,
+        sclient,
+        MockSoroswapRouterClient::new(e, &router),
+        keeper,
+    )
+}
+
+#[test]
+fn test_trait_harvest_with_no_floor_on_either_side_is_refused() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // Quote 0.05/BLND — a perfectly good price. The point is that nothing on
+    // chain requires it to be one.
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    // No `min_harvest_rate`, no `data`: this is the call the finding is about.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &None),
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed)),
+        "an unfloored swap must be refused, not executed at whatever the route quotes"
+    );
+    // An explicit zero is the same request spelled out, and gets the same answer.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &Some(min_out_data(&e, 0))),
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed))
+    );
+
+    // Nothing was swapped: the refusal took the whole transaction with it.
+    assert_eq!(router.last_amount_out_min(), 0);
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        1_000_0000000,
+        "the BLND is still here, waiting for a floored harvest"
+    );
+
+    // The keeper's own number reopens the path without waiting on the admin.
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 40_0000000)));
+    assert_eq!(router.last_amount_out_min(), 40_0000000);
+}
+
+#[test]
+fn test_trait_harvest_uses_the_admin_floor_when_data_is_absent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // 0.02 per BLND
+
+    sclient.harvest(&keeper, &None);
+
+    // 1000 BLND × 0.02 = 20 underlying, priced over the balance actually swapped.
+    assert_eq!(
+        router.last_amount_out_min(),
+        20_0000000,
+        "`None` now means the admin's floor, not zero"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        0,
+        "the harvest still runs — the floor is a bound, not a blocker"
+    );
+}
+
+#[test]
+fn test_trait_harvest_takes_the_stricter_of_the_caller_and_admin_floors() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // floor: 20 underlying
+
+    // A keeper asking for 1 stroop of protection does not get to undercut the
+    // admin — otherwise the fix would be one malformed `data` away from moot.
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 1)));
+    assert_eq!(router.last_amount_out_min(), 20_0000000);
+
+    // Stricter than the floor, on the other hand, is the caller's business: they
+    // may know the live price, which the admin's slack floor deliberately does not.
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 45_0000000)));
+    assert_eq!(router.last_amount_out_min(), 45_0000000);
+}
+
+#[test]
+fn test_trait_harvest_reverts_when_the_quote_is_below_the_admin_floor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // The route quotes 0.005/BLND — a quarter of the floor. This is the trade
+    // the finding says the vault should not be making silently.
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 50_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    assert!(
+        sclient.try_harvest(&keeper, &None).is_err(),
+        "a swap 4× below the floor must revert at the router, not settle"
+    );
+    assert_eq!(
+        router.last_amount_out_min(),
+        0,
+        "the reverted swap left no state behind"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        1_000_0000000
+    );
+}
+
+#[test]
+fn test_trait_harvest_below_the_reward_threshold_needs_no_floor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // Half a BLND, against a 1 BLND `reward_threshold`.
+    let (_strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 5000000, 500_000);
+
+    // `perform_reinvest` no-ops below the threshold, so there is no swap to
+    // protect and the floor requirement must not turn a no-op into a revert.
+    sclient.harvest(&keeper, &None);
+    assert_eq!(router.last_amount_out_min(), 0, "no swap ran");
 }
 
 // ── Audit M-2: stored reserves must reconcile with the real pool position ─────

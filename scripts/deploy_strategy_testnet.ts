@@ -213,9 +213,10 @@ async function main() {
 
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER)], `${a.symbol} set_swap_account`);
-    // Settlement floor for the Broker harvest path (audit M-4). Testnet BLND has
-    // no meaningful price, so this is a nominal non-zero rate that opens the
-    // path for end-to-end keeper testing; mainnet derives it from live prices
+    // Harvest floor: the Broker settlement floor (audit M-4) and the trait
+    // harvest's default `amount_out_min` (audit M-5). Testnet BLND has no
+    // meaningful price, so this is a nominal non-zero rate that opens both
+    // paths for end-to-end keeper testing; mainnet derives it from live prices
     // (MIN_HARVEST_RATE_* in deploy_strategy_mainnet.ts).
     await invoke(
       strategy,

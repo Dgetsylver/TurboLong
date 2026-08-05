@@ -6,8 +6,9 @@
  *   2. deploys its SEP-41 vault-share token (minter = the strategy),
  *   3. wires strategy.set_share_token(token),
  *   4. wires strategy.set_swap_account(keeper) for the Broker harvest path,
- *   5. wires strategy.set_min_harvest_rate(rate) — the settlement floor that
- *      path is gated on (audit M-4); omitted assets keep the Broker path closed,
+ *   5. wires strategy.set_min_harvest_rate(rate) — the harvest floor the Broker
+ *      path is gated on (audit M-4) and the trait harvest's default slippage
+ *      bound (audit M-5); omitted assets keep both unfloored calls closed,
  * then writes every deployed contract ID to deployed-vaults.mainnet.json.
  *
  * REAL FUNDS. Never commit a mainnet key. Run with a secure signer, e.g.:
@@ -18,8 +19,9 @@
  *   DEPLOY_SECRET_KEY  S... deployer (pays fees, installs WASM, deploys)
  *   ADMIN_PUBKEY       G... admin (upgrade + set_share_token/set_swap_account); default = deployer
  *   KEEPER_PUBKEY      G... keeper (harvest + rebalance_keeper + pulls BLND); REQUIRED
- *   MIN_HARVEST_RATE_<SYMBOL>  settlement floor per asset (see MIN_HARVEST_RATES);
- *                      omit to leave that vault's Broker harvest path closed
+ *   MIN_HARVEST_RATE_<SYMBOL>  harvest floor per asset (see MIN_HARVEST_RATES);
+ *                      omit to leave that vault's Broker path closed and its
+ *                      trait `harvest` dependent on a caller-supplied floor
  *   DRY_RUN=1          simulate only, do not submit
  *
  * Pre-req: build both wasms first —
@@ -109,9 +111,12 @@ const ASSETS: AssetCfg[] = [
 ];
 
 /**
- * Settlement floor rates for the Broker harvest path (audit M-4), read from
- * `MIN_HARVEST_RATE_<SYMBOL>` — the minimum underlying the strategy will accept
- * back per 1e7 BLND stroops, in the underlying's own stroops. Every asset here
+ * Harvest floor rates (audit M-4, M-5), read from `MIN_HARVEST_RATE_<SYMBOL>` —
+ * the minimum underlying the strategy will accept back per 1e7 BLND stroops, in
+ * the underlying's own stroops. One rate, both harvest routes: it is the
+ * settlement floor `harvest_reinvest` measures the Broker's return against, and
+ * the `amount_out_min` the trait `harvest` sends to Soroswap when the caller
+ * supplies no stricter one of its own. Every asset here
  * is 7-decimal, so the number is just the BLND price *in that underlying*,
  * 1e7-scaled, with a safety haircut:
  *
@@ -376,10 +381,11 @@ async function main() {
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER!)], `${a.symbol} set_swap_account`);
 
-    // Settlement floor for the Broker harvest path (audit M-4). Price-dependent
-    // and therefore not baked into this table — see MIN_HARVEST_RATE_* above.
-    // Left unset the strategy simply refuses to approve BLND pulls and harvests
-    // run through Soroswap, so an omitted rate costs a swap venue, not safety.
+    // Harvest floor (audit M-4, M-5). Price-dependent and therefore not baked
+    // into this table — see MIN_HARVEST_RATE_* above. Left unset the strategy
+    // refuses to approve BLND pulls and refuses an unfloored trait `harvest`,
+    // so an omitted rate costs a swap venue and makes the keeper pass its own
+    // `amount_out_min` — it never costs safety.
     const minHarvestRate = MIN_HARVEST_RATES[a.symbol];
     if (minHarvestRate) {
       await invoke(
@@ -389,7 +395,7 @@ async function main() {
         `${a.symbol} set_min_harvest_rate`,
       );
     } else {
-      console.warn(`  ⚠ ${a.symbol}: MIN_HARVEST_RATE_${a.symbol} unset — Broker harvest path left CLOSED`);
+      console.warn(`  ⚠ ${a.symbol}: MIN_HARVEST_RATE_${a.symbol} unset — Broker harvest path left CLOSED, trait harvest needs an explicit amount_out_min`);
     }
 
     out[a.symbol] = {
