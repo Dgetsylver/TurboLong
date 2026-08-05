@@ -322,6 +322,25 @@ pub fn harvest(
     Ok(reserves)
 }
 
+/// Account for a re-leverage: b and d tokens both increase, shares unchanged.
+///
+/// Mechanically identical to `harvest` — the tracked position grows by the
+/// measured pool deltas with no shares minted — and takes the same pre-submit
+/// snapshot for the same reason. The economics are what differ, and the
+/// distinction is worth keeping visible at the call site: `harvest` brings in
+/// *new* equity (swapped BLND) and so raises the share price, while `releverage`
+/// borrows against collateral the vault already owns, leaving equity — and
+/// therefore every holder's share price — exactly where it was, and moving only
+/// the leverage ratio.
+pub fn releverage(
+    e: &Env,
+    b_tokens_delta: i128,
+    d_tokens_delta: i128,
+    reserves: &LeverageReserves,
+) -> Result<LeverageReserves, StrategyError> {
+    harvest(e, b_tokens_delta, d_tokens_delta, reserves)
+}
+
 /// Account for deleveraging: b and d tokens decrease without changing shares.
 ///
 /// `reserves` is the **pre-unwind** snapshot, for the same reason `harvest` takes

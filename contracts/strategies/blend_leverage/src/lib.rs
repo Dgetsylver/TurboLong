@@ -25,8 +25,8 @@ use admin_sep::{Administratable, AdministratableExtension, Upgradable};
 use constants::{SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
-    check_deposit_safety, compute_health_factor, compute_partial_unwind, compute_totals,
-    shares_to_underlying,
+    check_deposit_safety, compute_health_factor, compute_partial_unwind, compute_releverage,
+    compute_totals, design_health_factor, shares_to_underlying,
 };
 use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
@@ -586,6 +586,170 @@ impl BlendLeverageStrategy {
             emit_rebalance(&e, &caller, before_hf, after_hf, loops);
         }
         Ok(loops)
+    }
+
+    /// Keeper-gated re-leverage: borrow against collateral the vault already
+    /// holds, supply it straight back, and restore the leverage ratio toward
+    /// `target_loops`. Returns the underlying borrowed (`0` on a no-op).
+    ///
+    /// This is the counterpart `rebalance` never had. Every other path that
+    /// moves leverage removes it — `rebalance`, `rebalance_keeper` and
+    /// `partial_unwind` all unwind — while the only paths that add it
+    /// (`deposit`, `harvest`, `harvest_reinvest`) lever the *new* capital they
+    /// bring in and never touch the existing position. So an emergency unwind,
+    /// or a rebalance that overshoots its target by a whole layer, left the vault
+    /// permanently under-levered: nothing on-chain could put back what was taken
+    /// off, and holders kept earning the reduced yield indefinitely.
+    ///
+    /// Equity is untouched — the borrow and the supply are the same amount, so
+    /// `B − D` is invariant and no share price moves. What changes is the ratio
+    /// the vault earns on.
+    ///
+    /// **What bounds it.** Adding leverage is the unsafe direction, so the keeper
+    /// gets no discretion over the amount (unlike `partial_unwind`, where the
+    /// keeper's target is trusted precisely because it can only make the position
+    /// safer). The target HF is derived entirely on-chain:
+    ///
+    /// - never below `design_health_factor(...)` — the HF of a position freshly
+    ///   levered to `target_loops`. HF and leverage are the same statement, so
+    ///   this *is* the "never exceed the configured leverage" cap;
+    /// - never below `orange_hf + RELEVERAGE_HF_BUFFER`, so a re-leverage cannot
+    ///   land on the rebalance trigger and start a ping-pong; and it only fires
+    ///   when the current HF clears that target by the same buffer, so the
+    ///   position has to have real slack before anything happens;
+    /// - the deposit-path safety checks apply unchanged (pool utilization now and
+    ///   projected, post-borrow HF above `min_hf`) — re-leveraging adds borrow
+    ///   demand to the pool exactly as a deposit does;
+    /// - the position is re-read after the submit and the whole transaction
+    ///   reverts unless HF actually landed at or above `orange_hf`.
+    ///
+    /// Rate-limited to once per `RELEVERAGE_COOLDOWN_LEDGERS`. A no-op does not
+    /// consume the cooldown. Emits a `releverage` event when leverage is added.
+    ///
+    /// Note the cooldown rejection is `DeadlineExpired`, not `NotAuthorized`:
+    /// the caller *is* authorized, it is simply too early, and reusing the
+    /// authorization error for a timing failure is what makes `rebalance_keeper`'s
+    /// cooldown misleading to operators today.
+    pub fn releverage(e: Env, caller: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+        if caller != keeper {
+            return Err(StrategyError::NotAuthorized);
+        }
+
+        let now = e.ledger().sequence();
+        if let Some(last) = storage::get_last_releverage(&e) {
+            if now < last.saturating_add(constants::RELEVERAGE_COOLDOWN_LEDGERS) {
+                return Err(StrategyError::DeadlineExpired);
+            }
+        }
+
+        let config = storage::get_config(&e);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
+        if b_tokens <= 0 {
+            return Ok(0); // no collateral to lever against
+        }
+
+        // Target HF: design leverage, floored out of the rebalance band. When a
+        // deployment's design HF sits *inside* that band (`target_loops` levers
+        // past `orange_hf`, so every fresh deposit opens in the orange zone), the
+        // floor binds and re-leverage stops short of the configured loops rather
+        // than handing the position straight to `rebalance`.
+        let design_hf = design_health_factor(config.c_factor, config.target_loops, l_factor)?;
+        let floor = config
+            .orange_hf
+            .checked_add(constants::RELEVERAGE_HF_BUFFER)
+            .ok_or(StrategyError::UnderflowOverflow)?;
+        let target_hf = design_hf.max(floor);
+
+        let before_hf = compute_health_factor(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+        )?;
+
+        // Require the same buffer of slack above the target before acting, so a
+        // position hovering near it is left alone instead of being re-levered
+        // every cooldown for a rounding-sized gain. Saturating: `before_hf` is
+        // `i128::MAX` on a debt-free position.
+        if before_hf < target_hf.saturating_add(constants::RELEVERAGE_HF_BUFFER) {
+            return Ok(0);
+        }
+
+        let borrow_underlying = compute_releverage(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+            target_hf,
+        )?;
+        if borrow_underlying <= 0 {
+            return Ok(0);
+        }
+
+        // Same safety gate a deposit of this size would face. Re-leveraging
+        // supplies and borrows the identical amount, so both sides of the pool's
+        // utilization move by `borrow_underlying`.
+        let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(&e, &config);
+        let added_b = borrow_underlying
+            .checked_mul(SCALAR_12)
+            .ok_or(StrategyError::ArithmeticError)?
+            .checked_div(b_rate.max(1))
+            .ok_or(StrategyError::DivisionByZero)?;
+        let added_d = borrow_underlying
+            .checked_mul(SCALAR_12)
+            .ok_or(StrategyError::ArithmeticError)?
+            .checked_div(d_rate.max(1))
+            .ok_or(StrategyError::DivisionByZero)?;
+        check_deposit_safety(
+            &e,
+            pool_supply,
+            pool_borrow,
+            borrow_underlying,
+            borrow_underlying,
+            b_tokens
+                .checked_add(added_b)
+                .ok_or(StrategyError::UnderflowOverflow)?,
+            d_tokens
+                .checked_add(added_d)
+                .ok_or(StrategyError::UnderflowOverflow)?,
+            b_rate,
+            d_rate,
+            l_factor,
+            &config,
+        )?;
+
+        // Pre-submit snapshot from the pool values already read, exactly as
+        // `unwind_to` does; `reserves::releverage` adds the measured deltas to it.
+        let pre = reserves::reconcile(&e, b_tokens, d_tokens, b_rate, d_rate);
+
+        let (b_delta, d_delta) = blend_pool::submit_releverage(&e, borrow_underlying, &config)?;
+        reserves::releverage(&e, b_delta, d_delta, &pre)?;
+
+        // Verify against the settled position rather than the projection: the
+        // pool rounds its own conversions, and this is the direction where being
+        // wrong costs the vault. Anything at or below the rebalance trigger
+        // reverts the whole transaction.
+        let (b2, d2) = blend_pool::get_strategy_positions(&e, &config);
+        let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?;
+        if after_hf < config.orange_hf {
+            return Err(StrategyError::ExternalError);
+        }
+
+        storage::set_last_releverage(&e, now);
+        e.events().publish(
+            (Symbol::new(&e, "releverage"), caller.clone()),
+            (before_hf, after_hf, borrow_underlying),
+        );
+
+        Ok(borrow_underlying)
     }
 
     /// Set a new keeper address (keeper self-rotation).

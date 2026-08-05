@@ -74,9 +74,22 @@ interface AssetCfg {
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
 }
+// USDC and CETES mirror the mainnet `orange_hf` change (1.15 → 1.10): their
+// design HF — where a fresh deposit at `target_loops` lands — sits below 1.15
+// once the pool's `l_factor` is folded in, so at 1.15 every deposit would open
+// inside the rebalance band. See the derivation in deploy_strategy_mainnet.ts.
+// TESOURO (testnet-only stand-in) and XLM are left alone: their margin depends
+// on the testnet pool's `l_factor`, which this script does not read. Unlike the
+// mainnet script there is no preflight here to check it — run the mainnet
+// script's `preflight()` reasoning by hand before trusting a testnet rehearsal
+// of these two.
+//
+// The already-deployed testnet vaults in deployed-vaults.testnet.json predate
+// this change and still carry orange_hf 1.15; `orange_hf` is constructor-only,
+// so they keep it until redeployed.
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n },
   { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
   { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
 ];

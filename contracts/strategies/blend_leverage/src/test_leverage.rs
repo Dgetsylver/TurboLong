@@ -3,7 +3,8 @@
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12, SCALAR_7};
 use crate::leverage::{
     compute_equity, compute_health_factor, compute_loop_pairs, compute_partial_unwind,
-    compute_totals, shares_to_underlying, underlying_to_shares,
+    compute_releverage, compute_totals, design_health_factor, shares_to_underlying,
+    underlying_to_shares,
 };
 use crate::storage::LeverageReserves;
 
@@ -1331,4 +1332,237 @@ fn test_partial_unwind_with_accrued_rates_is_sane() {
         assert!((1..=20).contains(&loops), "loops in [1,20]: {}", loops);
         assert!(repay > 0, "positive repay: {}", repay);
     }
+}
+
+// ── design_health_factor / compute_releverage (audit M-3) ────────────────────
+
+/// The design HF must *be* the configured leverage, not merely correlate with
+/// it: at `HF = h` a position's collateral/equity ratio is pinned to
+/// `h / (h − cl)`, and that has to match the `B/E` the deposit loop actually
+/// builds for the same `target_loops`. This is the identity that lets
+/// `releverage` cap leverage at `target_loops` by capping an HF.
+#[test]
+fn test_design_hf_is_the_leverage_the_deposit_loop_builds() {
+    let notional = 1_000_000_000_000_i128; // matches DESIGN_NOTIONAL
+    for c in [5_000_000_i128, 7_000_000, 9_000_000] {
+        for l in [SCALAR_7, 9_500_000_i128] {
+            let cl = c * l / SCALAR_7;
+            for loops in 1..=10u32 {
+                let (b, d) = compute_totals(notional, c, loops);
+                let equity = b - d;
+
+                let h = design_health_factor(c, loops, l).unwrap();
+
+                let lev_built = b * SCALAR_7 / equity; // B/E from the loop itself
+                let lev_from_hf = h * SCALAR_7 / (h - cl); // B/E implied by the HF
+
+                let diff = (lev_built - lev_from_hf).abs();
+                assert!(
+                    diff <= 100, // ≤ 1e-5× leverage, i.e. fixed-point dust
+                    "c={} l={} loops={}: leverage from loop {} vs from HF {}",
+                    c,
+                    l,
+                    loops,
+                    lev_built,
+                    lev_from_hf
+                );
+            }
+        }
+    }
+}
+
+/// Design HF falls as loops rise (more leverage = thinner margin), and the
+/// pool's liability markup drags it down proportionally.
+#[test]
+fn test_design_hf_decreases_with_loops_and_carries_l_factor() {
+    let c = 9_000_000_i128;
+    let mut prev = i128::MAX;
+    for loops in 1..=8u32 {
+        let h = design_health_factor(c, loops, SCALAR_7).unwrap();
+        assert!(h < prev, "design HF must fall as loops rise at {}", loops);
+        prev = h;
+    }
+
+    // l_factor scales the whole ratio: HF = B·c·l/D.
+    let plain = design_health_factor(c, 4, SCALAR_7).unwrap();
+    let marked = design_health_factor(c, 4, 9_500_000).unwrap();
+    let expected = plain * 9_500_000 / SCALAR_7;
+    assert!(
+        (marked - expected).abs() <= 2,
+        "l_factor markup: {} vs {}",
+        marked,
+        expected
+    );
+}
+
+/// The core property: borrowing `x` and supplying it back lands the position on
+/// the requested HF — at or just above it, never below — and leaves equity
+/// (and therefore the share price) untouched.
+#[test]
+fn test_releverage_lands_on_target_without_moving_equity() {
+    let c = 9_000_000_i128; // 0.90
+    let cases = [
+        (10_000_0000000_i128, 5_000_0000000_i128, SCALAR_7),
+        (10_000_0000000_i128, 0_i128, SCALAR_7), // debt-free: post-full-unwind
+        (5_000_0000000_i128, 3_000_0000000_i128, SCALAR_7),
+        (20_000_0000000_i128, 12_000_0000000_i128, 9_500_000), // with markup
+        (7_777_7777777_i128, 3_333_3333333_i128, 9_500_000),
+    ];
+
+    for (b, d, l) in cases {
+        let target = design_health_factor(c, 3, l).unwrap();
+        let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, l).unwrap();
+        assert!(hf0 > target, "fixture must have slack: hf={}", hf0);
+
+        let x = compute_releverage(b, d, SCALAR_12, SCALAR_12, c, l, target).unwrap();
+        assert!(x > 0, "must borrow something for ({}, {}): {}", b, d, x);
+
+        // Borrow x, supply x — both sides of the position move together.
+        let hf1 = compute_health_factor(b + x, d + x, SCALAR_12, SCALAR_12, c, l).unwrap();
+        assert!(
+            hf1 >= target,
+            "must not overshoot below target for ({}, {}): {} < {}",
+            b,
+            d,
+            hf1,
+            target
+        );
+        assert!(
+            hf1 <= target + target / 1_000_000,
+            "must actually reach the target for ({}, {}): {}",
+            b,
+            d,
+            hf1
+        );
+        assert_eq!((b + x) - (d + x), b - d, "equity is invariant");
+    }
+}
+
+/// `compute_releverage` and `compute_partial_unwind` are the same closed form
+/// with the denominator negated: unwinding to a higher HF and re-levering back
+/// must return the position to where it started, bar fixed-point dust.
+#[test]
+fn test_releverage_inverts_partial_unwind() {
+    let c = 9_000_000_i128;
+    let l = 9_500_000_i128;
+    let b = 10_000_0000000_i128;
+    let d = 7_000_0000000_i128;
+
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, l).unwrap();
+
+    // Deleverage up to a much safer HF (what an emergency unwind does) …
+    let safe = hf0 + 3_000_000; // +0.30
+    let (repay, _) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, l, safe).unwrap();
+    let (b1, d1) = (b - repay, d - repay);
+    assert!(
+        compute_health_factor(b1, d1, SCALAR_12, SCALAR_12, c, l).unwrap() >= safe,
+        "unwind must reach the safe target"
+    );
+
+    // … then re-lever back to the original HF.
+    let borrow = compute_releverage(b1, d1, SCALAR_12, SCALAR_12, c, l, hf0).unwrap();
+    let (b2, d2) = (b1 + borrow, d1 + borrow);
+    let hf2 = compute_health_factor(b2, d2, SCALAR_12, SCALAR_12, c, l).unwrap();
+
+    assert!(
+        hf2 >= hf0 && hf2 - hf0 <= 2,
+        "round trip must restore HF: {} vs {}",
+        hf2,
+        hf0
+    );
+    assert!(
+        (b2 - b).abs() <= repay / 1_000_000 + 2,
+        "round trip must restore the position: {} vs {}",
+        b2,
+        b
+    );
+}
+
+#[test]
+fn test_releverage_is_noop_at_or_below_target() {
+    let c = 9_000_000_i128;
+    let target = 11_500_000_i128; // 1.15
+
+    // Exactly at target: b/d = 23/18 → HF = 1.15.
+    assert_eq!(
+        compute_releverage(
+            2_300_0000000,
+            1_800_0000000,
+            SCALAR_12,
+            SCALAR_12,
+            c,
+            L_NONE,
+            target
+        )
+        .unwrap(),
+        0,
+        "at target → nothing to borrow"
+    );
+
+    // Below target (already over-levered — that is `rebalance`'s job, not this).
+    assert_eq!(
+        compute_releverage(
+            1_000_0000000,
+            900_0000000,
+            SCALAR_12,
+            SCALAR_12,
+            c,
+            L_NONE,
+            target
+        )
+        .unwrap(),
+        0,
+        "below target → no re-leverage"
+    );
+
+    // Empty vault.
+    assert_eq!(
+        compute_releverage(0, 0, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn test_releverage_target_at_or_below_effective_c_factor_errors() {
+    let c = 9_000_000_i128;
+    let l = 9_500_000_i128;
+    let cl = c * l / SCALAR_7; // 0.855
+    let (b, d) = (10_000_0000000_i128, 5_000_0000000_i128);
+
+    // HF asymptotes down to `cl` as leverage grows, so `cl` is unreachable …
+    assert!(compute_releverage(b, d, SCALAR_12, SCALAR_12, c, l, cl).is_err());
+    // … and anything below it doubly so.
+    assert!(compute_releverage(b, d, SCALAR_12, SCALAR_12, c, l, cl - 1).is_err());
+}
+
+#[test]
+fn test_releverage_with_accrued_rates_is_sane() {
+    // Supply grew faster than debt (a harvest-heavy stretch): HF improved, so
+    // there is genuine slack to re-lever.
+    let c = 9_000_000_i128;
+    let b_rate = SCALAR_12 * 110 / 100;
+    let d_rate = SCALAR_12 * 105 / 100;
+    let b = 10_000_0000000_i128;
+    let d = 6_000_0000000_i128;
+    let target = design_health_factor(c, 3, L_NONE).unwrap();
+
+    let x = compute_releverage(b, d, b_rate, d_rate, c, L_NONE, target).unwrap();
+    assert!(x > 0, "positive borrow: {}", x);
+
+    // Borrowing x underlying adds x/d_rate d-tokens and x/b_rate b-tokens.
+    let hf1 = compute_health_factor(
+        b + x * SCALAR_12 / b_rate,
+        d + x * SCALAR_12 / d_rate,
+        b_rate,
+        d_rate,
+        c,
+        L_NONE,
+    )
+    .unwrap();
+    assert!(
+        hf1 >= target,
+        "rate-adjusted re-leverage must not overshoot: {} < {}",
+        hf1,
+        target
+    );
 }

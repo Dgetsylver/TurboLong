@@ -85,6 +85,14 @@ Get the DeFindex team to co-sign the deployments.
   — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
   the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
   HF, loops unwound, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  Above `orange_hf` the same pass drives the other direction: it simulates
+  `releverage` and submits only when the contract says it would restore leverage
+  an earlier unwind removed (audit M-3), logged as `action: "releverage"` with the
+  underlying borrowed. The contract owns the target and the ~1-day cooldown, so
+  the keeper needs no extra configuration for it — but note that on a vault whose
+  design HF sits below its `orange_hf`, re-leverage deliberately stops short of
+  `target_loops`; `preflight()` in the deploy script now fails on that
+  configuration.
   For a permanent deployment, use the hardened systemd unit + env template in
   `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the

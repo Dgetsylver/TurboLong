@@ -29,7 +29,7 @@ use crate::leverage::{
     compute_health_factor, compute_loop_pairs, compute_partial_unwind, shares_to_underlying,
 };
 use crate::storage::LeverageReserves;
-use crate::{blend_pool, reserves, storage};
+use crate::{blend_pool, reserves, storage, StrategyError};
 
 // ── Mock Oracle ──────────────────────────────────────────────────────────────
 
@@ -1331,6 +1331,341 @@ fn test_partial_unwind_rejects_non_keeper_above_orange_zone() {
     assert!(
         sclient.try_partial_unwind(&stranger, &orange_hf).is_err(),
         "outside the orange zone partial_unwind is keeper-only"
+    );
+}
+
+// ── releverage (audit M-3) ───────────────────────────────────────────────────
+
+// Opens a REAL healthy position through the production `deposit` entrypoint:
+// 3 loops at c = 0.90 lands at HF ≈ 1.269 — the design HF for that loop count,
+// comfortably above the orange floor (1.15). Returns the strategy address.
+fn open_healthy_strategy(e: &Env, pool_addr: &Address, token: &Address, blnd: &Address) -> Address {
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    strategy
+}
+
+/// Find the strategy's `("releverage", caller)` event in the LAST invocation's
+/// event stream and decode its `(before_hf, after_hf, borrowed)` payload. Same
+/// last-invocation caveat as `find_rebalance_event`.
+fn find_releverage_event(
+    e: &Env,
+    strategy: &Address,
+    caller: &Address,
+) -> Option<(i128, i128, i128)> {
+    use soroban_sdk::{xdr, TryFromVal, Val};
+    let events = e.events().all().filter_by_contract(strategy);
+    for ev in events.events() {
+        let xdr::ContractEventBody::V0(v0) = &ev.body;
+        if v0.topics.len() != 2 {
+            continue;
+        }
+        let t0 = Symbol::try_from_val(e, &v0.topics[0]);
+        let t1 = Address::try_from_val(e, &v0.topics[1]);
+        if t0 != Ok(Symbol::new(e, "releverage")) || t1.as_ref() != Ok(caller) {
+            continue;
+        }
+        let data: Val = Val::try_from_val(e, &v0.data).ok()?;
+        return <(i128, i128, i128)>::try_from_val(e, &data).ok();
+    }
+    None
+}
+
+// The finding itself: leverage removed by an unwind never came back. An
+// emergency keeper deleverage leaves the vault under-levered, `rebalance` can
+// only ever remove more, and every other lever-adding path (`deposit`,
+// `harvest`) touches only the new capital it brings in — so the position stayed
+// where the unwind left it, earning the reduced yield, indefinitely.
+//
+// Drives the real entrypoints against the real Blend pool: deleverage hard, show
+// `rebalance` cannot undo it, then `releverage` back to exactly the design
+// leverage — with equity, and therefore every holder's share price, untouched.
+#[test]
+fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let (c_factor, target_loops, _, _) = sclient.config();
+    let (_, _, l_factor) = sclient.risk_factors();
+    let design_hf =
+        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
+
+    let (_equity0, _, _, d0, _, _) = sclient.position();
+    let hf0 = sclient.health_factor();
+    assert!(
+        hf0 <= design_hf + design_hf / 1_000,
+        "a fresh deposit opens at the design HF: {} vs {}",
+        hf0,
+        design_hf
+    );
+
+    // Emergency: the keeper deleverages far past the orange floor.
+    let loops = sclient.partial_unwind(&keeper, &(design_hf + 4_000_000));
+    assert!(loops >= 1, "emergency unwind must do work");
+
+    let (equity1, _, _, d1, _, _) = sclient.position();
+    let hf1 = sclient.health_factor();
+    assert!(hf1 > hf0, "unwind must have removed leverage");
+    assert!(d1 < d0, "debt must have been repaid");
+
+    // Nothing on-chain used to be able to put that leverage back: `rebalance`
+    // only ever unwinds, so above the orange floor it is a no-op.
+    sclient.rebalance();
+    assert_eq!(
+        sclient.health_factor(),
+        hf1,
+        "rebalance cannot restore leverage — that is the finding"
+    );
+
+    let borrowed = sclient.releverage(&keeper);
+    assert!(borrowed > 0, "re-leverage must borrow: {}", borrowed);
+
+    let (ev_before, ev_after, ev_borrowed) = find_releverage_event(&e, &strategy, &keeper)
+        .expect("releverage event must be emitted when leverage is added");
+
+    let hf2 = sclient.health_factor();
+    let (equity2, _, b2, d2, b_rate, _) = sclient.position();
+
+    // Landed ON the design HF — restored, not merely improved, and not past it.
+    assert!(
+        hf2 >= design_hf,
+        "must not lever past the design target: {} < {}",
+        hf2,
+        design_hf
+    );
+    assert!(
+        hf2 <= design_hf + design_hf / 1_000,
+        "must actually restore the design target: {} vs {}",
+        hf2,
+        design_hf
+    );
+    assert!(d2 > d1, "debt restored: {} vs {}", d2, d1);
+
+    // The leverage ratio matches what a fresh deposit of the same equity would
+    // have built — the HF cap and the loop geometry agree.
+    let (design_supply, design_borrow) =
+        crate::leverage::compute_totals(1_000_000_000_000_i128, c_factor, target_loops);
+    let design_lev = design_supply * SCALAR_7 / (design_supply - design_borrow);
+    let lev = (b2 * b_rate / SCALAR_12) * SCALAR_7 / equity2;
+    assert!(
+        (lev - design_lev).abs() <= design_lev / 500,
+        "restored leverage {} must match design {}",
+        lev,
+        design_lev
+    );
+
+    // Equity — and therefore the share price — is untouched: the borrow and the
+    // supply are the same amount.
+    assert!(
+        (equity2 - equity1).abs() <= equity1 / 1_000_000 + 10,
+        "re-leverage must not move equity: {} vs {}",
+        equity2,
+        equity1
+    );
+
+    assert_eq!(ev_before, hf1, "event before_hf matches pre-state");
+    assert_eq!(ev_after, hf2, "event after_hf matches post-state");
+    assert_eq!(ev_borrowed, borrowed, "event amount matches return value");
+
+    std::println!(
+        "releverage: hf {} -> {} (design {}), borrowed={}",
+        hf1,
+        hf2,
+        design_hf,
+        borrowed
+    );
+}
+
+// The hysteresis band, on-chain. On a deployment whose design leverage sits
+// *inside* the rebalance band (8 loops at c = 0.90 → design HF ≈ 1.076, below
+// orange_hf 1.15), re-levering all the way to design would hand the position
+// straight back to `rebalance` and the two would ping-pong every cooldown. The
+// floor binds instead: re-leverage stops at `orange_hf + RELEVERAGE_HF_BUFFER`,
+// and the proof it is far enough is that a rebalance immediately afterwards has
+// nothing to do.
+#[test]
+fn test_releverage_floor_keeps_the_position_clear_of_the_rebalance_band() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let (c_factor, target_loops, _, orange_hf) = sclient.config();
+    let (_, _, l_factor) = sclient.risk_factors();
+    let design_hf =
+        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
+    assert!(
+        design_hf < orange_hf,
+        "fixture must be the pathological case: design {} vs orange {}",
+        design_hf,
+        orange_hf
+    );
+
+    let floor = orange_hf + crate::constants::RELEVERAGE_HF_BUFFER;
+
+    // Deleverage well clear of the band, then re-lever.
+    sclient.partial_unwind(&keeper, &(orange_hf + 3_000_000));
+    let borrowed = sclient.releverage(&keeper);
+    assert!(borrowed > 0, "must re-lever toward the floor");
+
+    let hf = sclient.health_factor();
+    assert!(
+        hf >= floor,
+        "must stop at the floor, not the design HF: {} < {}",
+        hf,
+        floor
+    );
+    assert!(
+        hf <= floor + floor / 1_000,
+        "must reach the floor: {} vs {}",
+        hf,
+        floor
+    );
+
+    // No ping-pong: the position is clear of the rebalance band, so the
+    // permissionless rebalance immediately afterwards is a no-op.
+    sclient.rebalance();
+    assert_eq!(
+        sclient.health_factor(),
+        hf,
+        "re-levered position must not be rebalance bait"
+    );
+}
+
+// A position with no slack must be left alone — and, like `rebalance_keeper`'s
+// no-op, must not consume the cooldown, so a probe can never lock the keeper out
+// of a real re-leverage.
+#[test]
+fn test_releverage_noop_without_slack_does_not_consume_cooldown() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // A fresh deposit already sits at its design HF: there is nothing to restore.
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let hf = sclient.health_factor();
+    let (equity, _, b, d, _, _) = sclient.position();
+
+    assert_eq!(sclient.releverage(&keeper), 0, "no slack → no-op");
+    assert!(
+        find_releverage_event(&e, &strategy, &keeper).is_none(),
+        "no event on a no-op"
+    );
+
+    let (equity_after, _, b_after, d_after, _, _) = sclient.position();
+    assert_eq!(sclient.health_factor(), hf, "position untouched");
+    assert_eq!((equity_after, b_after, d_after), (equity, b, d));
+
+    let last = e.as_contract(&strategy, || storage::get_last_releverage(&e));
+    assert_eq!(last, None, "a no-op must not arm the cooldown");
+    assert_eq!(sclient.releverage(&keeper), 0, "immediate retry allowed");
+}
+
+// Rate limit, on-chain: a real re-leverage arms the cooldown, and the rejection
+// inside the window is `DeadlineExpired` — the caller *is* authorized, it is
+// simply too early, and reusing `NotAuthorized` for that is what makes
+// `rebalance_keeper`'s cooldown misleading to operators (audit L-7).
+#[test]
+fn test_releverage_cooldown_rate_limits_on_chain() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    assert!(sclient.releverage(&keeper) > 0, "first call must do work");
+    assert_eq!(
+        e.as_contract(&strategy, || storage::get_last_releverage(&e)),
+        Some(e.ledger().sequence()),
+        "a real re-leverage arms the cooldown"
+    );
+
+    match sclient.try_releverage(&keeper) {
+        Err(Ok(StrategyError::DeadlineExpired)) => {}
+        other => std::panic!(
+            "expected DeadlineExpired inside the window, got {:?}",
+            other
+        ),
+    }
+
+    // One ledger short of expiry: still rejected.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += crate::constants::RELEVERAGE_COOLDOWN_LEDGERS - 1;
+    });
+    assert!(
+        sclient.try_releverage(&keeper).is_err(),
+        "cooldown must hold until the full window has elapsed"
+    );
+
+    // Liquidation protection is never rate-limited by the re-leverage cooldown.
+    sclient.rebalance();
+
+    // At expiry the keeper may call again — a no-op here, HF is back at design.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += 1;
+    });
+    assert_eq!(
+        sclient.releverage(&keeper),
+        0,
+        "post-cooldown call succeeds"
+    );
+}
+
+// Adding leverage is the unsafe direction, so unlike `rebalance` it is never
+// permissionless.
+#[test]
+fn test_releverage_rejects_non_keeper() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    // Genuine slack to re-lever, so the rejection is about identity, not state.
+    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+
+    let stranger = Address::generate(&e);
+    match sclient.try_releverage(&stranger) {
+        Err(Ok(StrategyError::NotAuthorized)) => {}
+        other => std::panic!("expected NotAuthorized for a stranger, got {:?}", other),
+    }
+    assert!(
+        sclient.releverage(&keeper) > 0,
+        "the keeper may still re-lever"
     );
 }
 

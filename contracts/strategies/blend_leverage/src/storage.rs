@@ -26,6 +26,8 @@ pub enum DataKey {
     ShareToken,
     /// Ledger sequence of the last keeper rebalance (for rate-limiting).
     LastRebalance,
+    /// Ledger sequence of the last keeper re-leverage (for rate-limiting).
+    LastReleverage,
     /// Keeper-controlled account allowed to pull claimed BLND for an off-chain
     /// (Stellar Broker) swap during the split harvest flow.
     SwapAccount,
@@ -191,6 +193,20 @@ pub fn set_last_rebalance(e: &Env, ledger: u32) {
 /// — including 0 in test environments — correctly arms the cooldown.
 pub fn get_last_rebalance(e: &Env) -> Option<u32> {
     e.storage().instance().get(&DataKey::LastRebalance)
+}
+
+// ── Keeper re-leverage rate-limit ────────────────────────────────────────────
+
+pub fn set_last_releverage(e: &Env, ledger: u32) {
+    e.storage()
+        .instance()
+        .set(&DataKey::LastReleverage, &ledger);
+}
+
+/// `None` when no re-leverage has ever been recorded — same explicit-Option
+/// reasoning as `get_last_rebalance`.
+pub fn get_last_releverage(e: &Env) -> Option<u32> {
+    e.storage().instance().get(&DataKey::LastReleverage)
 }
 
 // ── Swap account (off-chain Broker harvest path) ─────────────────────────────

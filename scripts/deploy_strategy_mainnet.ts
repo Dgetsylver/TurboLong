@@ -77,6 +77,17 @@ const ROUTER = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH"; // So
 // is a floor in Blend's terms). The constructor asserts it, and `preflight()`
 // below checks it — plus prints each reserve's live `l_factor` — before any
 // funds-bearing contract is deployed.
+//
+// `orange_hf` must sit BELOW the design HF (where a fresh deposit at
+// `target_loops` actually lands) by at least the contract's 0.02 re-leverage
+// buffer — `preflight()` fails the deploy otherwise. USDC and CETES were at 1.15
+// against design HFs of 1.1312 and 1.1233, which would have put every deposit
+// inside the rebalance band; both moved to 1.10. That is the deliberate trade:
+// the rebalance trigger sits 0.10 above liquidation instead of 0.15, in exchange
+// for keeping 4.10× and 2.73× rather than dropping a loop. It is a defensible
+// trade *because these are same-asset loops* — collateral and debt are the same
+// token, so the margin only absorbs interest-rate drift (~the borrow/supply
+// spread), never an oracle divergence between the two legs.
 const REWARD_THRESHOLD = 1_000_000_000n; // 100 BLND @ 7dp
 interface AssetCfg {
   symbol: string;
@@ -87,9 +98,9 @@ interface AssetCfg {
   orangeHf: bigint;  // 1e7
 }
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",  asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "USDC",  asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_000_000n }, // design HF 1.1312 @ l=0.95
   { symbol: "USTRY", asset: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", cFactor: 8_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n }, // design HF 1.1233 @ l=0.95
   { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
 ];
 
@@ -171,7 +182,42 @@ async function invoke(contractId: string, method: string, args: xdr.ScVal[], lab
  *   - strategy c_factor <= pool c_factor  (makes the reported HF conservative)
  *   - the deposit floor `min_hf` clears 1.0 in Blend's own terms, i.e. a
  *     position opened exactly at min_hf survives `B × pool_c × l >= D`.
+ *   - the *design* HF — where a position freshly levered to `target_loops`
+ *     actually sits — clears `orange_hf`. See `designHf` for why this is not
+ *     optional.
  */
+
+/**
+ * The health factor a position freshly levered to `targetLoops` sits at.
+ * Mirrors the contract's `design_health_factor` (`leverage.rs`) exactly: same
+ * loop, same unit rates, same `HF = B × c × l / D`.
+ *
+ * This is the number that decides whether the three risk knobs are coherent
+ * with each other, and it is easy to get wrong by hand because it moves with
+ * the pool's live `l_factor`. If it sits at or below `orange_hf`, every fresh
+ * deposit opens *inside* the rebalance band and the first `rebalance()` — which
+ * anyone may call — immediately unwinds the leverage the deposit just built.
+ * And if it does not clear `orange_hf` by the contract's re-leverage buffer
+ * (0.02), `releverage` will refuse to restore design leverage, because doing so
+ * would hand the position straight back to the rebalancer.
+ */
+function designHf(cFactor: bigint, targetLoops: number, lFactor: bigint): bigint {
+  const S7 = 10_000_000n;
+  let balance = 1_000_000_000_000n; // reference notional, matches the contract
+  let supply = 0n;
+  let borrow = 0n;
+  for (let i = 0; i <= targetLoops; i++) {
+    supply += balance;
+    if (i < targetLoops) {
+      balance = (balance * cFactor) / S7;
+      borrow += balance;
+    }
+  }
+  return borrow === 0n ? 0n : (supply * cFactor * lFactor) / (S7 * borrow);
+}
+
+/** Contract-side `RELEVERAGE_HF_BUFFER` (constants.rs), 1e7-scaled. */
+const RELEVERAGE_HF_BUFFER = 200_000n; // 0.02
 async function preflight(): Promise<void> {
   console.log("\n── pre-flight: live reserve risk parameters ──");
   const acc = await server.getAccount(deployer);
@@ -213,6 +259,25 @@ async function preflight(): Promise<void> {
         `${a.symbol}: min_hf does not clear 1.0 in Blend's terms (ratio ${Number(blendRatio) / 1e7}) — raise min_hf or lower c_factor`,
       );
     }
+
+    // Where a fresh, fully-levered deposit actually lands.
+    const design = designHf(a.cFactor, a.targetLoops, lFactor);
+    console.log(
+      `        target_loops=${a.targetLoops} → design HF=${(Number(design) / 1e7).toFixed(4)}` +
+        ` vs orange_hf=${Number(a.orangeHf) / 1e7}`,
+    );
+    if (design <= a.orangeHf) {
+      failures.push(
+        `${a.symbol}: design HF ${(Number(design) / 1e7).toFixed(4)} is at or below orange_hf ` +
+          `${Number(a.orangeHf) / 1e7} — every deposit would open inside the rebalance band and be ` +
+          `unwound by the first rebalance() call. Lower orange_hf below the design HF, or reduce target_loops.`,
+      );
+    } else if (design < a.orangeHf + RELEVERAGE_HF_BUFFER) {
+      console.warn(
+        `        ! ${a.symbol}: design HF clears orange_hf by less than the 0.02 re-leverage buffer — ` +
+          `releverage() will stop short of target_loops rather than risk a rebalance ping-pong.`,
+      );
+    }
   }
 
   if (failures.length > 0) {
@@ -221,6 +286,7 @@ async function preflight(): Promise<void> {
     process.exit(1);
   }
   console.log("  ✓ all assets clear Blend's liquidation threshold at min_hf");
+  console.log("  ✓ all assets open above their rebalance band at target_loops");
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────

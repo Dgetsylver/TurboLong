@@ -205,6 +205,36 @@ pub fn compute_health_factor(
         .ok_or(StrategyError::DivisionByZero)
 }
 
+/// Reference notional for the design-leverage derivation below. Large enough
+/// that per-layer truncation is immaterial across the full 20-loop range (the
+/// smallest layer at c = 0.5 is still ~9.5e5 stroops), small enough that
+/// `B × c_factor × l_factor` stays many orders inside i128.
+const DESIGN_NOTIONAL: i128 = 1_000_000_000_000; // 1e12
+
+/// The health factor a position freshly levered to `target_loops` sits at — the
+/// vault's *design* leverage expressed as an HF.
+///
+/// Derived by running the same `compute_totals` the deposit path runs, so the
+/// two cannot drift: whatever leverage `deposit` actually builds is the leverage
+/// this returns an HF for.
+///
+/// HF and leverage are the same statement about a position. At `HF = h` the
+/// ratio `B/D` is pinned to `h / cl`, hence `B/E = h / (h − cl)` — so capping
+/// `releverage`'s target HF at this value is exactly capping the position's
+/// leverage at `target_loops`, with no separate ratio check to keep in sync.
+/// Both sides carry the same live `l_factor`, so the resulting leverage ratio
+/// matches the design regardless of what the pool's liability markup is.
+pub fn design_health_factor(
+    c_factor: i128,
+    target_loops: u32,
+    l_factor: i128,
+) -> Result<i128, StrategyError> {
+    let (supply, borrow) = compute_totals(DESIGN_NOTIONAL, c_factor, target_loops);
+    // `compute_totals` returns underlying amounts, so feeding them in at unit
+    // rates (SCALAR_12 = 1.0) treats them as their own token quantities.
+    compute_health_factor(supply, borrow, SCALAR_12, SCALAR_12, c_factor, l_factor)
+}
+
 // ── Safety checks ────────────────────────────────────────────────────────────
 
 /// Check safety conditions before depositing.
@@ -376,4 +406,76 @@ pub fn compute_partial_unwind(
 
     let loops = ((repay_underlying + layer_size - 1) / layer_size) as u32;
     Ok((repay_underlying, loops.clamp(1, 20)))
+}
+
+/// Compute the underlying amount to borrow (and immediately re-supply) to bring
+/// HF *down* to `target_hf` — the mirror image of `compute_partial_unwind`.
+///
+/// Same closed form, opposite sign. Borrowing x and supplying it back raises
+/// both sides of the position by x:
+///   (B + x) × cl = target_hf × (D + x)
+///   x = (B × cl − target_hf × D) / (target_hf − cl)
+///
+/// which is `compute_partial_unwind`'s `x = (B×cl − t×D) / (cl − t)` with the
+/// denominator negated. The shared numerator is the position's distance from the
+/// target: positive when HF sits *above* it (slack to re-lever, this function),
+/// negative when it sits below (debt to repay, that one). Equity `B − D` is
+/// invariant under the operation, so this moves the leverage ratio without
+/// touching the share price.
+///
+/// Returns the borrow amount in underlying, or `0` when HF is already at or
+/// below `target_hf` (nothing to re-lever). Works with `d_tokens == 0`: an
+/// unlevered position — the state a full unwind leaves behind — is precisely
+/// what this restores.
+pub fn compute_releverage(
+    b_tokens: i128,
+    d_tokens: i128,
+    b_rate: i128,
+    d_rate: i128,
+    c_factor: i128,
+    l_factor: i128,
+    target_hf: i128,
+) -> Result<i128, StrategyError> {
+    let cl = effective_c_factor(c_factor, l_factor)?;
+
+    // denominator = target_hf − cl, positive for any sane target (cl <= c_factor
+    // < 1.0 < target). A target at or below cl is unreachable by borrowing: the
+    // position asymptotes to cl as leverage grows without bound.
+    let denom = target_hf
+        .checked_sub(cl)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    if denom <= 0 {
+        return Err(StrategyError::ArithmeticError);
+    }
+
+    let supply_value = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let debt_value = d_tokens
+        .fixed_mul_floor(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    // numerator = B × cl − target_hf × D, positive exactly when HF > target_hf.
+    let numerator = supply_value
+        .checked_mul(cl)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_sub(
+            target_hf
+                .checked_mul(debt_value)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    if numerator <= 0 {
+        return Ok(0);
+    }
+
+    // −1 stroop, the mirror of the +1 in `compute_partial_unwind`: round the
+    // borrow *down* so the post-borrow HF lands at or a hair above the target,
+    // never below it.
+    Ok((numerator
+        .checked_div(denom)
+        .ok_or(StrategyError::DivisionByZero)?
+        - 1)
+    .max(0))
 }

@@ -27,7 +27,7 @@ a result, and one finding was withdrawn. Corrections are marked inline.
 | H-1 | High | HF formula omits Blend's `l_factor`; safety margin is unverified per asset | **Fixed** 2026-08-05 |
 | M-1 | Medium | `partial_unwind` accepts unbounded `target_hf` — anyone can force a full deleverage | **Fixed** 2026-08-05 |
 | M-2 | Medium | Stored reserves never reconcile with the real Blend position | **Fixed** 2026-08-05 |
-| M-3 | Medium | No re-leverage path — leverage ratchets monotonically down | Open |
+| M-3 | Medium | No re-leverage path — leverage ratchets monotonically down | **Fixed** 2026-08-05 |
 | M-4 | Medium | Broker harvest path has no on-chain settlement floor | Open |
 | M-5 | Medium | Trait `harvest` defaults to zero slippage protection | Open |
 | L-1 | Low | Public `burn`/`burn_from` strand equity and break the supply invariant | Open |
@@ -231,9 +231,9 @@ keeper role is needed):
 - `test_partial_unwind_rejects_non_keeper_above_orange_zone` — the pre-existing auth gate,
   pinned so it is not lost while the target bounding moves around it.
 
-M-3 remains open, so the caveat above still stands: leverage removed by a rebalance does
-not restore itself. The fix bounds what a stranger can force to one rebalance's worth of
-deleveraging, not to zero.
+The caveat about permanence in this finding was resolved separately by M-3, which adds
+the keeper-gated `releverage` path: what a stranger forces off is now bounded to one
+rebalance's worth *and* is recoverable, rather than bounded but permanent.
 
 ### M-2 — Stored reserves never reconcile with the real Blend position
 
@@ -362,6 +362,136 @@ drift into an instant, attacker-triggered outcome.
 **Recommendation.** Add a keeper-gated `releverage()` with its own cooldown that loops
 back toward `target_loops` when HF sits comfortably above `orange_hf`. Alternatively,
 have the frontend derive displayed APY from *measured* current leverage.
+
+**Resolution (2026-08-05).** Fixed as recommended: `releverage(caller)`
+(`lib.rs:591-753`) is keeper-gated, cooldown-limited, and borrows against collateral the
+vault already holds — one atomic `[Borrow x, SupplyCollateral x]` pair
+(`blend_pool.rs:420-510`) — to restore the leverage an earlier unwind removed. Both legs
+are the same amount, so equity `B − D` is invariant and no share price moves; the
+accounting entry (`reserves::releverage`) is the measured-delta discipline the other
+paths use, and is deliberately a named wrapper over `harvest`'s so the call site records
+that the equity is *not* new.
+
+**The keeper gets no discretion over the amount.** That is the asymmetry with
+`partial_unwind`, where the keeper's `target_hf` is trusted precisely because it can only
+make the position safer. Adding leverage is the unsafe direction, so the target is
+derived entirely on-chain from values the keeper cannot influence:
+
+```rust
+let design_hf = design_health_factor(config.c_factor, config.target_loops, l_factor)?;
+let target_hf = design_hf.max(config.orange_hf + RELEVERAGE_HF_BUFFER);
+```
+
+`design_health_factor` (`leverage.rs:214-236`) runs the *same* `compute_totals` the
+deposit path runs, so "the leverage this restores" and "the leverage a deposit builds"
+cannot drift apart. Capping an HF is capping leverage exactly, not approximately: at
+`HF = h` the ratio `B/D` is pinned to `h/cl`, hence `B/E = h/(h − cl)` — the identity is
+pinned by `test_design_hf_is_the_leverage_the_deposit_loop_builds` across 60
+(c_factor, l_factor, loops) combinations. Both sides carry the same live `l_factor`, so
+the restored ratio matches the design regardless of the pool's liability markup.
+
+`compute_releverage` (`leverage.rs:411-481`) is `compute_partial_unwind`'s closed form
+with the denominator negated — same numerator `B×cl − t×D`, positive when there is slack
+to re-lever, negative when there is debt to repay — rounded a stroop *down* rather than
+up, so it lands at or just above the target and never below it.
+
+The floor is the other half. `rebalance` restores HF to exactly `orange_hf`, so a
+re-leverage that targeted `orange_hf` would land on the trigger and the next interest
+accrual would hand the position straight back — ping-pong every cooldown, for nothing but
+fees and rounding. `RELEVERAGE_HF_BUFFER` (0.02) is required both *above* the target
+before the entrypoint acts and *below* the current HF for it to be worth acting, so a
+position hovering near the band is left alone. 0.02 is sized against what it has to
+outlast: HF decays at roughly the borrow/supply spread, so at 4 points that band is ~5
+months of drift.
+
+Beyond that: the deposit-path `check_deposit_safety` applies unchanged (re-leveraging
+adds borrow demand to the pool exactly as a deposit does, and a pool above 95%
+utilization refuses both); the settled position is re-read after the submit and the whole
+transaction reverts unless HF actually landed at or above `orange_hf`, rather than
+trusting the projection; and the rate limit is one call per `RELEVERAGE_COOLDOWN_LEDGERS`
+(~1 day — deleveraging is an emergency, re-levering never is). The cap is a *level*, not
+a rate, so repeated calls converge rather than compound. A no-op does not consume the
+cooldown.
+
+The cooldown rejection is `DeadlineExpired`, not `NotAuthorized`. The caller *is*
+authorized, it is simply too early — L-7's complaint about `rebalance_keeper` — and the
+new code does not repeat it. (`StrategyError` is a shared upstream enum with no
+"too early" variant; `DeadlineExpired` is the closest honest fit.)
+
+Twelve tests pin the behaviour. Seven pure-math (`test_leverage.rs`): the HF↔leverage
+identity above, design HF falling monotonically with loops and scaling with `l_factor`,
+landing on the target without moving equity across five positions including a debt-free
+one and two under liability markup, the round-trip against `compute_partial_unwind`, the
+at/below-target and empty-vault no-ops, the unreachable-target error, and behaviour under
+accrued rates. Five integration against the real Blend pool (`test_integration.rs`):
+
+- `test_releverage_restores_design_leverage_after_an_emergency_unwind` — the finding
+  itself. Deleverage the 3-loop fixture hard (HF 1.269 → 1.823), show `rebalance` cannot
+  undo it (HF unchanged — it only ever unwinds), then `releverage` back to `12690036`
+  against a design HF of `12690036` (1e7-scaled — exact to the stroop), with equity and
+  the leverage ratio both matching a fresh deposit's.
+- `test_releverage_floor_keeps_the_position_clear_of_the_rebalance_band` — on the
+  stressed 8-loop fixture, whose design HF (≈1.076) sits *inside* the band, the floor
+  binds instead of the design cap, and a `rebalance()` immediately afterwards is a no-op:
+  the anti-ping-pong property, asserted rather than argued.
+- `test_releverage_noop_without_slack_does_not_consume_cooldown`,
+  `test_releverage_cooldown_rate_limits_on_chain` (asserting `DeadlineExpired`
+  specifically), `test_releverage_rejects_non_keeper`.
+
+Full suite: 104 passed, 0 failed.
+
+**Off-chain.** `scripts/rebalance_keeper.ts` now drives both sides of the position: below
+`orange_hf` it rebalances as before, above it it simulates `releverage` and submits only
+when the contract says it would borrow something. It makes no judgement about how much —
+a simulated `0` is the authoritative "nothing to do" — so the keeper cannot drift from
+the on-chain policy.
+
+**On the APY half of the finding — a correction.** Net APY is *already* derived from
+measured leverage, not `target_loops`: `frontend/src/defindex.ts:302` computes
+`leverage = collateralValue / totalEquity` from the live position and feeds that to the
+APY formula. What did display the configured figure was the vault page's leverage stat
+card, which showed `targetLoops` alone; it now shows realized against target
+(`3.87× / 4.10×`, `views/vault.ts:360-370`), so the drift is visible rather than implied
+away.
+
+**A deployment-parameter defect this surfaced — now fixed.** Building the design HF made
+it checkable, and the proposed mainnet parameters did not clear it. At USDC's `l_factor`
+of 0.95, `c_factor = 0.90` with `target_loops = 4` opens at HF **1.1312**, below the
+configured `orange_hf` of **1.15** — so every fresh deposit would have landed *inside*
+the rebalance band, and the first permissionless `rebalance()` would have unwound the
+leverage the deposit just built. Running the other three at that same 0.95 (their live
+`l_factor`s are still not in the repo, which is why the check reads them from the pool
+rather than a table): CETES 1.1233 failed the same way, USTRY 1.1768 and XLM 1.2238
+cleared it. Only USDC's figure rests on a confirmed `l_factor`; the rest move with
+whatever the pool actually reports.
+
+This was not caused by the M-3 fix — it is pre-existing, and it is a side effect of H-1:
+folding `l_factor` into the HF lowered every reported HF by ~5%, which pushed these two
+design points under an `orange_hf` chosen before the change.
+
+Resolved by lowering `orange_hf` **1.15 → 1.10** for USDC and CETES in
+`deploy_strategy_mainnet.ts` (headroom 0.0312 and 0.0233 against the 0.02 buffer), rather
+than by dropping a loop. The trade is explicit: the rebalance trigger now sits 0.10 above
+liquidation instead of 0.15, in exchange for keeping 4.10× and 2.73×. It is defensible
+*because these are same-asset loops* — collateral and debt are the same token, so that
+margin only has to absorb interest-rate drift at roughly the borrow/supply spread, never
+an oracle divergence between the two legs, and the keeper polls every ~5 minutes against
+a process that moves in months. USTRY and XLM keep 1.15/1.20, but clear the buffer by
+only 0.0068 and 0.0038 at an assumed `l_factor` — the preflight against live values is
+what settles them.
+
+`preflight()` computes the design HF against each reserve's *live* `l_factor` and fails
+the deploy if it does not clear `orange_hf`, with a warning tier for configurations that
+clear it by less than the re-leverage buffer. So this class of mistake cannot reach
+mainnet again, whatever Blend governance later does to a reserve's `l_factor`.
+
+One operational consequence worth stating plainly: `orange_hf` is written by
+`__constructor` and has no setter, so this change applies to *future* deploys only. The
+four already-deployed testnet vaults keep 1.15 until redeployed
+(`deployed-vaults.testnet.json`); no mainnet vault is deployed yet. Adding an admin
+setter for the risk params was considered and rejected here — it would hand the admin a
+lever to force deleveraging or to disable rebalancing entirely, which is a larger
+privileged surface than the problem warrants.
 
 ### M-4 — Broker harvest path has no on-chain settlement floor
 
