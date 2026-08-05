@@ -31,6 +31,7 @@ import {
   rpc as SorobanRpc,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
 import * as fs from "fs";
@@ -69,6 +70,13 @@ const ROUTER = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH"; // So
 // pool's, leaving a borrow/HF buffer); pool c_factors read live were USDC 0.95,
 // USTRY 0.90, CETES 0.80, XLM 0.75. Risk params (loops/min_hf/orange_hf) are
 // proposed defaults — review before running. reward_threshold = 100 BLND.
+//
+// `c_factor <= pool c_factor` is not just convention: the strategy's health
+// factor now carries the pool's `l_factor`, and that inequality is what makes
+// the reported HF a lower bound on Blend's own solvency ratio (so `min_hf > 1.0`
+// is a floor in Blend's terms). The constructor asserts it, and `preflight()`
+// below checks it — plus prints each reserve's live `l_factor` — before any
+// funds-bearing contract is deployed.
 const REWARD_THRESHOLD = 1_000_000_000n; // 100 BLND @ 7dp
 interface AssetCfg {
   symbol: string;
@@ -152,12 +160,77 @@ async function invoke(contractId: string, method: string, args: xdr.ScVal[], lab
   await signSubmit(tx, label);
 }
 
+// ── Pre-flight: live pool risk parameters ──────────────────────────────────────
+
+/**
+ * Read the pool's reserve config for every asset and check the risk parameters
+ * we are about to deploy against it. Aborts before the first deploy if anything
+ * fails, so a misconfigured asset never reaches mainnet.
+ *
+ * Checks, per asset:
+ *   - strategy c_factor <= pool c_factor  (makes the reported HF conservative)
+ *   - the deposit floor `min_hf` clears 1.0 in Blend's own terms, i.e. a
+ *     position opened exactly at min_hf survives `B × pool_c × l >= D`.
+ */
+async function preflight(): Promise<void> {
+  console.log("\n── pre-flight: live reserve risk parameters ──");
+  const acc = await server.getAccount(deployer);
+  const failures: string[] = [];
+
+  for (const a of ASSETS) {
+    const tx = new TransactionBuilder(acc, { fee: "10000000", networkPassphrase: PASSPHRASE })
+      .setTimeout(60)
+      .addOperation(new Contract(POOL).call("get_reserve", addr(a.asset)))
+      .build();
+    const sim = await server.simulateTransaction(tx);
+    if (!SorobanRpc.Api.isSimulationSuccess(sim) || !sim.result) {
+      failures.push(`${a.symbol}: get_reserve simulation failed`);
+      continue;
+    }
+    const reserve = scValToNative(sim.result.retval) as {
+      config: { c_factor: number; l_factor: number };
+    };
+    const poolC = BigInt(reserve.config.c_factor);
+    const lFactor = BigInt(reserve.config.l_factor);
+
+    // A position sitting exactly at min_hf has B/D = min_hf / c_factor, so
+    // Blend's ratio is (min_hf / c_factor) × pool_c × l. Compute it in 1e7.
+    const blendRatio = (a.minHf * poolC * lFactor) / (a.cFactor * 10_000_000n);
+
+    console.log(
+      `  ${a.symbol.padEnd(5)} strategy_c=${Number(a.cFactor) / 1e7}` +
+        ` pool_c=${Number(poolC) / 1e7} l_factor=${Number(lFactor) / 1e7}` +
+        ` min_hf=${Number(a.minHf) / 1e7} → Blend ratio at min_hf=${(Number(blendRatio) / 1e7).toFixed(4)}`,
+    );
+
+    if (a.cFactor > poolC) {
+      failures.push(
+        `${a.symbol}: strategy c_factor ${a.cFactor} exceeds pool c_factor ${poolC} — the constructor will reject this`,
+      );
+    }
+    if (blendRatio <= 10_000_000n) {
+      failures.push(
+        `${a.symbol}: min_hf does not clear 1.0 in Blend's terms (ratio ${Number(blendRatio) / 1e7}) — raise min_hf or lower c_factor`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error("\npre-flight FAILED:");
+    for (const f of failures) console.error(`  ✗ ${f}`);
+    process.exit(1);
+  }
+  console.log("  ✓ all assets clear Blend's liquidation threshold at min_hf");
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log(`Turbolong mainnet deploy ${DRY_RUN ? "(DRY-RUN)" : ""}`);
   console.log(`  deployer=${deployer} admin=${ADMIN} keeper=${KEEPER}`);
   console.log(`  pool=${POOL} router=${ROUTER}`);
+
+  await preflight();
 
   const strategyHash = await installWasm(STRATEGY_WASM, "strategy");
   const tokenHash = await installWasm(TOKEN_WASM, "token");

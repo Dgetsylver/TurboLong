@@ -483,7 +483,13 @@ function yourPositionCard(
     const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
     const cAfter = cBefore + amount * targetLeverage;
     const dAfter = dBefore + amount * (targetLeverage - 1);
-    const hfAfter = dAfter > 0 ? (vault.cFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
+    // Same formula the contract uses: the debt side carries the pool's
+    // liability factor (HF = B × c_factor × l_factor / D). Without it the
+    // "after" figure would sit optimistically above the "before" one, which is
+    // read straight from `health_factor()`.
+    const lFactor = stats?.lFactor ?? 1;
+    const hfAfter =
+      dAfter > 0 ? (vault.cFactor * lFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
     const fb = formatHf(hfBefore);
     const fa = formatHf(hfAfter);
     depPreview.replaceChildren(

@@ -7,6 +7,12 @@ use crate::leverage::{
 };
 use crate::storage::LeverageReserves;
 
+/// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
+/// pre-`l_factor` formula `B × c_factor / D`. Used by the cases that predate
+/// H-1 so their expected values stay directly comparable; the cases that
+/// exercise the markup pass an explicit `l_factor < 1.0`.
+const L_NONE: i128 = SCALAR_7;
+
 // ── compute_loop_pairs ───────────────────────────────────────────────────────
 
 #[test]
@@ -276,7 +282,8 @@ fn test_shares_roundtrip() {
 
 #[test]
 fn test_hf_no_debt() {
-    let hf = compute_health_factor(1_000_0000000, 0, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+    let hf =
+        compute_health_factor(1_000_0000000, 0, SCALAR_12, SCALAR_12, 9_500_000, L_NONE).unwrap();
     assert_eq!(hf, i128::MAX);
 }
 
@@ -290,6 +297,7 @@ fn test_hf_equal_rates() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
     )
     .unwrap();
     // HF = supply_value * c_factor / debt_value = 2000 * 9500000 / 1000 = 19_000_000
@@ -306,6 +314,7 @@ fn test_hf_near_liquidation() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
     )
     .unwrap();
     // 8000 * 9500000 / 7000 = 76000000000000000 / 7000_0000000 = 10_857_142
@@ -322,10 +331,106 @@ fn test_hf_below_one() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
     )
     .unwrap();
     assert_eq!(hf, 9_500_000);
     assert!(hf < SCALAR_7); // HF < 1.0 → liquidatable
+}
+
+// ── Health factor: Blend's l_factor liability markup (H-1) ───────────────────
+
+#[test]
+fn test_hf_applies_l_factor_markup() {
+    // b=2000, d=1000, c=0.95, l=0.85
+    // HF = 2000 × 0.95 × 0.85 / 1000 = 1.615 → 16_150_000
+    let hf = compute_health_factor(
+        2_000_0000000,
+        1_000_0000000,
+        SCALAR_12,
+        SCALAR_12,
+        9_500_000,
+        8_500_000,
+    )
+    .unwrap();
+    assert_eq!(hf, 16_150_000);
+
+    // The same position with no markup reports the old, optimistic 1.9.
+    let hf_no_markup = compute_health_factor(
+        2_000_0000000,
+        1_000_0000000,
+        SCALAR_12,
+        SCALAR_12,
+        9_500_000,
+        L_NONE,
+    )
+    .unwrap();
+    assert_eq!(hf_no_markup, 19_000_000);
+    assert!(
+        hf < hf_no_markup,
+        "l_factor < 1.0 must lower the reported HF"
+    );
+}
+
+#[test]
+fn test_hf_crosses_one_at_blends_liquidation_boundary() {
+    // Blend liquidates once B × pool_c < D / l. With pool_c = c (the strategy's
+    // worst case, borrowing exactly as aggressively as the pool allows), the
+    // boundary sits at B/D = 1 / (c × l). Check HF straddles 1.0 there.
+    let c = 9_500_000_i128; // 0.95
+    let l = 8_500_000_i128; // 0.85
+    let d = 1_000_0000000_i128;
+
+    // B exactly at the boundary: B = D / (c × l) = D / 0.8075
+    let b_boundary = d * SCALAR_7 * SCALAR_7 / (c * l);
+    let hf_boundary = compute_health_factor(b_boundary, d, SCALAR_12, SCALAR_12, c, l).unwrap();
+    assert!(
+        (hf_boundary - SCALAR_7).abs() <= 1,
+        "HF at Blend's boundary should be 1.0, got {}",
+        hf_boundary
+    );
+
+    // 1% less collateral → liquidatable, and the formula says so.
+    let hf_under =
+        compute_health_factor(b_boundary * 99 / 100, d, SCALAR_12, SCALAR_12, c, l).unwrap();
+    assert!(
+        hf_under < SCALAR_7,
+        "HF should drop below 1.0, got {}",
+        hf_under
+    );
+
+    // The pre-H-1 formula called the same position healthy — this is the bug.
+    let hf_under_old =
+        compute_health_factor(b_boundary * 99 / 100, d, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
+    assert!(
+        hf_under_old > SCALAR_7,
+        "regression guard: the l_factor-free formula reported {} (> 1.0) for a \
+         position Blend would liquidate",
+        hf_under_old
+    );
+}
+
+#[test]
+fn test_hf_is_lower_bound_on_blend_ratio_when_c_factor_not_above_pools() {
+    // The constructor asserts strategy c_factor <= pool c_factor. That is what
+    // makes the reported HF conservative: HF = B·c_s·l/D <= B·c_pool·l/D, the
+    // ratio Blend itself compares against 1.0.
+    let pool_c = 9_500_000_i128;
+    let l = 7_500_000_i128;
+    let b = 3_439_0000000_i128;
+    let d = 2_439_0000000_i128;
+
+    for strategy_c in [7_000_000_i128, 9_000_000, pool_c] {
+        let hf = compute_health_factor(b, d, SCALAR_12, SCALAR_12, strategy_c, l).unwrap();
+        let blend_ratio = compute_health_factor(b, d, SCALAR_12, SCALAR_12, pool_c, l).unwrap();
+        assert!(
+            hf <= blend_ratio,
+            "strategy HF {} must not exceed Blend's ratio {} (c_s={})",
+            hf,
+            blend_ratio,
+            strategy_c
+        );
+    }
 }
 
 // ── compute_partial_unwind ───────────────────────────────────────────────────
@@ -339,6 +444,7 @@ fn test_partial_unwind_already_at_target_returns_zero() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000, // target_hf = 1.15
     )
     .unwrap();
@@ -354,6 +460,7 @@ fn test_partial_unwind_no_debt_returns_zero() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000,
     )
     .unwrap();
@@ -371,6 +478,7 @@ fn test_partial_unwind_single_loop_position() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000,
     )
     .unwrap();
@@ -384,6 +492,7 @@ fn test_partial_unwind_single_loop_position() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000,
     )
     .unwrap();
@@ -397,7 +506,8 @@ fn test_partial_unwind_single_loop_position() {
     let new_b = 1_100_0000000 - x;
     let new_d = 1_000_0000000 - x;
     if new_d > 0 {
-        let hf_new = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+        let hf_new =
+            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000, L_NONE).unwrap();
         assert!(
             hf_new >= 11_500_000,
             "HF after unwind={} should be >= target 1.15",
@@ -416,6 +526,7 @@ fn test_partial_unwind_max_loops_position() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000, // target = 1.15
     )
     .unwrap();
@@ -426,7 +537,8 @@ fn test_partial_unwind_max_loops_position() {
     let new_b = 20_000_0000000 - repay;
     let new_d = 19_000_0000000 - repay;
     if new_d > 0 {
-        let hf_new = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+        let hf_new =
+            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000, L_NONE).unwrap();
         assert!(
             hf_new >= 11_500_000,
             "HF after unwind={} should be >= 1.15",
@@ -446,6 +558,7 @@ fn test_partial_unwind_minimal_repay_is_exact() {
         SCALAR_12,
         SCALAR_12,
         9_500_000,
+        L_NONE,
         11_500_000,
     )
     .unwrap();
@@ -456,7 +569,7 @@ fn test_partial_unwind_minimal_repay_is_exact() {
         let new_b = 10_500_0000000 - x_minus;
         let new_d = 9_500_0000000 - x_minus;
         let hf_short =
-            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000, L_NONE).unwrap();
         assert!(
             hf_short < 11_500_000,
             "Repaying less should leave HF below target"
@@ -467,7 +580,8 @@ fn test_partial_unwind_minimal_repay_is_exact() {
     let new_b = 10_500_0000000 - repay;
     let new_d = 9_500_0000000 - repay;
     if new_d > 0 {
-        let hf_ok = compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000).unwrap();
+        let hf_ok =
+            compute_health_factor(new_b, new_d, SCALAR_12, SCALAR_12, 9_500_000, L_NONE).unwrap();
         assert!(
             hf_ok >= 11_500_000,
             "HF after exact repay={} should be >= target",
@@ -777,6 +891,7 @@ fn test_safety_rejects_high_utilization() {
         500_0000000,   // post d
         SCALAR_12,
         SCALAR_12,
+        L_NONE,
         &config,
     )
     .unwrap();
@@ -814,11 +929,110 @@ fn test_safety_allows_healthy_pool() {
         500_0000000,
         SCALAR_12,
         SCALAR_12,
+        L_NONE,
         &config,
     );
     assert!(
         result.is_ok(),
         "Should allow at 50% utilization with healthy HF"
+    );
+}
+
+/// H-1 regression: the deposit gate must reject a position that clears `min_hf`
+/// under the old (l_factor-free) formula but that Blend would treat as
+/// liquidatable. Numbers are the audit's XLM case — strategy `c = 0.70`,
+/// `min_hf = 1.10` — against a reserve whose `l_factor` is 0.80:
+///
+///   B/D = 1.10 / 0.70 = 1.5714
+///   old HF = 1.5714 × 0.70            = 1.10  → passed the gate
+///   new HF = 1.5714 × 0.70 × 0.80     = 0.88  → below 1.0: liquidatable
+#[test]
+#[should_panic]
+fn test_safety_rejects_position_blend_would_liquidate() {
+    use crate::leverage::check_deposit_safety;
+    use crate::storage::Config;
+
+    let e = Env::default();
+    let dummy = Address::generate(&e);
+    let config = Config {
+        asset: dummy.clone(),
+        pool: dummy.clone(),
+        reserve_id: 0,
+        blend_token: dummy.clone(),
+        router: dummy.clone(),
+        claim_ids: soroban_sdk::Vec::new(&e),
+        reward_threshold: 1,
+        c_factor: 7_000_000,
+        target_loops: 3,
+        min_hf: 11_000_000,
+        orange_hf: 11_500_000,
+    };
+
+    let post_d = 1_000_0000000_i128;
+    let post_b = 1_571_4285714_i128; // B/D = min_hf / c_factor
+
+    // Sanity: this position is exactly at min_hf when the markup is ignored.
+    let hf_old = compute_health_factor(
+        post_b,
+        post_d,
+        SCALAR_12,
+        SCALAR_12,
+        config.c_factor,
+        L_NONE,
+    )
+    .unwrap();
+    assert!(hf_old >= config.min_hf, "fixture must clear the old gate");
+
+    check_deposit_safety(
+        &e,
+        10_000_0000000,
+        1_000_0000000, // 10% util — utilization is not what should reject this
+        100_0000000,
+        50_0000000,
+        post_b,
+        post_d,
+        SCALAR_12,
+        SCALAR_12,
+        8_000_000, // l_factor = 0.80
+        &config,
+    )
+    .unwrap();
+}
+
+/// The unwind closed form must solve for the HF that includes the markup, not
+/// the optimistic one — otherwise it under-repays and leaves the vault short of
+/// `target_hf` in Blend's terms.
+#[test]
+fn test_partial_unwind_under_liability_markup_restores_target() {
+    let c = 9_000_000_i128;
+    let l = 8_500_000_i128;
+    let target = 11_500_000_i128;
+    let b = 3_439_0000000_i128;
+    let d = 2_439_0000000_i128;
+
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, l).unwrap();
+    assert!(hf0 < target, "fixture must start below target: {}", hf0);
+
+    let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, l, target).unwrap();
+    assert!(repay > 0 && (1..=20).contains(&loops));
+
+    let hf_new = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c, l).unwrap();
+    assert!(
+        hf_new >= target,
+        "HF after unwind={} should reach target {}",
+        hf_new,
+        target
+    );
+
+    // And it repays strictly more than the l_factor-free computation would have,
+    // which is exactly the shortfall H-1 describes.
+    let (repay_no_markup, _) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap();
+    assert!(
+        repay > repay_no_markup,
+        "markup-aware repay {} should exceed markup-free repay {}",
+        repay,
+        repay_no_markup
     );
 }
 
@@ -890,6 +1104,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             reserves.b_rate,
             reserves.d_rate,
             9_000_000,
+            L_NONE,
         )
         .unwrap();
         let user_underlying_before =
@@ -904,6 +1119,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             reserves_after.b_rate,
             reserves_after.d_rate,
             9_000_000,
+            L_NONE,
         )
         .unwrap();
         let user_underlying_after =
@@ -929,9 +1145,9 @@ fn test_partial_unwind_target_at_or_below_cfactor_errors() {
     let b = 7_000_0000000_i128;
     let d = 9_000_0000000_i128;
     // target == c_factor → denom 0 → error.
-    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, c).is_err());
+    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, c).is_err());
     // target < c_factor → denom < 0 → error.
-    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, c - 1_000_000).is_err());
+    assert!(compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, c - 1_000_000).is_err());
 }
 
 #[test]
@@ -949,15 +1165,17 @@ fn test_partial_unwind_restores_hf_to_target() {
     ];
 
     for (b, d) in cases {
-        let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+        let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
         assert!(hf0 < target, "fixture must be unhealthy: hf={}", hf0);
 
-        let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+        let (repay, loops) =
+            compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap();
         assert!(loops >= 1, "should unwind at least one loop");
         assert!(repay > 0 && repay < d, "repay in range: {}", repay);
 
         // Model the exact unwind: withdraw `repay` collateral, repay `repay` debt.
-        let new_hf = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+        let new_hf =
+            compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
 
         // Restored to at least target …
         assert!(
@@ -989,6 +1207,7 @@ fn test_partial_unwind_boundary_hf_exactly_at_target_is_noop() {
         SCALAR_12,
         SCALAR_12,
         9_000_000,
+        L_NONE,
         11_500_000,
     )
     .unwrap();
@@ -1004,10 +1223,11 @@ fn test_partial_unwind_one_stroop_below_target_minimal_repay() {
     let c = 9_000_000_i128;
     let target = 11_500_000_i128;
 
-    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
     assert!(hf0 < target, "fixture must sit just below target: {}", hf0);
 
-    let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+    let (repay, loops) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap();
     assert!(loops >= 1);
     assert!(
         repay > 0 && repay < 100,
@@ -1015,7 +1235,8 @@ fn test_partial_unwind_one_stroop_below_target_minimal_repay() {
         repay
     );
 
-    let hf_new = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+    let hf_new =
+        compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
     assert!(hf_new >= target, "restored: {} >= {}", hf_new, target);
 }
 
@@ -1026,7 +1247,7 @@ fn test_partial_unwind_zero_equity_clamps_to_full_close() {
     let b = 1_000_0000000_i128;
     let d = 1_000_0000000_i128;
     let (repay, loops) =
-        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, 11_500_000).unwrap();
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, L_NONE, 11_500_000).unwrap();
     assert_eq!(
         repay, d,
         "zero equity resolves to a full close (repay == debt)"
@@ -1040,11 +1261,11 @@ fn test_partial_unwind_negative_equity_clamps_to_full_close() {
     // caller can never be told to repay more than is owed.
     let b = 900_0000000_i128;
     let d = 1_000_0000000_i128;
-    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, 9_000_000).unwrap();
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, 9_000_000, L_NONE).unwrap();
     assert!(hf0 < SCALAR_7, "fixture must be underwater: {}", hf0);
 
     let (repay, loops) =
-        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, 11_500_000).unwrap();
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_000_000, L_NONE, 11_500_000).unwrap();
     assert_eq!(repay, d, "never over-repay: clamp at the outstanding debt");
     assert!((1..=20).contains(&loops), "loops={} out of range", loops);
 }
@@ -1058,10 +1279,11 @@ fn test_partial_unwind_hf_below_one_but_salvageable() {
     let c = 9_000_000_i128;
     let target = 11_500_000_i128;
 
-    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c).unwrap();
+    let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
     assert!(hf0 < SCALAR_7, "fixture must be below 1.0: {}", hf0);
 
-    let (repay, loops) = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, target).unwrap();
+    let (repay, loops) =
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap();
     assert!(
         repay > 0 && repay < d,
         "partial, not full close: repay={}",
@@ -1069,7 +1291,8 @@ fn test_partial_unwind_hf_below_one_but_salvageable() {
     );
     assert!((1..=20).contains(&loops));
 
-    let hf_new = compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c).unwrap();
+    let hf_new =
+        compute_health_factor(b - repay, d - repay, SCALAR_12, SCALAR_12, c, L_NONE).unwrap();
     assert!(
         hf_new >= target,
         "rescued to target: {} >= {}",
@@ -1086,7 +1309,7 @@ fn test_partial_unwind_dust_position_layer_rounds_to_zero() {
     let b = 5_i128;
     let d = 5_i128;
     let (repay, loops) =
-        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_500_000, 11_500_000).unwrap();
+        compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, 9_500_000, L_NONE, 11_500_000).unwrap();
     assert!(repay > 0 && repay <= d, "repay within debt: {}", repay);
     assert_eq!(loops, 1, "dust position unwinds in a single loop");
 }
@@ -1101,9 +1324,10 @@ fn test_partial_unwind_with_accrued_rates_is_sane() {
     let b = 10_000_0000000_i128;
     let d = 8_000_0000000_i128;
 
-    let hf0 = compute_health_factor(b, d, b_rate, d_rate, c).unwrap();
+    let hf0 = compute_health_factor(b, d, b_rate, d_rate, c, L_NONE).unwrap();
     if hf0 < target {
-        let (repay, loops) = compute_partial_unwind(b, d, b_rate, d_rate, c, target).unwrap();
+        let (repay, loops) =
+            compute_partial_unwind(b, d, b_rate, d_rate, c, L_NONE, target).unwrap();
         assert!((1..=20).contains(&loops), "loops in [1,20]: {}", loops);
         assert!(repay > 0, "positive repay: {}", repay);
     }

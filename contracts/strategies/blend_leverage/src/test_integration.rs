@@ -81,7 +81,21 @@ impl TestStrategyContract {}
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
+/// Standard fixture: reserve with `l_factor = 1.0` (no liability markup), so
+/// HF reduces to `B × c_factor / D` and the pre-H-1 expectations in the tests
+/// below still read the same. Use `setup_blend_env_with_l_factor` for the cases
+/// that must exercise a real markup.
 fn setup_blend_env(e: &Env) -> (Address, Address, Address, BlendFixture<'_>, Address) {
+    setup_blend_env_with_l_factor(e, 10_000_000)
+}
+
+/// As `setup_blend_env`, with the reserve's `l_factor` under the test's control.
+/// Blend marks liabilities up by dividing by this factor, so anything below 1.0
+/// moves the pool's liquidation threshold above the naive `B × c / D` ratio.
+fn setup_blend_env_with_l_factor(
+    e: &Env,
+    l_factor: u32,
+) -> (Address, Address, Address, BlendFixture<'_>, Address) {
     let deployer = Address::generate(e);
 
     let blnd = e
@@ -111,7 +125,7 @@ fn setup_blend_env(e: &Env) -> (Address, Address, Address, BlendFixture<'_>, Add
 
     let mut reserve_config = default_reserve_config();
     reserve_config.c_factor = 9_500_000;
-    reserve_config.l_factor = 10_000_000; // 1.0: no liability markup, so effective borrow = supply * c_factor
+    reserve_config.l_factor = l_factor;
     reserve_config.max_util = 9_900_000;
 
     let pool_client = pool::Client::new(e, &pool_addr);
@@ -596,9 +610,17 @@ fn test_health_factor_from_pool() {
         config.target_loops,
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
 
-    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor).unwrap();
+    let hf = compute_health_factor(
+        b_tokens,
+        d_tokens,
+        b_rate,
+        d_rate,
+        config.c_factor,
+        l_factor,
+    )
+    .unwrap();
 
     // With 3 loops at c=0.95, HF should be > min_hf (1.05)
     assert!(
@@ -1604,14 +1626,15 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
         ],
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let pre_b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
     let pre_equity = pre_b * b_rate / SCALAR_12 - pre_d * d_rate / SCALAR_12;
-    let pre_hf = compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor).unwrap();
+    let pre_hf =
+        compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     // Unwind 2 loops through the REAL production deleverage path.
     let (b_removed, d_removed) = e.as_contract(&strategy, || {
@@ -1622,7 +1645,8 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
     let post_b = post.collateral.get(config.reserve_id).unwrap_or(0);
     let post_d = post.liabilities.get(config.reserve_id).unwrap_or(0);
     let post_equity = post_b * b_rate / SCALAR_12 - post_d * d_rate / SCALAR_12;
-    let post_hf = compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor).unwrap();
+    let post_hf =
+        compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "b_removed={} d_removed={} pre_hf={} post_hf={} pre_eq={} post_eq={}",
@@ -1755,13 +1779,13 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         config.target_loops,
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
 
     let target = config.orange_hf;
-    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
     assert!(
         before_hf < target,
         "fixture must start in the orange zone: before_hf={}, target={}",
@@ -1770,7 +1794,8 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     );
 
     // Production logic: derive the loop count needed to restore HF to target.
-    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    let (_, loops) =
+        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, l_factor, target).unwrap();
     assert!(loops >= 1, "should need at least one unwind loop");
 
     // Execute the real deleverage on the real pool.
@@ -1781,7 +1806,8 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let b2 = post.collateral.get(config.reserve_id).unwrap_or(0);
     let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
-    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+    let after_hf =
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "before_hf={} after_hf={} target={} loops={}",
@@ -1866,7 +1892,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
         ],
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -1874,7 +1900,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
 
     let target = config.orange_hf;
-    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
     assert!(
         before_hf < target,
         "fixture must start in the orange zone: before_hf={}",
@@ -1882,7 +1908,8 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     );
 
     // ── Dry-run prediction (same model as scripts/rebalance_sim.ts) ──────────
-    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    let (_, loops) =
+        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, l_factor, target).unwrap();
     assert!(loops >= 1);
 
     // Layered execution model (mirrors blend_pool::submit_deleverage).
@@ -1913,7 +1940,8 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
     let actual_supply = b2 * b_rate / SCALAR_12;
     let actual_debt = d2 * d_rate / SCALAR_12;
-    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+    let after_hf =
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "loops={} pred_supply={} actual_supply={} pred_debt={} actual_debt={} pred_hf={} after_hf={}",
@@ -2436,10 +2464,17 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
         let config = storage::get_config(&e);
         let r = reserves::get_strategy_reserves_updated(&e, &config);
         let equity = crate::leverage::compute_equity(&r).unwrap();
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-        let hf =
-            compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor).unwrap();
+        let hf = compute_health_factor(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+        )
+        .unwrap();
         let underlying = shares_to_underlying(user_shares, &r).unwrap();
         (equity, hf, underlying)
     });
@@ -2482,4 +2517,162 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
         b_rate_before,
         d_rate_before,
     );
+}
+
+// ── H-1: the reported HF must carry Blend's l_factor liability markup ─────────
+//
+// `compute_health_factor` used to weight only the collateral side
+// (`HF = B × c_factor / D`) while Blend's own solvency check marks liabilities
+// *up* by dividing by the reserve's `l_factor`. The strategy's HF was therefore
+// systematically optimistic relative to the number that actually governs
+// liquidation, and the whole suite was blind to the term because every fixture
+// pinned `l_factor = 1.0`.
+//
+// These tests run against a reserve with a REAL markup and check the fix where
+// it matters: the strategy's HF crosses 1.0 exactly when the Blend pool starts
+// accepting a liquidation auction on the position.
+
+/// Ask the pool to open a user-liquidation auction against `user`, and report
+/// whether it will. This is Blend's own verdict on the position rather than a
+/// re-implementation of it: the pool rejects the auction outright while the
+/// position is healthy by its own measure.
+///
+/// Every percentage is swept because Blend accepts exactly the one that restores
+/// the user to its target health — anything smaller or larger is rejected with a
+/// different error — so a fixed handful of percentages would report a false
+/// "not liquidatable".
+fn blend_would_liquidate(e: &Env, pool_addr: &Address, user: &Address, asset: &Address) -> bool {
+    let assets = vec![e, asset.clone()];
+    (1u32..=100).any(|percent| {
+        pool::Client::new(e, pool_addr)
+            .mock_all_auths()
+            .try_new_auction(&0, user, &assets, &assets, &percent)
+            .is_ok()
+    })
+}
+
+#[test]
+fn test_health_factor_carries_pool_l_factor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    // Reserve with a genuine liability markup: l = 0.85, pool c = 0.95.
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env_with_l_factor(&e, 8_500_000);
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    // The view reports the pool's live risk parameters, and the constructor's
+    // `c_factor <= pool c_factor` invariant holds.
+    let (strategy_c, pool_c, l_factor) = sclient.risk_factors();
+    assert_eq!(
+        (strategy_c, pool_c, l_factor),
+        (9_000_000, 9_500_000, 8_500_000)
+    );
+    assert!(strategy_c <= pool_c);
+
+    let positions = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    let b = positions.collateral.get(config.reserve_id).unwrap_or(0);
+    let d = positions.liabilities.get(config.reserve_id).unwrap_or(0);
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+
+    // 1. The entrypoint reports the markup-aware number.
+    let hf = sclient.health_factor();
+    let expected = compute_health_factor(b, d, b_rate, d_rate, strategy_c, l_factor).unwrap();
+    assert_eq!(hf, expected);
+
+    // 2. Which is strictly below what the pre-H-1 formula reported.
+    let hf_pre_fix = compute_health_factor(b, d, b_rate, d_rate, strategy_c, SCALAR_7).unwrap();
+    assert!(
+        hf < hf_pre_fix,
+        "markup-aware HF {} should be below the l_factor-free {}",
+        hf,
+        hf_pre_fix
+    );
+
+    // 3. And it is a lower bound on Blend's own ratio, so HF >= 1.0 is a real
+    //    guarantee rather than a per-asset parameter coincidence.
+    let blend_ratio = compute_health_factor(b, d, b_rate, d_rate, pool_c, l_factor).unwrap();
+    assert!(
+        hf <= blend_ratio,
+        "strategy HF {} must not exceed Blend's ratio {}",
+        hf,
+        blend_ratio
+    );
+
+    // 4. The pool agrees the position is safe.
+    assert!(hf > SCALAR_7, "fixture should be healthy: hf={}", hf);
+    assert!(
+        !blend_would_liquidate(&e, &pool_addr, &strategy, &token),
+        "Blend should refuse to liquidate a position the strategy calls healthy"
+    );
+
+    std::println!(
+        "l_factor fixture: hf={} (pre-fix {}) blend_ratio={} b={} d={}",
+        hf,
+        hf_pre_fix,
+        blend_ratio,
+        b,
+        d
+    );
+}
+
+#[test]
+fn test_health_factor_tracks_a_governance_l_factor_cut() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e); // l = 1.0
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let hf_before = sclient.health_factor();
+    assert!(hf_before > SCALAR_7, "should open healthy: {}", hf_before);
+    assert!(!blend_would_liquidate(&e, &pool_addr, &strategy, &token));
+
+    // Blend governance re-parameterises the reserve, cutting l_factor to 0.60.
+    // This is why the strategy reads l_factor live instead of caching it at
+    // construction: a stored copy would keep reporting the stale, safe number.
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    let mut reserve_config = pool_client.get_reserve(&token).config;
+    reserve_config.l_factor = 6_000_000;
+    pool_client.queue_set_reserve(&token, &reserve_config);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 8 * 24 * 60 * 60);
+    pool_client.set_reserve(&token);
+    assert_eq!(sclient.risk_factors().2, 6_000_000);
+
+    // The strategy now reports the position as liquidatable — and so does Blend.
+    let hf_after = sclient.health_factor();
+    assert!(
+        hf_after < hf_before,
+        "HF should fall with l_factor: before={} after={}",
+        hf_before,
+        hf_after
+    );
+    assert!(
+        hf_after < SCALAR_7,
+        "HF should drop below 1.0 after the cut: {}",
+        hf_after
+    );
+    assert!(
+        blend_would_liquidate(&e, &pool_addr, &strategy, &token),
+        "Blend should accept a liquidation once the strategy's HF is below 1.0"
+    );
+
+    std::println!("governance l_factor cut: hf {} -> {}", hf_before, hf_after);
 }

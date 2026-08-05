@@ -139,15 +139,39 @@ pub fn underlying_to_shares(
 
 // ── Health factor ────────────────────────────────────────────────────────────
 
+/// Combine the strategy's collateral factor with the pool's liability factor into
+/// the single 1e7-scaled factor the HF math uses: `cl = c_factor × l_factor`.
+///
+/// Blend's own health check marks liabilities *up* rather than collateral down:
+/// a position is liquidatable once `B × pool_c_factor < D / l_factor`. Folding
+/// `l_factor` into the collateral side is algebraically identical
+/// (`B·c / (D/l) == B·c·l / D`) and keeps the formula to one division.
+///
+/// `l_factor` is read live from the pool's reserve config rather than stored, so
+/// a Blend governance change to the reserve's risk parameters is picked up on the
+/// next call instead of leaving a stale, optimistic value behind.
+#[inline]
+pub fn effective_c_factor(c_factor: i128, l_factor: i128) -> Result<i128, StrategyError> {
+    c_factor
+        .fixed_mul_floor(l_factor, SCALAR_7)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
 /// Calculate health factor for given b/d tokens.
-/// HF = (b_tokens × b_rate × c_factor) / (d_tokens × d_rate × SCALAR_7)
+/// HF = (b_tokens × b_rate × c_factor × l_factor) / (d_tokens × d_rate × SCALAR_7)
 /// Returns HF in 1e7 scale (1_000_000_0 = 1.0)
+///
+/// Because the strategy's `c_factor` is asserted at construction to be no larger
+/// than the pool's, this HF is a lower bound on Blend's own solvency ratio
+/// `(B × pool_c_factor) / (D / l_factor)`: HF ≥ 1.0 therefore implies the
+/// position is not liquidatable in Blend's terms.
 pub fn compute_health_factor(
     b_tokens: i128,
     d_tokens: i128,
     b_rate: i128,
     d_rate: i128,
     c_factor: i128,
+    l_factor: i128,
 ) -> Result<i128, StrategyError> {
     if d_tokens == 0 {
         return Ok(i128::MAX); // No debt = infinite HF
@@ -157,8 +181,12 @@ pub fn compute_health_factor(
         .fixed_mul_floor(b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
+    // supply_value × c_factor (1e7-scaled), then marked down by l_factor — the
+    // mirror of Blend marking the debt side up by dividing by l_factor.
     let weighted_supply = supply_value
         .checked_mul(c_factor)
+        .ok_or(StrategyError::ArithmeticError)?
+        .fixed_mul_floor(l_factor, SCALAR_7)
         .ok_or(StrategyError::ArithmeticError)?;
 
     let debt_value = d_tokens
@@ -194,6 +222,7 @@ pub fn check_deposit_safety(
     post_d_tokens: i128,
     b_rate: i128,
     d_rate: i128,
+    l_factor: i128,
     config: &Config,
 ) -> Result<(), StrategyError> {
     // 1. Current utilization check
@@ -229,13 +258,16 @@ pub fn check_deposit_safety(
         }
     }
 
-    // 3. Post-loop health factor check
+    // 3. Post-loop health factor check. `min_hf > 1.0` is a Blend-terms floor —
+    // the HF here already carries the pool's `l_factor` — so clearing it means
+    // the post-deposit position is not liquidatable by the pool's own measure.
     let hf = compute_health_factor(
         post_b_tokens,
         post_d_tokens,
         b_rate,
         d_rate,
         config.c_factor,
+        l_factor,
     )?;
     if hf < config.min_hf {
         panic_with_error!(e, StrategyError::ExternalError);
@@ -248,13 +280,14 @@ pub fn check_deposit_safety(
 /// to `target_hf`, and the number of leverage loops that covers it.
 ///
 /// Closed-form derivation (all values in underlying units):
-///   B = b_tokens × b_rate / SCALAR_12   (supply value)
-///   D = d_tokens × d_rate / SCALAR_12   (debt value)
-///   HF = B × c_factor / D               (current, in 1e7)
+///   B  = b_tokens × b_rate / SCALAR_12  (supply value)
+///   D  = d_tokens × d_rate / SCALAR_12  (debt value)
+///   cl = c_factor × l_factor            (effective collateral factor, 1e7)
+///   HF = B × cl / D                     (current, in 1e7)
 ///
 /// After repaying x underlying (and withdrawing x collateral):
-///   (B - x) × c_factor = target_hf × (D - x)
-///   x = (B × c_factor - target_hf × D) / (c_factor - target_hf)
+///   (B - x) × cl = target_hf × (D - x)
+///   x = (B × cl - target_hf × D) / (cl - target_hf)
 ///
 /// Returns `(repay_underlying, loops_needed)`.
 /// Returns `(0, 0)` if already at or above target_hf, or if no debt.
@@ -267,16 +300,24 @@ pub fn compute_partial_unwind(
     b_rate: i128,
     d_rate: i128,
     c_factor: i128,
+    l_factor: i128,
     target_hf: i128,
 ) -> Result<(i128, u32), StrategyError> {
     if d_tokens == 0 {
         return Ok((0, 0));
     }
 
-    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor)?;
+    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     if hf >= target_hf {
         return Ok((0, 0));
     }
+
+    // The HF the closed form solves for carries the pool's liability markup, so
+    // the equation is driven by the effective factor, not the raw c_factor.
+    // `layer_size` below stays on the raw c_factor: it describes the geometry of
+    // the *actual* borrow loop (and of `submit_deleverage`'s layers), which is
+    // unaffected by how the pool weights liabilities.
+    let cl = effective_c_factor(c_factor, l_factor)?;
 
     // Supply and debt values in underlying (SCALAR_12 precision)
     let supply_value = b_tokens
@@ -286,11 +327,11 @@ pub fn compute_partial_unwind(
         .fixed_mul_floor(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    // numerator   = B × c_factor - target_hf × D  (both in 1e7 × underlying)
-    // denominator = c_factor - target_hf           (in 1e7)
+    // numerator   = B × cl - target_hf × D  (both in 1e7 × underlying)
+    // denominator = cl - target_hf           (in 1e7)
     // x = numerator / denominator
     let numerator = supply_value
-        .checked_mul(c_factor)
+        .checked_mul(cl)
         .ok_or(StrategyError::ArithmeticError)?
         .checked_sub(
             target_hf
@@ -299,14 +340,14 @@ pub fn compute_partial_unwind(
         )
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // denominator = c_factor - target_hf; negative when target_hf > c_factor (always true for
-    // a healthy target), so we negate both sides.
+    // denominator = cl - target_hf; negative when target_hf > cl (always true for
+    // a healthy target, since cl <= c_factor < 1.0 < target), so we negate both sides.
     let denom = target_hf
-        .checked_sub(c_factor)
+        .checked_sub(cl)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
     if denom <= 0 {
-        // target_hf <= c_factor: can't reach target by partial unwind alone
+        // target_hf <= cl: can't reach target by partial unwind alone
         return Err(StrategyError::ArithmeticError);
     }
 

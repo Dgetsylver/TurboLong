@@ -507,6 +507,36 @@ pub fn get_rates(e: &Env, config: &Config) -> (i128, i128) {
     (reserve.data.b_rate, reserve.data.d_rate)
 }
 
+/// Fetch `(b_rate, d_rate, l_factor)` for the configured asset in a single pool
+/// call — the inputs every health-factor computation needs.
+///
+/// `l_factor` is the pool's *liability* factor (1e7): Blend measures solvency as
+/// `B × c_factor` against `D / l_factor`, so omitting it makes the strategy's HF
+/// systematically optimistic relative to the number that governs liquidation. It
+/// is read live rather than cached at construction because Blend governance can
+/// re-parameterise a reserve (`queue_set_reserve`), and a stale copy would fail
+/// in exactly the unsafe direction.
+pub fn get_rates_and_l_factor(e: &Env, config: &Config) -> (i128, i128, i128) {
+    let pool_client = BlendPoolClient::new(e, &config.pool);
+    let reserve = pool_client.get_reserve(&config.asset);
+    (
+        reserve.data.b_rate,
+        reserve.data.d_rate,
+        reserve.config.l_factor as i128,
+    )
+}
+
+/// Fetch the pool's own risk parameters for the configured asset:
+/// `(c_factor, l_factor)`, both 1e7-scaled.
+pub fn get_pool_risk_factors(e: &Env, config: &Config) -> (i128, i128) {
+    let pool_client = BlendPoolClient::new(e, &config.pool);
+    let reserve = pool_client.get_reserve(&config.asset);
+    (
+        reserve.config.c_factor as i128,
+        reserve.config.l_factor as i128,
+    )
+}
+
 /// Fetch current pool supply and borrow in underlying units.
 pub fn get_pool_utilization(e: &Env, config: &Config) -> (i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);

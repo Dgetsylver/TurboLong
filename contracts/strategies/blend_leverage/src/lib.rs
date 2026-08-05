@@ -94,10 +94,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
         let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
 
-        // Look up the reserve index from the pool
+        // Look up the reserve index and risk parameters from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);
         let reserve = pool_client.get_reserve(&asset);
         let reserve_id = reserve.config.index;
+        let pool_c_factor = reserve.config.c_factor as i128;
+        let pool_l_factor = reserve.config.l_factor as i128;
 
         // Claim IDs: supply side = index*2+1, borrow side = index*2
         let claim_ids: Vec<u32> = Vec::from_array(&e, [reserve_id * 2 + 1, reserve_id * 2]);
@@ -110,15 +112,34 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // so these invariants are enforced before any funds can enter.
         //
         //   0 < c_factor < 1.0           — a collateral factor must be a fraction
+        //   c_factor <= pool c_factor    — see the safety-margin derivation below
         //   1 <= target_loops <= 20      — at least one leverage loop; 20 is the
         //                                  internal request cap
         //   min_hf > 1.0                 — never open a directly-liquidatable position
         //   orange_hf > min_hf           — orange (rebalance) zone sits above the
         //                                  hard deposit floor
         // (orange_hf > c_factor is implied by orange_hf > min_hf > 1.0 > c_factor.)
+        //
+        // Safety margin, derived rather than conventional. `compute_health_factor`
+        // reports HF = B × c_factor × l_factor / D, while Blend liquidates once
+        // B × pool_c_factor < D / l_factor, i.e. once B × pool_c_factor × l_factor / D
+        // drops below 1.0. With c_factor <= pool_c_factor the strategy's HF is a
+        // lower bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed
+        // in Blend's terms and no per-asset buffer convention is needed to make it
+        // hold. (The deploy script's habit of setting c_factor strictly below the
+        // pool's is still useful — it buys borrow headroom — but the vault's
+        // solvency no longer depends on it.)
         assert!(
             c_factor > 0 && c_factor < SCALAR_7,
             "c_factor must be in (0, 1.0)"
+        );
+        assert!(
+            c_factor <= pool_c_factor,
+            "c_factor must not exceed the pool's c_factor"
+        );
+        assert!(
+            pool_l_factor > 0 && pool_l_factor <= SCALAR_7,
+            "pool l_factor must be in (0, 1.0]"
         );
         assert!(
             (1..=20).contains(&target_loops),
@@ -172,7 +193,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let (add_supply, add_borrow) = compute_totals(amount, config.c_factor, config.target_loops);
 
         // Compute projected position for HF check
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
         let proj_b = reserves
             .total_b_tokens
             .checked_add(
@@ -204,6 +225,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             proj_d,
             b_rate,
             d_rate,
+            l_factor,
             &config,
         )?;
 
@@ -368,14 +390,21 @@ fn unwind_to(
     config: &Config,
     target_hf: i128,
 ) -> Result<(i128, i128, u32), StrategyError> {
-    let (b_rate, d_rate) = blend_pool::get_rates(e, config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
 
     if d_tokens == 0 {
         return Ok((i128::MAX, i128::MAX, 0));
     }
 
-    let before_hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
+    let before_hf = compute_health_factor(
+        b_tokens,
+        d_tokens,
+        b_rate,
+        d_rate,
+        config.c_factor,
+        l_factor,
+    )?;
     if before_hf >= target_hf {
         return Ok((before_hf, before_hf, 0));
     }
@@ -386,6 +415,7 @@ fn unwind_to(
         b_rate,
         d_rate,
         config.c_factor,
+        l_factor,
         target_hf,
     )?;
     if loops == 0 {
@@ -400,7 +430,7 @@ fn unwind_to(
     let after_hf = if d2 == 0 {
         i128::MAX
     } else {
-        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor)?
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?
     };
 
     Ok((before_hf, after_hf, loops))
@@ -469,14 +499,21 @@ impl BlendLeverageStrategy {
     pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<u32, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
 
         if d_tokens == 0 {
             return Ok(0);
         }
 
-        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)?;
+        let hf = compute_health_factor(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+        )?;
 
         // Only the keeper can trigger above the orange zone; anyone can inside it.
         if hf >= config.orange_hf {
@@ -545,12 +582,38 @@ impl BlendLeverageStrategy {
     }
 
     /// Get current health factor (1e7 scaled).
+    ///
+    /// Expressed in Blend's own terms: the collateral side is weighted by the
+    /// strategy's `c_factor` and the debt side carries the pool's live
+    /// `l_factor`, so 1.0 here is the liquidation threshold, not an optimistic
+    /// approximation of it.
     pub fn health_factor(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-        compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor)
+        compute_health_factor(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+        )
+    }
+
+    /// Live risk factors behind the health factor:
+    /// `(strategy_c_factor, pool_c_factor, pool_l_factor)`, all 1e7-scaled.
+    ///
+    /// Read-only view for operators and monitoring. The pool values are fetched
+    /// from the reserve config on every call, so this is the way to confirm a
+    /// live asset's `l_factor` (and to detect a Blend governance change to it)
+    /// against the vault that actually depends on it.
+    pub fn risk_factors(e: Env) -> Result<(i128, i128, i128), StrategyError> {
+        extend_instance_ttl(&e);
+        let config = storage::get_config(&e);
+        let (pool_c_factor, pool_l_factor) = blend_pool::get_pool_risk_factors(&e, &config);
+        Ok((config.c_factor, pool_c_factor, pool_l_factor))
     }
 
     /// Get current strategy position details.
