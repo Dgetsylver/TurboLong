@@ -3,8 +3,8 @@
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12, SCALAR_7};
 use crate::leverage::{
     compute_equity, compute_health_factor, compute_loop_pairs, compute_partial_unwind,
-    compute_releverage, compute_totals, design_health_factor, shares_to_underlying,
-    underlying_to_shares,
+    compute_releverage, compute_totals, design_health_factor, harvest_floor, prorate_floor,
+    shares_to_underlying, underlying_to_shares,
 };
 use crate::storage::LeverageReserves;
 
@@ -1565,4 +1565,64 @@ fn test_releverage_with_accrued_rates_is_sane() {
         hf1,
         target
     );
+}
+
+// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+
+#[test]
+fn test_harvest_floor_scales_by_rate() {
+    // 1000 BLND (7 dec) at a floor rate of 0.02 underlying per BLND → 20 units.
+    let blnd = 1_000_0000000_i128;
+    assert_eq!(harvest_floor(blnd, 200_000).unwrap(), 20_0000000);
+
+    // Rate of exactly 1.0 is the identity — the floor is the BLND amount.
+    assert_eq!(harvest_floor(blnd, SCALAR_7).unwrap(), blnd);
+
+    // Nothing claimed, or no rate configured, owes nothing.
+    assert_eq!(harvest_floor(0, 200_000).unwrap(), 0);
+    assert_eq!(harvest_floor(-5, 200_000).unwrap(), 0);
+    assert_eq!(harvest_floor(blnd, 0).unwrap(), 0);
+}
+
+#[test]
+fn test_harvest_floor_rounds_up() {
+    // 1 stroop of BLND at 0.02 would be 0.02 stroops of underlying; rounding
+    // down would let dust settle for free, so it rounds to 1.
+    assert_eq!(harvest_floor(1, 200_000).unwrap(), 1);
+    // 3 × 0.5 = 1.5 → 2.
+    assert_eq!(harvest_floor(3, SCALAR_7 / 2).unwrap(), 2);
+}
+
+#[test]
+fn test_prorate_floor_follows_the_blnd_that_left() {
+    let floor = 20_0000000_i128;
+    let claimed = 1_000_0000000_i128;
+
+    // Nothing pulled → nothing owed. This is the keeper who claimed and then
+    // routed through Soroswap instead, or a Broker that declined the trade.
+    assert_eq!(prorate_floor(floor, 0, claimed).unwrap(), 0);
+
+    // Half pulled → half owed.
+    assert_eq!(
+        prorate_floor(floor, claimed / 2, claimed).unwrap(),
+        floor / 2
+    );
+
+    // Whole approval pulled → whole floor.
+    assert_eq!(prorate_floor(floor, claimed, claimed).unwrap(), floor);
+
+    // More than claimed cannot happen (the approval caps it) but must not
+    // extrapolate past the full floor if it somehow did.
+    assert_eq!(prorate_floor(floor, claimed * 2, claimed).unwrap(), floor);
+}
+
+#[test]
+fn test_prorate_floor_rounds_up_and_handles_degenerate_input() {
+    // 20 units over 3 of 1000 claimed = 0.06 → 1, never 0.
+    assert_eq!(prorate_floor(20_0000000, 3, 1_000_0000000).unwrap(), 1);
+
+    // No floor, or a record with nothing claimed, owes nothing rather than
+    // dividing by zero.
+    assert_eq!(prorate_floor(0, 500, 1000).unwrap(), 0);
+    assert_eq!(prorate_floor(20_0000000, 500, 0).unwrap(), 0);
 }

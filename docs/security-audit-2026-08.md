@@ -28,7 +28,7 @@ a result, and one finding was withdrawn. Corrections are marked inline.
 | M-1 | Medium | `partial_unwind` accepts unbounded `target_hf` — anyone can force a full deleverage | **Fixed** 2026-08-05 |
 | M-2 | Medium | Stored reserves never reconcile with the real Blend position | **Fixed** 2026-08-05 |
 | M-3 | Medium | No re-leverage path — leverage ratchets monotonically down | **Fixed** 2026-08-05 |
-| M-4 | Medium | Broker harvest path has no on-chain settlement floor | Open |
+| M-4 | Medium | Broker harvest path has no on-chain settlement floor | **Fixed** 2026-08-05 |
 | M-5 | Medium | Trait `harvest` defaults to zero slippage protection | Open |
 | L-1 | Low | Public `burn`/`burn_from` strand equity and break the supply invariant | Open |
 | L-2 | Low | `set_share_token` re-pointable (subsumed by `upgrade`) | Open |
@@ -512,6 +512,78 @@ honest rating. The asymmetry is still the point: the Soroswap leg correctly mand
 `harvest_claim` time; assert in `harvest_reinvest` that the underlying balance grew by at
 least that floor. Scope the approval to a few ledgers and revoke it at the start of the
 next claim.
+
+**Resolution (2026-08-05).** Fixed as recommended, all three parts.
+
+*The floor.* A new admin-set `min_harvest_rate` (`lib.rs:944-981`) fixes the minimum
+underlying owed per `SCALAR_7` of BLND, in smallest units of each — a ratio, so it
+absorbs any decimal difference, and with both tokens at 7 decimals it is simply the BLND
+price in the underlying, 1e7-scaled. It is a floor rather than a price: set at a
+fraction of market it never binds on ordinary spread, Broker fee or drift between claim
+and settlement, and binds precisely when a settlement comes back at a fraction of what
+the BLND was worth. Deliberately admin-set rather than read from an oracle — the Blend
+pool's oracle prices the pool's *reserve* assets, and depending on BLND being in that
+feed would put a liveness dependency on the harvest path in exchange for tracking a
+number that does not need to be tracked.
+
+*The record.* `harvest_claim` (`lib.rs:986-1075`) now writes a single-use
+`PendingHarvest { blnd_claimed, underlying_before, floor, expiration }` alongside the
+approval, and grants the approval **only** when both a swap account and a rate are
+configured. Unset rate ⇒ no approval ⇒ no unfloored Broker leg, with the on-chain
+Soroswap route unaffected; the fix therefore fails closed on exactly the path the finding
+is about, and an un-reconfigured deployment loses a swap venue rather than keeping an
+unfloored one.
+
+*The assertion.* `harvest_reinvest` (`lib.rs:1077-1204`) settles on two balances the
+contract reads itself, not on `amount_in`:
+
+```rust
+let spent     = p.blnd_claimed - blnd.balance(strategy);        // what left
+let delivered = (asset.balance(strategy) - p.underlying_before) // what came back
+              + if via_soroswap { realized } else { 0 };
+if delivered < prorate_floor(p.floor, spent, p.blnd_claimed) {
+    return Err(StrategyError::UnderlyingAmountBelowMin);
+}
+```
+
+The distinction matters: `amount_in` is a keeper parameter, and the pre-existing "does
+the contract hold `amount_in`?" check is satisfied just as well by underlying that was
+already sitting there — `test_broker_settlement_ignores_pre_existing_idle_underlying`
+pins that. The claim-time baseline is what makes the growth attributable to the harvest.
+Proration by `spent` keeps the floor following the BLND rather than the approval, so a
+Broker that takes a quarter owes a quarter and a keeper who claims and then routes
+through Soroswap owes nothing on the unpulled remainder. The floor applies to the
+Soroswap leg too: the same BLND is at stake, and `amount_out_min` is the keeper's number
+while the floor is the admin's (this also narrows M-5 for this entrypoint, though the
+trait `harvest` is untouched).
+
+*The approval window.* `HARVEST_APPROVAL_LEDGERS = 60` (~5 minutes,
+`constants.rs:50-63`), down from 17_280. The expiry is the backstop, not the control:
+`harvest_reinvest` revokes the allowance when it settles and `harvest_claim` revokes any
+stale one before granting a fresh one, so BLND is never pullable without a live floor
+attached. Claiming while a previous claim's allowance is still live is refused
+(`DeadlineExpired`) — two overlapping approvals would put more BLND at risk than the
+newer floor covers. The trait `harvest` is refused for the duration too: it would swap
+the pending claim's BLND and lever the proceeds in one call, leaving the settlement with
+nothing left to measure.
+
+**Residual, stated plainly.** A claim whose BLND is pulled and never settled cannot be
+enforced retroactively; the keeper can wait the window out and claim again. That requires
+the swap account to be actively malicious — the role the finding already treats as
+trusted — and it is bounded to one claim's yield. It is no longer silent: the replacing
+claim emits `harvest_unsettled(pulled, floor, expiration)`
+(`test_unsettled_claim_is_reported_when_a_later_claim_replaces_it`).
+
+Covered by ten new tests — four pure-arithmetic (`test_leverage.rs`) over the floor and
+its proration including the rounding direction, and six integration
+(`test_integration.rs:2496-2893`) over the claim record, the scoped allowance, the
+below-floor revert, proration to the BLND actually pulled, revocation on settle, and the
+trait-`harvest` interlock.
+Off-chain: `scripts/harvest_router.ts` checks the floor against its own `amount_out_min`
+before trading, so a misconfigured rate surfaces as a skipped harvest rather than a
+revert after the swap; both deploy scripts wire `set_min_harvest_rate`, mainnet from
+`MIN_HARVEST_RATE_<SYMBOL>` since the value is a price observation, not a risk-design
+constant.
 
 ### M-5 — Trait `harvest` defaults to zero slippage protection
 

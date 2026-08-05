@@ -479,3 +479,44 @@ pub fn compute_releverage(
         - 1)
     .max(0))
 }
+
+// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+//
+// The Broker harvest leaves the chain between `harvest_claim` and
+// `harvest_reinvest`: BLND is approved out, a swap happens off-chain, underlying
+// comes back. Nothing on-chain can observe the swap, but it *can* observe both
+// ends of it — how much BLND left and how much underlying arrived — and hold the
+// pair to a rate the admin fixed in advance. These two functions are that rate
+// arithmetic; the measurement lives in `harvest_reinvest`.
+//
+// Both round *up*, so rounding always favours the vault.
+
+/// Minimum underlying owed back for `blnd_amount` of BLND at `min_rate`
+/// (underlying smallest-units per `SCALAR_7` BLND smallest-units).
+pub fn harvest_floor(blnd_amount: i128, min_rate: i128) -> Result<i128, StrategyError> {
+    if blnd_amount <= 0 || min_rate <= 0 {
+        return Ok(0);
+    }
+    blnd_amount
+        .fixed_mul_ceil(min_rate, SCALAR_7)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
+/// The share of `floor` owed for the `spent` of `claimed` BLND that actually
+/// left the vault.
+///
+/// The Broker is free to pull less than the whole approval — or nothing at all,
+/// when the keeper claims and then routes through Soroswap instead — and the
+/// floor has to follow the BLND rather than the approval. `spent >= claimed`
+/// (the whole approval taken) owes the full floor.
+pub fn prorate_floor(floor: i128, spent: i128, claimed: i128) -> Result<i128, StrategyError> {
+    if floor <= 0 || spent <= 0 || claimed <= 0 {
+        return Ok(0);
+    }
+    if spent >= claimed {
+        return Ok(floor);
+    }
+    floor
+        .fixed_mul_ceil(spent, claimed)
+        .ok_or(StrategyError::ArithmeticError)
+}

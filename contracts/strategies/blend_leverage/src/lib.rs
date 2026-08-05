@@ -263,6 +263,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// Callable only by the keeper. Claims from both supply and borrow emission
     /// sides, swaps BLND → underlying via Soroswap, then re-leverages proceeds.
     /// No new shares are minted — this increases per-share equity.
+    ///
+    /// Refused while a split harvest is awaiting settlement: this path would
+    /// swap the pending claim's BLND and lever the proceeds in the same call,
+    /// leaving `harvest_reinvest` to measure a settlement whose underlying has
+    /// already gone into the pool. Settle through `harvest_reinvest` (which
+    /// covers the Soroswap route) rather than interleaving the two.
     fn harvest(e: Env, from: Address, data: Option<Bytes>) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
 
@@ -271,6 +277,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         if from != keeper {
             return Err(StrategyError::NotAuthorized);
+        }
+        if storage::get_pending_harvest(&e).is_some() {
+            return Err(StrategyError::DeadlineExpired);
         }
 
         let config = storage::get_config(&e);
@@ -906,6 +915,23 @@ impl BlendLeverageStrategy {
     // while leaving it recoverable for the on-chain Soroswap fallback;
     // `harvest_reinvest` executes whichever path the keeper chose and re-leverages.
 
+    /// Drop any BLND allowance standing to the swap account.
+    ///
+    /// Setting an allowance to `0` is the SEP-41 way to revoke; the expiration
+    /// ledger is irrelevant once the amount is zero, so `0` there too. A no-op
+    /// when no swap account is configured (nothing was ever approved).
+    fn revoke_swap_allowance(e: &Env, config: &Config) {
+        if !storage::has_swap_account(e) {
+            return;
+        }
+        TokenClient::new(e, &config.blend_token).approve(
+            &e.current_contract_address(),
+            &storage::get_swap_account(e),
+            &0,
+            &0,
+        );
+    }
+
     /// Set the keeper-controlled account allowed to pull claimed BLND for an
     /// off-chain swap (admin-gated).
     pub fn set_swap_account(e: Env, account: Address) -> Result<(), StrategyError> {
@@ -924,10 +950,73 @@ impl BlendLeverageStrategy {
         }
     }
 
+    /// Set the settlement floor rate for the off-chain (Broker) harvest path
+    /// (admin-gated): the minimum underlying the vault will accept back per
+    /// `SCALAR_7` of BLND handed to the swap account, both in smallest units.
+    ///
+    /// This is the number that makes the Broker leg auditable on-chain. It is a
+    /// floor, not a price — set it well below the market BLND rate (a third to a
+    /// half is a reasonable starting point) so ordinary spread, Broker fee and
+    /// price drift between claim and settle never trip it, and it binds only
+    /// when a settlement comes back materially short of what the BLND was worth.
+    ///
+    /// Consequences of getting it wrong are asymmetric and both recoverable:
+    /// too high and `harvest_reinvest` reverts until the admin lowers it (yield
+    /// pauses, nothing is lost); too low and the floor stops catching small
+    /// shortfalls. Review it whenever BLND moves materially — a floor set
+    /// against a much older BLND price is still safe, just slack.
+    ///
+    /// Until this is set the Broker path is closed: `harvest_claim` approves
+    /// nothing and the on-chain Soroswap route is the only harvest venue.
+    pub fn set_min_harvest_rate(e: Env, rate: i128) -> Result<(), StrategyError> {
+        Self::require_admin(&e);
+        check_positive_amount(rate)?;
+        storage::set_min_harvest_rate(&e, rate);
+        extend_instance_ttl(&e);
+        e.events()
+            .publish((Symbol::new(&e, "min_harvest_rate"),), rate);
+        Ok(())
+    }
+
+    /// The configured settlement floor rate, or an error if unset (Broker path
+    /// closed). See `set_min_harvest_rate` for the units.
+    pub fn min_harvest_rate(e: Env) -> Result<i128, StrategyError> {
+        storage::get_min_harvest_rate(&e).ok_or(StrategyError::NotInitialized)
+    }
+
+    /// The claim awaiting settlement as `(blnd_claimed, underlying_before,
+    /// floor, approval_expiration)`, or an error when none is in flight.
+    ///
+    /// Read-only view of the obligation the next `harvest_reinvest` has to
+    /// clear, so the keeper and monitoring can see an unsettled claim (and the
+    /// ledger its allowance dies) rather than inferring it from events.
+    pub fn pending_harvest(e: Env) -> Result<(i128, i128, i128, u32), StrategyError> {
+        let p = storage::get_pending_harvest(&e).ok_or(StrategyError::NotInitialized)?;
+        Ok((p.blnd_claimed, p.underlying_before, p.floor, p.expiration))
+    }
+
     /// Keeper-gated: claim BLND emissions into the strategy and approve the swap
-    /// account to pull them (if set) for an off-chain Broker swap. The BLND stays
-    /// in the contract until pulled, so the on-chain Soroswap path remains a valid
+    /// account to pull them for an off-chain Broker swap. The BLND stays in the
+    /// contract until pulled, so the on-chain Soroswap path remains a valid
     /// fallback. Returns the BLND balance available to swap.
+    ///
+    /// **The approval is not unconditional.** Granting it records a
+    /// `PendingHarvest`: how much BLND became pullable, the underlying balance
+    /// before any proceeds could arrive, and the minimum underlying owed back at
+    /// the admin's `min_harvest_rate`. `harvest_reinvest` will not settle the
+    /// harvest unless the measured proceeds clear that floor — see there for the
+    /// measurement. Two conditions gate the approval, and failing either leaves
+    /// the BLND in the contract for the Soroswap route rather than erroring:
+    ///
+    /// - a `swap_account` is set (who may pull), and
+    /// - a `min_harvest_rate` is set (what they owe back).
+    ///
+    /// Claiming while a previous claim's allowance is still live is rejected:
+    /// two overlapping approvals would let more BLND out than the newer floor
+    /// covers. Once the old allowance has expired nothing can be pulled against
+    /// it, so a fresh claim proceeds — and if that stale claim's BLND did leave
+    /// and never came back, `harvest_unsettled` is emitted rather than the
+    /// obligation quietly disappearing.
     pub fn harvest_claim(e: Env, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
@@ -937,18 +1026,54 @@ impl BlendLeverageStrategy {
         }
 
         let config = storage::get_config(&e);
+        let now = e.ledger().sequence();
+        let blnd = TokenClient::new(&e, &config.blend_token);
+        let strategy = e.current_contract_address();
+
+        // An unsettled claim whose allowance is still live must be settled (or
+        // waited out) first. `DeadlineExpired` rather than `NotAuthorized`: the
+        // keeper is authorized, it is simply too early — same distinction
+        // `releverage` draws.
+        if let Some(stale) = storage::get_pending_harvest(&e) {
+            if now < stale.expiration {
+                return Err(StrategyError::DeadlineExpired);
+            }
+            // Expired and never settled. Report what left and never returned so
+            // an operator sees it; the allowance is dead either way, and it is
+            // revoked below before a new one is granted.
+            let unsettled = stale
+                .blnd_claimed
+                .saturating_sub(blnd.balance(&strategy))
+                .max(0);
+            if unsettled > 0 {
+                e.events().publish(
+                    (Symbol::new(&e, "harvest_unsettled"), keeper.clone()),
+                    (unsettled, stale.floor, stale.expiration),
+                );
+            }
+            storage::take_pending_harvest(&e);
+        }
+
+        // Nothing from a previous claim survives into this one.
+        Self::revoke_swap_allowance(&e, &config);
+
         blend_pool::claim(&e, &config);
 
-        let blnd = TokenClient::new(&e, &config.blend_token);
-        let bal = blnd.balance(&e.current_contract_address());
+        let bal = blnd.balance(&strategy);
         if bal > 0 && storage::has_swap_account(&e) {
-            let expiration = e.ledger().sequence().saturating_add(17_280); // ~1 day
-            blnd.approve(
-                &e.current_contract_address(),
-                &storage::get_swap_account(&e),
-                &bal,
-                &expiration,
-            );
+            if let Some(min_rate) = storage::get_min_harvest_rate(&e) {
+                let expiration = now.saturating_add(constants::HARVEST_APPROVAL_LEDGERS);
+                storage::set_pending_harvest(
+                    &e,
+                    &storage::PendingHarvest {
+                        blnd_claimed: bal,
+                        underlying_before: TokenClient::new(&e, &config.asset).balance(&strategy),
+                        floor: leverage::harvest_floor(bal, min_rate)?,
+                        expiration,
+                    },
+                );
+                blnd.approve(&strategy, &storage::get_swap_account(&e), &bal, &expiration);
+            }
         }
 
         e.events()
@@ -963,6 +1088,31 @@ impl BlendLeverageStrategy {
     /// - `via_soroswap = false` (Broker): the keeper has already swapped off-chain
     ///   and transferred `amount_in` of underlying back to the strategy; re-leverage
     ///   it directly (asserted to be held). `amount_out_min` is ignored here.
+    ///
+    /// **Settlement floor.** This call closes out the `PendingHarvest` opened by
+    /// `harvest_claim`, and it does so on measurement rather than on the
+    /// keeper's word. `amount_in` is a parameter — it says nothing about where
+    /// the underlying came from, and the pre-existing "does the contract hold
+    /// `amount_in`?" check is satisfied just as well by funds that were already
+    /// there. So the floor is enforced against two balances the contract reads
+    /// itself:
+    ///
+    /// - `spent` — BLND the claim made pullable, minus what is still here.
+    ///   However much left, by whatever route, is what is owed for.
+    /// - `delivered` — underlying held now over the claim-time baseline, plus
+    ///   the on-chain swap's output when this call is the one that swapped.
+    ///
+    /// `delivered` must clear `floor × spent / claimed`, else the whole
+    /// transaction reverts with `UnderlyingAmountBelowMin`. Pulling BLND and
+    /// returning nothing no longer settles; it reverts, the allowance is gone,
+    /// and the shortfall is on-chain. The floor applies to the Soroswap route
+    /// too — the same BLND is at stake and `amount_out_min` is the keeper's
+    /// number, while the floor is the admin's.
+    ///
+    /// The allowance is revoked here regardless of route or outcome-of-the-leg,
+    /// so a settled claim never leaves a live pull behind. With no claim in
+    /// flight there is no allowance and no BLND can have left, so re-leveraging
+    /// idle underlying is unconstrained — there is nothing to owe for.
     ///
     /// Emits a `harvest_route` event `(route, amount_in, amount_out_min, realized)`
     /// for the keeper's A/B telemetry. Returns realized underlying re-leveraged.
@@ -981,6 +1131,24 @@ impl BlendLeverageStrategy {
         }
         check_positive_amount(amount_in)?;
         let config = storage::get_config(&e);
+        let strategy = e.current_contract_address();
+
+        // Take the claim this call settles (single-use) and kill its allowance:
+        // BLND must never be pullable without a live floor attached to it.
+        let pending = storage::take_pending_harvest(&e);
+        if pending.is_some() {
+            Self::revoke_swap_allowance(&e, &config);
+        }
+
+        // Baseline measurement, before this call moves anything. The Broker's
+        // proceeds are already sitting in the contract at this point; the
+        // Soroswap leg's output is added to `delivered` after the swap.
+        let delivered_before = pending.as_ref().map_or(0, |p| {
+            TokenClient::new(&e, &config.asset)
+                .balance(&strategy)
+                .saturating_sub(p.underlying_before)
+                .max(0)
+        });
 
         // Pre-reinvest snapshot — see the trait `harvest` for why it must be
         // taken before the pool settles.
@@ -996,6 +1164,26 @@ impl BlendLeverageStrategy {
             let (b, d) = blend_pool::reinvest_underlying(&e, &config, amount_in)?;
             (b, d, amount_in)
         };
+
+        // Settle the floor. `spent` is read after the leg so the Soroswap
+        // route's own BLND consumption counts, and its output — underlying that
+        // arrived and was levered inside the leg — counts towards `delivered`.
+        if let Some(p) = &pending {
+            let spent = p
+                .blnd_claimed
+                .saturating_sub(TokenClient::new(&e, &config.blend_token).balance(&strategy));
+            let required = leverage::prorate_floor(p.floor, spent, p.blnd_claimed)?;
+            let delivered = delivered_before
+                .checked_add(if via_soroswap { realized } else { 0 })
+                .ok_or(StrategyError::UnderflowOverflow)?;
+            if delivered < required {
+                return Err(StrategyError::UnderlyingAmountBelowMin);
+            }
+            e.events().publish(
+                (Symbol::new(&e, "harvest_settle"), keeper.clone()),
+                (spent, p.blnd_claimed, required, delivered),
+            );
+        }
 
         if b_delta > 0 {
             let updated = reserves::harvest(&e, b_delta, d_delta, &reserves)?;

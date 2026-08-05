@@ -22,7 +22,8 @@
  *
  * Execution flow (per vault, --execute):
  *   1. `harvest_claim(keeper)` → BLND claimed into the strategy and approved to
- *      the swap account (which must be the keeper for the Broker path).
+ *      the swap account (which must be the keeper for the Broker path). The
+ *      approval is short-lived (~5 min) and carries a settlement obligation.
  *   2. Re-quote Broker + Soroswap with the actual claimed amount → `decide`.
  *   3a. Soroswap chosen → `harvest_reinvest(via_soroswap=true, amount_out_min)`.
  *   3b. Broker chosen → pull BLND to the keeper (SAC `transfer_from`), trade in
@@ -32,6 +33,15 @@
  *   4. Fallback: if the Broker trade fails or partially fills, any unsold BLND
  *      is returned to the strategy and reinvested via the on-chain Soroswap
  *      path (fresh min-out), so funds are never stranded on the keeper.
+ *
+ * Settlement floor (audit M-4): the strategy will not approve a BLND pull
+ * unless the admin has set `min_harvest_rate` (minimum underlying owed per 1e7
+ * BLND), and `harvest_reinvest` reverts unless the underlying the strategy
+ * actually gained since the claim clears that rate, prorated by the BLND that
+ * left. The keeper's own `amount_out_min` is a tighter number in normal
+ * operation; this script checks the two against each other before trading so a
+ * misconfigured floor surfaces as a skipped harvest, not a reverted one.
+ * An unset `min_harvest_rate` disables the Broker route (Soroswap still runs).
  *
  * Env:
  *   RPC_URL                 (default mainnet public RPC)
@@ -490,6 +500,19 @@ async function processVault(v: Vault): Promise<void> {
       console.warn(`[${v.symbol}] swap_account unset; Broker path disabled`);
     }
   }
+  // …and a settlement floor (audit M-4). The contract will not approve the BLND
+  // pull without one, so an unset rate means `transfer_from` would fail with a
+  // zero allowance rather than anything more legible. Check it up front and
+  // route through Soroswap instead.
+  let minHarvestRate = 0n;
+  if (brokerExecutable) {
+    try {
+      minHarvestRate = BigInt((await simCall(v.strategyId, "min_harvest_rate")) as bigint | number);
+    } catch {
+      brokerExecutable = false;
+      console.warn(`[${v.symbol}] min_harvest_rate unset; Broker path disabled (see set_min_harvest_rate)`);
+    }
+  }
 
   // 1. Claim BLND emissions (also approves the swap account for the Broker pull).
   const claim = await invoke(kp, v.strategyId, "harvest_claim", addr(kp.publicKey()));
@@ -512,6 +535,21 @@ async function processVault(v: Vault): Promise<void> {
     if (d.soroswapQuote == null) { console.warn(`[${v.symbol}] broker not executable and no Soroswap quote`); return; }
     d.amountOutMin = (d.soroswapQuote * BigInt(Math.round((1 - SLIPPAGE) * 10000))) / 10000n;
   }
+
+  // The contract's settlement floor (audit M-4) binds whichever route runs. If
+  // even the keeper's own min-out sits under it, the reinvest would revert
+  // after the swap has already happened — surface it here instead, while the
+  // BLND is still in the strategy and the claim can simply go unsettled.
+  const settlementFloor = (claimed * minHarvestRate) / 10_000_000n;
+  if (settlementFloor > 0n && d.amountOutMin < settlementFloor) {
+    console.warn(
+      `[${v.symbol}] amount_out_min ${d.amountOutMin} < on-chain settlement floor ${settlementFloor}; ` +
+      `skipping (raise SLIPPAGE tolerance or lower min_harvest_rate)`,
+    );
+    await logRoute({ ...baseRow(v, claimed, d), status: "failed" });
+    return;
+  }
+
   const base = baseRow(v, claimed, d);
 
   // 3. Execute the chosen route.

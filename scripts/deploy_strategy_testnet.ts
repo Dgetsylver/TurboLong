@@ -2,7 +2,8 @@
  * Deploy the Turbolong BlendLeverage vaults to Stellar TESTNET — the full-flow
  * rehearsal for the mainnet D1 deploy. Mirrors deploy_strategy_mainnet.ts so the
  * testnet run exercises the exact same path (install both WASMs → per asset:
- * deploy strategy + deploy vault_share token + set_share_token + set_swap_account)
+ * deploy strategy + deploy vault_share token + set_share_token + set_swap_account
+ * + set_min_harvest_rate)
  * before any real funds are touched on mainnet.
  *
  * The testnet Blend pool exposes 4 reserves: XLM (native), USDC, CETES, TESOURO.
@@ -66,6 +67,7 @@ const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD"; // So
 // (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. Loops/min_hf/
 // orange_hf mirror the mainnet readiness table where the asset matches.
 const REWARD_THRESHOLD = 10_000_000n; // 1 BLND @ 7dp (low, so harvest triggers easily on testnet)
+const MIN_HARVEST_RATE = 1_000n;      // 0.0001 underlying per BLND — nominal, testnet only
 interface AssetCfg {
   symbol: string;
   asset: string;
@@ -211,6 +213,16 @@ async function main() {
 
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER)], `${a.symbol} set_swap_account`);
+    // Settlement floor for the Broker harvest path (audit M-4). Testnet BLND has
+    // no meaningful price, so this is a nominal non-zero rate that opens the
+    // path for end-to-end keeper testing; mainnet derives it from live prices
+    // (MIN_HARVEST_RATE_* in deploy_strategy_mainnet.ts).
+    await invoke(
+      strategy,
+      "set_min_harvest_rate",
+      [nativeToScVal(MIN_HARVEST_RATE, { type: "i128" })],
+      `${a.symbol} set_min_harvest_rate`,
+    );
 
     out[a.symbol] = {
       strategy,

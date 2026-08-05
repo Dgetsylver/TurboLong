@@ -47,6 +47,21 @@ pub const RELEVERAGE_COOLDOWN_LEDGERS: u32 = 17_280;
 /// whole time levered rather than oscillating.
 pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
 
+/// Ledgers a claim's BLND approval to the swap account stays live (~5 minutes
+/// at ~5s/ledger).
+///
+/// The approval exists for exactly one purpose: to let the off-chain Broker
+/// pull the just-claimed BLND in the transaction that follows `harvest_claim`.
+/// It was ~1 day (17_280 ledgers), which left a standing pull right over the
+/// vault's BLND for the 99.97% of that window when no harvest was in flight.
+/// Five minutes is the operational envelope of the claim → swap → settle
+/// round trip; anything longer is allowance the flow never uses.
+///
+/// The expiry is a backstop, not the control: `harvest_reinvest` revokes the
+/// allowance when it settles, and `harvest_claim` revokes any stale one before
+/// granting a fresh one. What the expiry bounds is the case where neither runs.
+pub const HARVEST_APPROVAL_LEDGERS: u32 = 60;
+
 /// Blend v2 request type constants
 pub const REQUEST_TYPE_SUPPLY_COLLATERAL: u32 = 2;
 pub const REQUEST_TYPE_WITHDRAW_COLLATERAL: u32 = 3;

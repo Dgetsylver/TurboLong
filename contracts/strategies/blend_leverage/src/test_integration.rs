@@ -2493,6 +2493,406 @@ fn test_harvest_reinvest_soroswap_requires_min_out() {
     );
 }
 
+// ── Audit M-4: the Broker harvest path must settle against an on-chain floor ──
+//
+// `harvest_claim` approves the swap account for the whole claimed BLND balance
+// and `harvest_reinvest(via_soroswap = false)` re-leverages `amount_in` of
+// underlying. Before this fix nothing joined the two: `amount_in` only had to
+// be *held* by the contract, so BLND could leave and any amount — including
+// nothing — could come back, and the approval outlived the transaction by a
+// day. The tests below pin the three parts of the fix: the floor is recorded at
+// claim, it is enforced on measured balances at settle, and the allowance is
+// scoped to the round trip.
+
+/// Floor rate used throughout: 0.02 underlying per BLND, 1e7-scaled.
+const TEST_MIN_HARVEST_RATE: i128 = 200_000;
+
+/// A strategy with a real leveraged position, a swap account and a floor rate,
+/// holding `blnd_amount` of claimable-equivalent BLND. Returns
+/// `(strategy, sclient, keeper, swap_account)`.
+///
+/// BLND is minted straight to the strategy rather than accrued as emissions:
+/// `harvest_claim` floors and approves whatever balance it finds after
+/// `pool.claim`, so a minted balance exercises the identical path without
+/// making the test depend on the fixture's emission schedule.
+fn setup_broker_harvest<'a>(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+    deployer: &Address,
+    blnd_amount: i128,
+) -> (
+    Address,
+    crate::BlendLeverageStrategyClient<'a>,
+    Address,
+    Address,
+) {
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let swap_account = Address::generate(e);
+    sclient.set_swap_account(&swap_account);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    StellarAssetClient::new(e, blnd)
+        .mock_all_auths()
+        .mint(&strategy, &blnd_amount);
+    let _ = deployer;
+
+    let keeper = sclient.get_keeper();
+    (strategy, sclient, keeper, swap_account)
+}
+
+#[test]
+fn test_min_harvest_rate_set_and_getter() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Unset → error, which is what closes the Broker path by default.
+    assert!(sclient.try_min_harvest_rate().is_err());
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+    assert_eq!(sclient.min_harvest_rate(), TEST_MIN_HARVEST_RATE);
+
+    // A non-positive floor is not a floor.
+    assert!(sclient.try_set_min_harvest_rate(&0).is_err());
+    assert!(sclient.try_set_min_harvest_rate(&-1).is_err());
+}
+
+#[test]
+fn test_harvest_claim_without_floor_rate_grants_no_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let swap_account = Address::generate(&e);
+    sclient.set_swap_account(&swap_account);
+
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+
+    // Swap account set, floor rate not: the claim succeeds and the BLND stays
+    // put for the Soroswap route, but nothing may pull it.
+    let claimed = sclient.harvest_claim(&sclient.get_keeper());
+    assert_eq!(claimed, 1_000_0000000);
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        0,
+        "no floor configured ⇒ no allowance"
+    );
+    assert!(
+        sclient.try_pending_harvest().is_err(),
+        "no allowance ⇒ nothing to settle"
+    );
+}
+
+#[test]
+fn test_harvest_claim_records_floor_and_scopes_the_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    let seq_before = e.ledger().sequence();
+    let claimed = sclient.harvest_claim(&keeper);
+    assert_eq!(claimed, 1_000_0000000);
+
+    let (blnd_claimed, underlying_before, floor, expiration) = sclient.pending_harvest();
+    assert_eq!(blnd_claimed, claimed);
+    assert_eq!(
+        underlying_before,
+        TokenClient::new(&e, &token).balance(&strategy),
+        "baseline is the idle underlying at claim time"
+    );
+    // 1000 BLND × 0.02 = 20 underlying.
+    assert_eq!(floor, 20_0000000);
+    assert_eq!(
+        expiration,
+        seq_before + crate::constants::HARVEST_APPROVAL_LEDGERS
+    );
+
+    // The allowance covers the claim and dies with it — minutes, not a day.
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        claimed
+    );
+    const {
+        assert!(
+            crate::constants::HARVEST_APPROVAL_LEDGERS <= 300,
+            "approval window must stay inside the round trip it exists for"
+        )
+    };
+}
+
+#[test]
+fn test_harvest_claim_rejected_while_a_claim_is_still_pullable() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, keeper, _swap) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // Overlapping approvals would put more BLND at risk than the newer floor
+    // covers, so a second claim inside the window is refused.
+    assert_eq!(
+        sclient.try_harvest_claim(&keeper),
+        Err(Ok(StrategyError::DeadlineExpired)),
+        "claiming over a live allowance must be refused"
+    );
+
+    // Past the window nothing can be pulled against the old approval, so a
+    // fresh claim proceeds.
+    e.ledger()
+        .set_sequence_number(e.ledger().sequence() + crate::constants::HARVEST_APPROVAL_LEDGERS);
+    sclient.harvest_claim(&keeper);
+}
+
+#[test]
+fn test_broker_settlement_below_floor_reverts() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The swap account pulls the whole approval — 20 underlying is now owed.
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // …and returns a fraction of it. Before M-4 this settled: the contract held
+    // `amount_in`, which was the entire test the Broker leg applied.
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &1_0000000);
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "1 underlying back for 1000 BLND must not settle"
+    );
+
+    // Returning nothing at all is the same answer.
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin))
+    );
+
+    // The revert took the whole transaction with it, so the obligation is still
+    // recorded and still has to be met.
+    let (_, _, floor, _) = sclient.pending_harvest();
+    assert_eq!(floor, 20_0000000);
+}
+
+#[test]
+fn test_broker_settlement_at_floor_succeeds_and_kills_the_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // An honest settlement: 25 underlying for 1000 BLND, comfortably over the
+    // 20-unit floor.
+    let proceeds = 25_0000000_i128;
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &proceeds);
+
+    let before = sclient.balance(&strategy);
+    let realized = sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+    assert_eq!(realized, proceeds);
+    assert!(
+        sclient.balance(&strategy) >= before,
+        "settled proceeds are levered into the position"
+    );
+
+    // Settling consumes the claim and the pull that went with it.
+    assert!(
+        sclient.try_pending_harvest().is_err(),
+        "claim consumed by settlement"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        0,
+        "allowance must not outlive the harvest it was granted for"
+    );
+}
+
+#[test]
+fn test_broker_floor_prorates_to_the_blnd_actually_pulled() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The Broker takes a quarter of the approval: 250 BLND ⇒ 5 underlying owed,
+    // not the full 20.
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &250_0000000,
+    );
+
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &4_0000000);
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &4_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "4 back for 250 BLND is under the prorated floor"
+    );
+
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &2_0000000);
+    assert_eq!(
+        sclient.harvest_reinvest(&keeper, &6_0000000, &false, &0),
+        6_0000000,
+        "6 back for 250 BLND clears the prorated floor"
+    );
+}
+
+#[test]
+fn test_broker_settlement_ignores_pre_existing_idle_underlying() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    // The vault is already sitting on 50 underlying *before* the claim — a
+    // donation, a rounding remainder, anything. The claim-time baseline is what
+    // stops it being counted as harvest proceeds: `amount_in` alone would be
+    // fully covered by it, and the pre-M-4 "is it held?" check would pass.
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &50_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &50_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "idle underlying held before the claim cannot settle it"
+    );
+}
+
+#[test]
+fn test_trait_harvest_refused_while_a_claim_awaits_settlement() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, keeper, _swap) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The trait path would swap the pending claim's BLND and lever the proceeds
+    // in one call, leaving nothing for `harvest_reinvest` to measure.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &None),
+        Err(Ok(StrategyError::DeadlineExpired)),
+        "the old harvest path must not run through a pending settlement"
+    );
+}
+
+#[test]
+fn test_unsettled_claim_is_reported_when_a_later_claim_replaces_it() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // The keeper never settles and simply waits the window out. The obligation
+    // cannot be enforced retroactively — the BLND is gone — but it does not get
+    // to vanish quietly either.
+    e.ledger()
+        .set_sequence_number(e.ledger().sequence() + crate::constants::HARVEST_APPROVAL_LEDGERS);
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &500_0000000);
+    sclient.harvest_claim(&keeper);
+
+    use soroban_sdk::{xdr, TryFromVal};
+    let unsettled = e
+        .events()
+        .all()
+        .filter_by_contract(&strategy)
+        .events()
+        .iter()
+        .filter(|ev| {
+            let xdr::ContractEventBody::V0(v0) = &ev.body;
+            !v0.topics.is_empty()
+                && Symbol::try_from_val(&e, &v0.topics[0])
+                    == Ok(Symbol::new(&e, "harvest_unsettled"))
+        })
+        .count();
+    assert_eq!(unsettled, 1, "an unsettled claim must be reported on-chain");
+
+    // The replacement claim is floored on its own balance, not the old one's.
+    let (blnd_claimed, _, floor, _) = sclient.pending_harvest();
+    assert_eq!(blnd_claimed, 500_0000000);
+    assert_eq!(floor, 10_0000000);
+}
+
 // ── Audit M-2: stored reserves must reconcile with the real pool position ─────
 //
 // Finding ① below fixed the paths where the *strategy itself* moved the position.

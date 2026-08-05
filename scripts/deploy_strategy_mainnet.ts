@@ -6,6 +6,8 @@
  *   2. deploys its SEP-41 vault-share token (minter = the strategy),
  *   3. wires strategy.set_share_token(token),
  *   4. wires strategy.set_swap_account(keeper) for the Broker harvest path,
+ *   5. wires strategy.set_min_harvest_rate(rate) — the settlement floor that
+ *      path is gated on (audit M-4); omitted assets keep the Broker path closed,
  * then writes every deployed contract ID to deployed-vaults.mainnet.json.
  *
  * REAL FUNDS. Never commit a mainnet key. Run with a secure signer, e.g.:
@@ -16,6 +18,8 @@
  *   DEPLOY_SECRET_KEY  S... deployer (pays fees, installs WASM, deploys)
  *   ADMIN_PUBKEY       G... admin (upgrade + set_share_token/set_swap_account); default = deployer
  *   KEEPER_PUBKEY      G... keeper (harvest + rebalance_keeper + pulls BLND); REQUIRED
+ *   MIN_HARVEST_RATE_<SYMBOL>  settlement floor per asset (see MIN_HARVEST_RATES);
+ *                      omit to leave that vault's Broker harvest path closed
  *   DRY_RUN=1          simulate only, do not submit
  *
  * Pre-req: build both wasms first —
@@ -103,6 +107,36 @@ const ASSETS: AssetCfg[] = [
   { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n }, // design HF 1.1233 @ l=0.95
   { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
 ];
+
+/**
+ * Settlement floor rates for the Broker harvest path (audit M-4), read from
+ * `MIN_HARVEST_RATE_<SYMBOL>` — the minimum underlying the strategy will accept
+ * back per 1e7 BLND stroops, in the underlying's own stroops. Every asset here
+ * is 7-decimal, so the number is just the BLND price *in that underlying*,
+ * 1e7-scaled, with a safety haircut:
+ *
+ *     rate = floor( (BLND_price / underlying_price) × 1e7 × (1 − haircut) )
+ *
+ * BLND at $0.02 against a $1 stablecoin with a 50% haircut → 100_000. The
+ * haircut is what keeps the floor out of the way of ordinary spread, Broker fee
+ * and drift between claim and settlement; the floor is meant to catch a
+ * settlement that comes back at a fraction of the BLND's worth, not to price
+ * the trade. Re-derive from live prices at deploy time — the rate is admin
+ * settable afterwards via `set_min_harvest_rate`.
+ *
+ * Not hardcoded in ASSETS on purpose: c_factor and the HF thresholds are
+ * risk-design constants that belong under review, while this one is a price
+ * observation that would be stale the day it was committed.
+ */
+const MIN_HARVEST_RATES: Record<string, bigint | undefined> = Object.fromEntries(
+  ASSETS.map((a) => {
+    const raw = process.env[`MIN_HARVEST_RATE_${a.symbol}`];
+    if (!raw) return [a.symbol, undefined];
+    const rate = BigInt(raw);
+    if (rate <= 0n) throw new Error(`MIN_HARVEST_RATE_${a.symbol} must be positive, got ${raw}`);
+    return [a.symbol, rate];
+  }),
+);
 
 const STRATEGY_WASM = path.resolve(here, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
 const TOKEN_WASM = path.resolve(here, "../contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm");
@@ -341,6 +375,22 @@ async function main() {
 
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER!)], `${a.symbol} set_swap_account`);
+
+    // Settlement floor for the Broker harvest path (audit M-4). Price-dependent
+    // and therefore not baked into this table — see MIN_HARVEST_RATE_* above.
+    // Left unset the strategy simply refuses to approve BLND pulls and harvests
+    // run through Soroswap, so an omitted rate costs a swap venue, not safety.
+    const minHarvestRate = MIN_HARVEST_RATES[a.symbol];
+    if (minHarvestRate) {
+      await invoke(
+        strategy,
+        "set_min_harvest_rate",
+        [nativeToScVal(minHarvestRate, { type: "i128" })],
+        `${a.symbol} set_min_harvest_rate`,
+      );
+    } else {
+      console.warn(`  ⚠ ${a.symbol}: MIN_HARVEST_RATE_${a.symbol} unset — Broker harvest path left CLOSED`);
+    }
 
     out[a.symbol] = {
       strategy,
