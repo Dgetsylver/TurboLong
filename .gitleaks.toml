@@ -90,8 +90,6 @@ paths = [
   '''package-lock\.json''',
   # Ledger snapshot JSON files are raw on-chain data — not secrets
   '''tests-snapshot-source/.*\.json''',
-  # Generated report documents
-  '''.*\.docx''',
 ]
 
 # Public Stellar strkeys — contract IDs (C…) and account addresses (G…).

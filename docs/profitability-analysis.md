@@ -25,7 +25,7 @@ Four structural vulnerabilities were identified in the Blend leverage loop tool.
 | Tx cost | ~$0.0001 | BASE_FEE=100 stroops, negligible |
 | Flash loans | **DO NOT EXIST** on Soroban | Architecture constraint |
 
-### Interest Rate Curve (computed from `blend.ts:339-350`, `doc.md:73-83`)
+### Interest Rate Curve (computed from `blend.ts:339-350`, `docs/leverage-model.md:73-83`)
 
 | Utilization | Borrow APR | Supply APR | Spread (borrow − supply) |
 |---|---|---|---|

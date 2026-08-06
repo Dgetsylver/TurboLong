@@ -17,4 +17,4 @@ Closes #
 
 <!-- Add reviewer notes, screenshots, or skipped-check explanations here. -->
 
-[contribution-guide]: https://github.com/Dgetsylver/TurboLong/blob/main/CONTRIBUTING.md
+[contribution-guide]: https://github.com/Dgetsylver/TurboLong/blob/main/docs/CONTRIBUTING.md

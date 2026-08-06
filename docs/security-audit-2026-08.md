@@ -12,7 +12,7 @@ Out of scope: `frontend/`, `scripts/` (read only for deployed parameter values),
 **Build status:** `cargo check --tests` clean. `overflow-checks = true` on both release
 profiles, so wraparound is not a concern.
 
-**Revision note.** The first draft of this report was written against `doc.md`'s 20×
+**Revision note.** The first draft of this report was written against `leverage-model.md`'s 20×
 leverage discussion. The actual deployed parameters
 (`scripts/deploy_strategy_mainnet.ts:78-83`) are far more conservative — `target_loops`
 of 2–4 and `c_factor` deliberately set below the pool's. Several severities are lower as
@@ -66,7 +66,7 @@ liquidation available once the former falls below the latter. The strategy's HF 
 therefore systematically **optimistic relative to the number that actually governs
 liquidation**, by a factor of `pool_c_factor × l_factor / strategy_c_factor`.
 
-The project is already aware of this — `profitability_analysis.md:15-16` records
+The project is already aware of this — `profitability-analysis.md:15-16` records
 "l_factor (USDC) 0.95 … printed, not used in HF formula" and "no l_factor in
 denominator". It is documented as an observation, but the on-chain formula still omits
 it, and nothing in the contract enforces that the gap is covered.
@@ -742,7 +742,7 @@ Recorded because these close common failure modes in this contract class:
   `orange_hf > min_hf > 1.0 > c_factor` ordering `compute_partial_unwind` depends on.
 - **Deployed parameters are genuinely conservative** — `target_loops` 2–4 against a
   documented ceiling of 20, and `c_factor` set below the pool's on every asset. Much of
-  the tail risk in `doc.md`'s 20× discussion is not actually taken.
+  the tail risk in `leverage-model.md`'s 20× discussion is not actually taken.
 
 ---
 

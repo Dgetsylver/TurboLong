@@ -32,7 +32,7 @@ These users have deep DeFi experience, often across multiple chains. They want s
 **Looking for:** Maximum data density, granular controls, exportable data, no hand-holding.
 **UX/UI Suggestions:**
 - Add a **keyboard shortcut system** (e.g., `L` to open leverage slider, `C` to close position) — removes mouse dependency for fast actions.
-- Surface the **3-kink interest rate curve parameters** (r_base, r_two, util_target) in a toggleable "Advanced Stats" panel without needing to read doc.md.
+- Surface the **3-kink interest rate curve parameters** (r_base, r_two, util_target) in a toggleable "Advanced Stats" panel without needing to read docs/leverage-model.md.
 - Provide a **CSV/JSON position export** button in the dashboard for external analysis.
 - Show **projected liquidation price** as a dollar/asset value alongside the health factor number.
 
@@ -895,7 +895,7 @@ Users who want to understand the internals, build on top of, or audit the protoc
 **UX/UI Suggestions:**
 - Add **"View Source"** links throughout the UI pointing to the relevant contract function for each action.
 - Show all **protocol parameters** (c_factor, liquidation_fee, backstop_take_rate) in a "Protocol Parameters" debug panel.
-- Link the existing **doc.md** from within the UI under "How This Works."
+- Link the existing **docs/leverage-model.md** from within the UI under "How This Works."
 - Add **formula annotations** on all calculated values — clicking HF shows the exact formula used.
 
 ---
@@ -904,7 +904,7 @@ Users who want to understand the internals, build on top of, or audit the protoc
 **Background:** 31-year-old who hunts vulnerabilities in DeFi protocols for bug bounties.
 **Looking for:** Bug bounty program details, responsible disclosure process, test environment access.
 **UX/UI Suggestions:**
-- Link the **BLEND-BUG-BOUNTY-REPORT.md** (or a formal bug bounty program) from the UI.
+- Link the **docs/blend-bug-bounty-report.md** (or a formal bug bounty program) from the UI.
 - Add a **security.txt** file at the standard path (`/.well-known/security.txt`) with disclosure contact info.
 - Provide **unlimited testnet access** with pre-funded wallets for security researchers.
 - Show a **"Responsible Disclosure"** policy link in the footer.
