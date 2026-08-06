@@ -38,6 +38,11 @@ export interface PoolAccount {
    */
   accountHealth: number;
   hasNew?: boolean;
+  // Extended pool-level aggregates from aggregatePoolAccount (PoolAccountSummary).
+  collateralUsd?: number;    // total collateral in USD across all assets in this pool
+  debtUsd?: number;          // total debt in USD across all assets in this pool
+  effLeverage?: number;      // collateralUsd / equityUsd — effective pool-wide leverage
+  liqDays?: number | null;   // estimated days until liquidation at current rates; null = n/a, Infinity = never
 }
 
 export interface VaultHolding {
@@ -146,7 +151,18 @@ function legRow(lg: Leg, last: boolean): HTMLElement {
   ]);
 }
 
-// ── Cards ───────────────────────────────────────────────────────────────────
+// ── PositionPanel (pool card) ────────────────────────────────────────────────
+/**
+ * Renders a single pool account as a PositionPanel card.
+ *
+ * Data wiring (all from aggregatePoolAccount — no mocks):
+ *   accountHealth  → agg.poolHF          (Σ collateral×cFactor ÷ Σ debt/lFactor)
+ *   liqDays        → agg.liqDays         (ln(poolHF) / spread × 365)
+ *   effLeverage    → agg.effLeverage     (collateralUsd / equityUsd)
+ *   collateralUsd  → agg.collateralUsd
+ *   debtUsd        → agg.debtUsd
+ *   legs (table)   → agg.rows mapped via legsFromRows
+ */
 function poolCard(acc: PoolAccount, onManage: () => void, onAddLeg: () => void): HTMLElement {
   const cross = acc.legs.length > 1;
 
@@ -179,7 +195,9 @@ function poolCard(acc: PoolAccount, onManage: () => void, onAddLeg: () => void):
         "Pool-wide: total collateral value ÷ total debt across every leg in this pool. Liquidation is account-wide — it triggers when this drops below 1.0.",
       ),
     ]),
-  ]);
+    liqRow,
+    crossNote,
+  ];
 
   if (cross) {
     card.append(
