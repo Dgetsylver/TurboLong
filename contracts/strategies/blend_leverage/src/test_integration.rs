@@ -18,7 +18,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+    vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 use crate::constants::{
@@ -29,7 +29,7 @@ use crate::leverage::{
     compute_health_factor, compute_loop_pairs, compute_partial_unwind, shares_to_underlying,
 };
 use crate::storage::LeverageReserves;
-use crate::{blend_pool, reserves, storage};
+use crate::{blend_pool, reserves, storage, StrategyError};
 
 // ── Mock Oracle ──────────────────────────────────────────────────────────────
 
@@ -81,7 +81,21 @@ impl TestStrategyContract {}
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
+/// Standard fixture: reserve with `l_factor = 1.0` (no liability markup), so
+/// HF reduces to `B × c_factor / D` and the pre-H-1 expectations in the tests
+/// below still read the same. Use `setup_blend_env_with_l_factor` for the cases
+/// that must exercise a real markup.
 fn setup_blend_env(e: &Env) -> (Address, Address, Address, BlendFixture<'_>, Address) {
+    setup_blend_env_with_l_factor(e, 10_000_000)
+}
+
+/// As `setup_blend_env`, with the reserve's `l_factor` under the test's control.
+/// Blend marks liabilities up by dividing by this factor, so anything below 1.0
+/// moves the pool's liquidation threshold above the naive `B × c / D` ratio.
+fn setup_blend_env_with_l_factor(
+    e: &Env,
+    l_factor: u32,
+) -> (Address, Address, Address, BlendFixture<'_>, Address) {
     let deployer = Address::generate(e);
 
     let blnd = e
@@ -111,7 +125,7 @@ fn setup_blend_env(e: &Env) -> (Address, Address, Address, BlendFixture<'_>, Add
 
     let mut reserve_config = default_reserve_config();
     reserve_config.c_factor = 9_500_000;
-    reserve_config.l_factor = 10_000_000; // 1.0: no liability markup, so effective borrow = supply * c_factor
+    reserve_config.l_factor = l_factor;
     reserve_config.max_util = 9_900_000;
 
     let pool_client = pool::Client::new(e, &pool_addr);
@@ -596,9 +610,17 @@ fn test_health_factor_from_pool() {
         config.target_loops,
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
 
-    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor).unwrap();
+    let hf = compute_health_factor(
+        b_tokens,
+        d_tokens,
+        b_rate,
+        d_rate,
+        config.c_factor,
+        l_factor,
+    )
+    .unwrap();
 
     // With 3 loops at c=0.95, HF should be > min_hf (1.05)
     assert!(
@@ -776,6 +798,63 @@ impl MockShareToken {
     }
 }
 
+// ── Mock Soroswap router ─────────────────────────────────────────────────────
+
+#[contracttype]
+enum RouterKey {
+    Rate,
+    LastMin,
+}
+
+/// Minimal stand-in for the Soroswap router, enough to exercise the strategy's
+/// swap leg: it quotes at a fixed rate, **enforces `amount_out_min`** the way
+/// the real router does, and records the last one it was handed so a test can
+/// assert what floor the strategy actually sent. It plays the pair as well as
+/// the router — `router_pair_for` returns its own address, so the input tokens
+/// land here and the output is paid from its own balance.
+#[contract]
+pub struct MockSoroswapRouter;
+
+#[contractimpl]
+impl MockSoroswapRouter {
+    /// `rate` is output per `SCALAR_7` of input, matching `min_harvest_rate`'s
+    /// units so tests can put the quote directly either side of the floor.
+    pub fn __constructor(e: Env, rate: i128) {
+        e.storage().instance().set(&RouterKey::Rate, &rate);
+    }
+
+    pub fn router_pair_for(e: Env, _token_a: Address, _token_b: Address) -> Address {
+        e.current_contract_address()
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        e: Env,
+        amount_in: i128,
+        amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> Vec<i128> {
+        e.storage()
+            .instance()
+            .set(&RouterKey::LastMin, &amount_out_min);
+        let rate: i128 = e.storage().instance().get(&RouterKey::Rate).unwrap();
+        let amount_out = amount_in * rate / SCALAR_7;
+        if amount_out < amount_out_min {
+            panic!("soroswap: insufficient output amount");
+        }
+        let pair = e.current_contract_address();
+        TokenClient::new(&e, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
+        TokenClient::new(&e, &path.get(1).unwrap()).transfer(&pair, &to, &amount_out);
+        vec![&e, amount_in, amount_out]
+    }
+
+    /// The `amount_out_min` of the most recent swap.
+    pub fn last_amount_out_min(e: Env) -> i128 {
+        e.storage().instance().get(&RouterKey::LastMin).unwrap_or(0)
+    }
+}
+
 /// Register the real strategy via its constructor against the Blend fixture.
 fn register_real_strategy(
     e: &Env,
@@ -797,7 +876,29 @@ fn register_real_strategy_with_loops(
     blnd: &Address,
     target_loops: u32,
 ) -> Address {
-    let router = Address::generate(e);
+    register_real_strategy_with_loops_and_router(
+        e,
+        pool_addr,
+        asset,
+        blnd,
+        target_loops,
+        &Address::generate(e),
+    )
+}
+
+/// Same again with the Soroswap router under the test's control. Everywhere
+/// else the router is an unregistered generated address — fine, because no
+/// other test reaches the swap — but the trait-`harvest` slippage tests need a
+/// router that actually quotes and enforces `amount_out_min`.
+fn register_real_strategy_with_loops_and_router(
+    e: &Env,
+    pool_addr: &Address,
+    asset: &Address,
+    blnd: &Address,
+    target_loops: u32,
+    router: &Address,
+) -> Address {
+    let router = router.clone();
     let keeper = Address::generate(e);
     let admin = Address::generate(e);
     let init_args: Vec<Val> = vec![
@@ -821,6 +922,8 @@ fn test_share_token_wiring_set_migrate_balance() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let mock_token = e.register(MockShareToken, ());
@@ -831,6 +934,24 @@ fn test_share_token_wiring_set_migrate_balance() {
     sclient.set_share_token(&mock_token);
     assert_eq!(sclient.share_token(), mock_token);
 
+    // Open a REAL pool position for the strategy before seeding the legacy
+    // accounting. The tracked totals are reconciled against the pool on every
+    // read, so a fabricated position would now price at zero equity — the seeded
+    // ledger has to describe a position that actually exists.
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    let (b_tokens, d_tokens) = execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        1_000_0000000,
+        cfg.c_factor,
+        cfg.target_loops,
+    );
+
     // Seed a legacy VaultPos holder + reserves, then migrate onto the token.
     let holder = Address::generate(&e);
     e.as_contract(&strategy, || {
@@ -839,8 +960,8 @@ fn test_share_token_wiring_set_migrate_balance() {
             &e,
             LeverageReserves {
                 total_shares: 1_000_0000000,
-                total_b_tokens: 8_000_0000000,
-                total_d_tokens: 7_000_0000000,
+                total_b_tokens: b_tokens,
+                total_d_tokens: d_tokens,
                 b_rate: SCALAR_12,
                 d_rate: SCALAR_12,
             },
@@ -1149,6 +1270,481 @@ fn test_rebalance_keeper_already_at_floor_noop_does_not_consume_cooldown() {
         sclient.rebalance_keeper(&keeper),
         0,
         "immediate retry allowed after a no-op"
+    );
+}
+
+// ── partial_unwind target bounding (audit M-1) ───────────────────────────────
+
+// Regression for M-1: inside the orange zone `partial_unwind` is unauthenticated,
+// and it used to pass the caller's `target_hf` straight through (floored, never
+// capped). Any address could pass an arbitrarily large target and drive
+// `compute_partial_unwind` to a full repay — 20 layers, the whole debt retired,
+// the vault's yield destroyed for a transaction fee. A permissionless caller must
+// now get exactly what `rebalance()` gives: HF restored to orange_hf, no further.
+#[test]
+fn test_partial_unwind_ignores_target_from_permissionless_caller() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let (_, _, _, orange_hf) = sclient.config();
+
+    let before_hf = sclient.health_factor();
+    let (_, _, _, d_before, _, _) = sclient.position();
+    assert!(
+        before_hf < orange_hf,
+        "fixture must open inside the orange zone so the caller needs no keeper role"
+    );
+
+    // A stranger asking for HF 100 — far above anything the vault is configured
+    // to hold, and enough to clamp the closed form to a full repay.
+    let stranger = Address::generate(&e);
+    let loops = sclient.partial_unwind(&stranger, &100_0000000);
+    assert!(
+        loops >= 1,
+        "the permissionless branch must still do its job"
+    );
+
+    let (_, _, _, d_after, _, _) = sclient.position();
+    let after_hf = sclient.health_factor();
+
+    // The finding: debt fully retired, HF at i128::MAX. The fix: debt survives.
+    assert!(
+        d_after > 0,
+        "M-1: a stranger must not be able to force a full deleverage (d_tokens {} -> {})",
+        d_before,
+        d_after
+    );
+    assert!(d_after < d_before, "the unwind must still reduce debt");
+    assert!(
+        after_hf >= orange_hf,
+        "HF must be restored to the floor: after={}, orange={}",
+        after_hf,
+        orange_hf
+    );
+
+    // "No more powerful than rebalance()": the position is now where the
+    // permissionless rebalance would leave it, so rebalance is a no-op — and the
+    // stranger cannot come back for a second bite, because HF is out of the orange
+    // zone and the keeper gate now applies.
+    sclient.rebalance();
+    assert_eq!(
+        sclient.health_factor(),
+        after_hf,
+        "rebalance has nothing left to do"
+    );
+    assert!(
+        sclient.try_partial_unwind(&stranger, &100_0000000).is_err(),
+        "with HF restored the stranger is back outside the permissionless window"
+    );
+    assert_eq!(
+        sclient.health_factor(),
+        after_hf,
+        "position untouched by the retry"
+    );
+}
+
+// The other half of the M-1 fix: capping the target must not disarm the keeper.
+// The keeper is a trusted role and still gets the `target_hf` it asks for, so it
+// can deleverage past orange_hf when it judges that necessary.
+#[test]
+fn test_partial_unwind_honours_keeper_target_above_orange() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+    let (_, _, _, orange_hf) = sclient.config();
+
+    // A target comfortably above the orange floor (1.15) — reachable by unwinding
+    // more layers than a permissionless caller would be allowed to.
+    let target = orange_hf + 2_000_000;
+    let loops = sclient.partial_unwind(&keeper, &target);
+    assert!(loops >= 1, "keeper unwind must do work");
+
+    let after_hf = sclient.health_factor();
+    assert!(
+        after_hf >= target,
+        "keeper target must be honoured: after={}, target={}",
+        after_hf,
+        target
+    );
+}
+
+// Unchanged by the M-1 fix, pinned so the auth gate is not lost while the target
+// bounding moves around it: above the orange zone the entrypoint is keeper-only.
+#[test]
+fn test_partial_unwind_rejects_non_keeper_above_orange_zone() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let (_, _, _, orange_hf) = sclient.config();
+    assert!(
+        sclient.health_factor() >= orange_hf,
+        "fixture must sit above the orange floor"
+    );
+
+    let stranger = Address::generate(&e);
+    assert!(
+        sclient.try_partial_unwind(&stranger, &orange_hf).is_err(),
+        "outside the orange zone partial_unwind is keeper-only"
+    );
+}
+
+// ── releverage (audit M-3) ───────────────────────────────────────────────────
+
+// Opens a REAL healthy position through the production `deposit` entrypoint:
+// 3 loops at c = 0.90 lands at HF ≈ 1.269 — the design HF for that loop count,
+// comfortably above the orange floor (1.15). Returns the strategy address.
+fn open_healthy_strategy(e: &Env, pool_addr: &Address, token: &Address, blnd: &Address) -> Address {
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    strategy
+}
+
+/// Find the strategy's `("releverage", caller)` event in the LAST invocation's
+/// event stream and decode its `(before_hf, after_hf, borrowed)` payload. Same
+/// last-invocation caveat as `find_rebalance_event`.
+fn find_releverage_event(
+    e: &Env,
+    strategy: &Address,
+    caller: &Address,
+) -> Option<(i128, i128, i128)> {
+    use soroban_sdk::{xdr, TryFromVal, Val};
+    let events = e.events().all().filter_by_contract(strategy);
+    for ev in events.events() {
+        let xdr::ContractEventBody::V0(v0) = &ev.body;
+        if v0.topics.len() != 2 {
+            continue;
+        }
+        let t0 = Symbol::try_from_val(e, &v0.topics[0]);
+        let t1 = Address::try_from_val(e, &v0.topics[1]);
+        if t0 != Ok(Symbol::new(e, "releverage")) || t1.as_ref() != Ok(caller) {
+            continue;
+        }
+        let data: Val = Val::try_from_val(e, &v0.data).ok()?;
+        return <(i128, i128, i128)>::try_from_val(e, &data).ok();
+    }
+    None
+}
+
+// The finding itself: leverage removed by an unwind never came back. An
+// emergency keeper deleverage leaves the vault under-levered, `rebalance` can
+// only ever remove more, and every other lever-adding path (`deposit`,
+// `harvest`) touches only the new capital it brings in — so the position stayed
+// where the unwind left it, earning the reduced yield, indefinitely.
+//
+// Drives the real entrypoints against the real Blend pool: deleverage hard, show
+// `rebalance` cannot undo it, then `releverage` back to exactly the design
+// leverage — with equity, and therefore every holder's share price, untouched.
+#[test]
+fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let (c_factor, target_loops, _, _) = sclient.config();
+    let (_, _, l_factor) = sclient.risk_factors();
+    let design_hf =
+        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
+
+    let (_equity0, _, _, d0, _, _) = sclient.position();
+    let hf0 = sclient.health_factor();
+    assert!(
+        hf0 <= design_hf + design_hf / 1_000,
+        "a fresh deposit opens at the design HF: {} vs {}",
+        hf0,
+        design_hf
+    );
+
+    // Emergency: the keeper deleverages far past the orange floor.
+    let loops = sclient.partial_unwind(&keeper, &(design_hf + 4_000_000));
+    assert!(loops >= 1, "emergency unwind must do work");
+
+    let (equity1, _, _, d1, _, _) = sclient.position();
+    let hf1 = sclient.health_factor();
+    assert!(hf1 > hf0, "unwind must have removed leverage");
+    assert!(d1 < d0, "debt must have been repaid");
+
+    // Nothing on-chain used to be able to put that leverage back: `rebalance`
+    // only ever unwinds, so above the orange floor it is a no-op.
+    sclient.rebalance();
+    assert_eq!(
+        sclient.health_factor(),
+        hf1,
+        "rebalance cannot restore leverage — that is the finding"
+    );
+
+    let borrowed = sclient.releverage(&keeper);
+    assert!(borrowed > 0, "re-leverage must borrow: {}", borrowed);
+
+    let (ev_before, ev_after, ev_borrowed) = find_releverage_event(&e, &strategy, &keeper)
+        .expect("releverage event must be emitted when leverage is added");
+
+    let hf2 = sclient.health_factor();
+    let (equity2, _, b2, d2, b_rate, _) = sclient.position();
+
+    // Landed ON the design HF — restored, not merely improved, and not past it.
+    assert!(
+        hf2 >= design_hf,
+        "must not lever past the design target: {} < {}",
+        hf2,
+        design_hf
+    );
+    assert!(
+        hf2 <= design_hf + design_hf / 1_000,
+        "must actually restore the design target: {} vs {}",
+        hf2,
+        design_hf
+    );
+    assert!(d2 > d1, "debt restored: {} vs {}", d2, d1);
+
+    // The leverage ratio matches what a fresh deposit of the same equity would
+    // have built — the HF cap and the loop geometry agree.
+    let (design_supply, design_borrow) =
+        crate::leverage::compute_totals(1_000_000_000_000_i128, c_factor, target_loops);
+    let design_lev = design_supply * SCALAR_7 / (design_supply - design_borrow);
+    let lev = (b2 * b_rate / SCALAR_12) * SCALAR_7 / equity2;
+    assert!(
+        (lev - design_lev).abs() <= design_lev / 500,
+        "restored leverage {} must match design {}",
+        lev,
+        design_lev
+    );
+
+    // Equity — and therefore the share price — is untouched: the borrow and the
+    // supply are the same amount.
+    assert!(
+        (equity2 - equity1).abs() <= equity1 / 1_000_000 + 10,
+        "re-leverage must not move equity: {} vs {}",
+        equity2,
+        equity1
+    );
+
+    assert_eq!(ev_before, hf1, "event before_hf matches pre-state");
+    assert_eq!(ev_after, hf2, "event after_hf matches post-state");
+    assert_eq!(ev_borrowed, borrowed, "event amount matches return value");
+
+    std::println!(
+        "releverage: hf {} -> {} (design {}), borrowed={}",
+        hf1,
+        hf2,
+        design_hf,
+        borrowed
+    );
+}
+
+// The hysteresis band, on-chain. On a deployment whose design leverage sits
+// *inside* the rebalance band (8 loops at c = 0.90 → design HF ≈ 1.076, below
+// orange_hf 1.15), re-levering all the way to design would hand the position
+// straight back to `rebalance` and the two would ping-pong every cooldown. The
+// floor binds instead: re-leverage stops at `orange_hf + RELEVERAGE_HF_BUFFER`,
+// and the proof it is far enough is that a rebalance immediately afterwards has
+// nothing to do.
+#[test]
+fn test_releverage_floor_keeps_the_position_clear_of_the_rebalance_band() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let (c_factor, target_loops, _, orange_hf) = sclient.config();
+    let (_, _, l_factor) = sclient.risk_factors();
+    let design_hf =
+        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
+    assert!(
+        design_hf < orange_hf,
+        "fixture must be the pathological case: design {} vs orange {}",
+        design_hf,
+        orange_hf
+    );
+
+    let floor = orange_hf + crate::constants::RELEVERAGE_HF_BUFFER;
+
+    // Deleverage well clear of the band, then re-lever.
+    sclient.partial_unwind(&keeper, &(orange_hf + 3_000_000));
+    let borrowed = sclient.releverage(&keeper);
+    assert!(borrowed > 0, "must re-lever toward the floor");
+
+    let hf = sclient.health_factor();
+    assert!(
+        hf >= floor,
+        "must stop at the floor, not the design HF: {} < {}",
+        hf,
+        floor
+    );
+    assert!(
+        hf <= floor + floor / 1_000,
+        "must reach the floor: {} vs {}",
+        hf,
+        floor
+    );
+
+    // No ping-pong: the position is clear of the rebalance band, so the
+    // permissionless rebalance immediately afterwards is a no-op.
+    sclient.rebalance();
+    assert_eq!(
+        sclient.health_factor(),
+        hf,
+        "re-levered position must not be rebalance bait"
+    );
+}
+
+// A position with no slack must be left alone — and, like `rebalance_keeper`'s
+// no-op, must not consume the cooldown, so a probe can never lock the keeper out
+// of a real re-leverage.
+#[test]
+fn test_releverage_noop_without_slack_does_not_consume_cooldown() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // A fresh deposit already sits at its design HF: there is nothing to restore.
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    let hf = sclient.health_factor();
+    let (equity, _, b, d, _, _) = sclient.position();
+
+    assert_eq!(sclient.releverage(&keeper), 0, "no slack → no-op");
+    assert!(
+        find_releverage_event(&e, &strategy, &keeper).is_none(),
+        "no event on a no-op"
+    );
+
+    let (equity_after, _, b_after, d_after, _, _) = sclient.position();
+    assert_eq!(sclient.health_factor(), hf, "position untouched");
+    assert_eq!((equity_after, b_after, d_after), (equity, b, d));
+
+    let last = e.as_contract(&strategy, || storage::get_last_releverage(&e));
+    assert_eq!(last, None, "a no-op must not arm the cooldown");
+    assert_eq!(sclient.releverage(&keeper), 0, "immediate retry allowed");
+}
+
+// Rate limit, on-chain: a real re-leverage arms the cooldown, and the rejection
+// inside the window is `DeadlineExpired` — the caller *is* authorized, it is
+// simply too early, and reusing `NotAuthorized` for that is what makes
+// `rebalance_keeper`'s cooldown misleading to operators (audit L-7).
+#[test]
+fn test_releverage_cooldown_rate_limits_on_chain() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    assert!(sclient.releverage(&keeper) > 0, "first call must do work");
+    assert_eq!(
+        e.as_contract(&strategy, || storage::get_last_releverage(&e)),
+        Some(e.ledger().sequence()),
+        "a real re-leverage arms the cooldown"
+    );
+
+    match sclient.try_releverage(&keeper) {
+        Err(Ok(StrategyError::DeadlineExpired)) => {}
+        other => std::panic!(
+            "expected DeadlineExpired inside the window, got {:?}",
+            other
+        ),
+    }
+
+    // One ledger short of expiry: still rejected.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += crate::constants::RELEVERAGE_COOLDOWN_LEDGERS - 1;
+    });
+    assert!(
+        sclient.try_releverage(&keeper).is_err(),
+        "cooldown must hold until the full window has elapsed"
+    );
+
+    // Liquidation protection is never rate-limited by the re-leverage cooldown.
+    sclient.rebalance();
+
+    // At expiry the keeper may call again — a no-op here, HF is back at design.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += 1;
+    });
+    assert_eq!(
+        sclient.releverage(&keeper),
+        0,
+        "post-cooldown call succeeds"
+    );
+}
+
+// Adding leverage is the unsafe direction, so unlike `rebalance` it is never
+// permissionless.
+#[test]
+fn test_releverage_rejects_non_keeper() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+
+    // Genuine slack to re-lever, so the rejection is about identity, not state.
+    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+
+    let stranger = Address::generate(&e);
+    match sclient.try_releverage(&stranger) {
+        Err(Ok(StrategyError::NotAuthorized)) => {}
+        other => std::panic!("expected NotAuthorized for a stranger, got {:?}", other),
+    }
+    assert!(
+        sclient.releverage(&keeper) > 0,
+        "the keeper may still re-lever"
     );
 }
 
@@ -1604,14 +2200,15 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
         ],
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let pre_b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
     let pre_equity = pre_b * b_rate / SCALAR_12 - pre_d * d_rate / SCALAR_12;
-    let pre_hf = compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor).unwrap();
+    let pre_hf =
+        compute_health_factor(pre_b, pre_d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     // Unwind 2 loops through the REAL production deleverage path.
     let (b_removed, d_removed) = e.as_contract(&strategy, || {
@@ -1622,7 +2219,8 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
     let post_b = post.collateral.get(config.reserve_id).unwrap_or(0);
     let post_d = post.liabilities.get(config.reserve_id).unwrap_or(0);
     let post_equity = post_b * b_rate / SCALAR_12 - post_d * d_rate / SCALAR_12;
-    let post_hf = compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor).unwrap();
+    let post_hf =
+        compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "b_removed={} d_removed={} pre_hf={} post_hf={} pre_eq={} post_eq={}",
@@ -1755,13 +2353,13 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         config.target_loops,
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
 
     let target = config.orange_hf;
-    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
     assert!(
         before_hf < target,
         "fixture must start in the orange zone: before_hf={}, target={}",
@@ -1770,7 +2368,8 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     );
 
     // Production logic: derive the loop count needed to restore HF to target.
-    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    let (_, loops) =
+        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, l_factor, target).unwrap();
     assert!(loops >= 1, "should need at least one unwind loop");
 
     // Execute the real deleverage on the real pool.
@@ -1781,7 +2380,8 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let b2 = post.collateral.get(config.reserve_id).unwrap_or(0);
     let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
-    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+    let after_hf =
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "before_hf={} after_hf={} target={} loops={}",
@@ -1866,7 +2466,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
         ],
     );
 
-    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -1874,7 +2474,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
 
     let target = config.orange_hf;
-    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor).unwrap();
+    let before_hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
     assert!(
         before_hf < target,
         "fixture must start in the orange zone: before_hf={}",
@@ -1882,7 +2482,8 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     );
 
     // ── Dry-run prediction (same model as scripts/rebalance_sim.ts) ──────────
-    let (_, loops) = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, target).unwrap();
+    let (_, loops) =
+        compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, l_factor, target).unwrap();
     assert!(loops >= 1);
 
     // Layered execution model (mirrors blend_pool::submit_deleverage).
@@ -1913,7 +2514,8 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     let d2 = post.liabilities.get(config.reserve_id).unwrap_or(0);
     let actual_supply = b2 * b_rate / SCALAR_12;
     let actual_debt = d2 * d_rate / SCALAR_12;
-    let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor).unwrap();
+    let after_hf =
+        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor).unwrap();
 
     std::println!(
         "loops={} pred_supply={} actual_supply={} pred_debt={} actual_debt={} pred_hf={} after_hf={}",
@@ -1968,6 +2570,932 @@ fn test_harvest_reinvest_soroswap_requires_min_out() {
             .is_err(),
         "soroswap path requires non-zero amount_out_min"
     );
+}
+
+// ── Audit M-4: the Broker harvest path must settle against an on-chain floor ──
+//
+// `harvest_claim` approves the swap account for the whole claimed BLND balance
+// and `harvest_reinvest(via_soroswap = false)` re-leverages `amount_in` of
+// underlying. Before this fix nothing joined the two: `amount_in` only had to
+// be *held* by the contract, so BLND could leave and any amount — including
+// nothing — could come back, and the approval outlived the transaction by a
+// day. The tests below pin the three parts of the fix: the floor is recorded at
+// claim, it is enforced on measured balances at settle, and the allowance is
+// scoped to the round trip.
+
+/// Floor rate used throughout: 0.02 underlying per BLND, 1e7-scaled.
+const TEST_MIN_HARVEST_RATE: i128 = 200_000;
+
+/// A strategy with a real leveraged position, a swap account and a floor rate,
+/// holding `blnd_amount` of claimable-equivalent BLND. Returns
+/// `(strategy, sclient, keeper, swap_account)`.
+///
+/// BLND is minted straight to the strategy rather than accrued as emissions:
+/// `harvest_claim` floors and approves whatever balance it finds after
+/// `pool.claim`, so a minted balance exercises the identical path without
+/// making the test depend on the fixture's emission schedule.
+fn setup_broker_harvest<'a>(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+    deployer: &Address,
+    blnd_amount: i128,
+) -> (
+    Address,
+    crate::BlendLeverageStrategyClient<'a>,
+    Address,
+    Address,
+) {
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let swap_account = Address::generate(e);
+    sclient.set_swap_account(&swap_account);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    StellarAssetClient::new(e, blnd)
+        .mock_all_auths()
+        .mint(&strategy, &blnd_amount);
+    let _ = deployer;
+
+    let keeper = sclient.get_keeper();
+    (strategy, sclient, keeper, swap_account)
+}
+
+#[test]
+fn test_min_harvest_rate_set_and_getter() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Unset → error, which is what closes the Broker path by default.
+    assert!(sclient.try_min_harvest_rate().is_err());
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+    assert_eq!(sclient.min_harvest_rate(), TEST_MIN_HARVEST_RATE);
+
+    // A non-positive floor is not a floor.
+    assert!(sclient.try_set_min_harvest_rate(&0).is_err());
+    assert!(sclient.try_set_min_harvest_rate(&-1).is_err());
+}
+
+#[test]
+fn test_harvest_claim_without_floor_rate_grants_no_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let swap_account = Address::generate(&e);
+    sclient.set_swap_account(&swap_account);
+
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+
+    // Swap account set, floor rate not: the claim succeeds and the BLND stays
+    // put for the Soroswap route, but nothing may pull it.
+    let claimed = sclient.harvest_claim(&sclient.get_keeper());
+    assert_eq!(claimed, 1_000_0000000);
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        0,
+        "no floor configured ⇒ no allowance"
+    );
+    assert!(
+        sclient.try_pending_harvest().is_err(),
+        "no allowance ⇒ nothing to settle"
+    );
+}
+
+#[test]
+fn test_harvest_claim_records_floor_and_scopes_the_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    let seq_before = e.ledger().sequence();
+    let claimed = sclient.harvest_claim(&keeper);
+    assert_eq!(claimed, 1_000_0000000);
+
+    let (blnd_claimed, underlying_before, floor, expiration) = sclient.pending_harvest();
+    assert_eq!(blnd_claimed, claimed);
+    assert_eq!(
+        underlying_before,
+        TokenClient::new(&e, &token).balance(&strategy),
+        "baseline is the idle underlying at claim time"
+    );
+    // 1000 BLND × 0.02 = 20 underlying.
+    assert_eq!(floor, 20_0000000);
+    assert_eq!(
+        expiration,
+        seq_before + crate::constants::HARVEST_APPROVAL_LEDGERS
+    );
+
+    // The allowance covers the claim and dies with it — minutes, not a day.
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        claimed
+    );
+    const {
+        assert!(
+            crate::constants::HARVEST_APPROVAL_LEDGERS <= 300,
+            "approval window must stay inside the round trip it exists for"
+        )
+    };
+}
+
+#[test]
+fn test_harvest_claim_rejected_while_a_claim_is_still_pullable() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, keeper, _swap) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // Overlapping approvals would put more BLND at risk than the newer floor
+    // covers, so a second claim inside the window is refused.
+    assert_eq!(
+        sclient.try_harvest_claim(&keeper),
+        Err(Ok(StrategyError::DeadlineExpired)),
+        "claiming over a live allowance must be refused"
+    );
+
+    // Past the window nothing can be pulled against the old approval, so a
+    // fresh claim proceeds.
+    e.ledger()
+        .set_sequence_number(e.ledger().sequence() + crate::constants::HARVEST_APPROVAL_LEDGERS);
+    sclient.harvest_claim(&keeper);
+}
+
+#[test]
+fn test_broker_settlement_below_floor_reverts() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The swap account pulls the whole approval — 20 underlying is now owed.
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // …and returns a fraction of it. Before M-4 this settled: the contract held
+    // `amount_in`, which was the entire test the Broker leg applied.
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &1_0000000);
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "1 underlying back for 1000 BLND must not settle"
+    );
+
+    // Returning nothing at all is the same answer.
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin))
+    );
+
+    // The revert took the whole transaction with it, so the obligation is still
+    // recorded and still has to be met.
+    let (_, _, floor, _) = sclient.pending_harvest();
+    assert_eq!(floor, 20_0000000);
+}
+
+#[test]
+fn test_broker_settlement_at_floor_succeeds_and_kills_the_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // An honest settlement: 25 underlying for 1000 BLND, comfortably over the
+    // 20-unit floor.
+    let proceeds = 25_0000000_i128;
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &proceeds);
+
+    let before = sclient.balance(&strategy);
+    let realized = sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+    assert_eq!(realized, proceeds);
+    assert!(
+        sclient.balance(&strategy) >= before,
+        "settled proceeds are levered into the position"
+    );
+
+    // Settling consumes the claim and the pull that went with it.
+    assert!(
+        sclient.try_pending_harvest().is_err(),
+        "claim consumed by settlement"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
+        0,
+        "allowance must not outlive the harvest it was granted for"
+    );
+}
+
+#[test]
+fn test_broker_floor_prorates_to_the_blnd_actually_pulled() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The Broker takes a quarter of the approval: 250 BLND ⇒ 5 underlying owed,
+    // not the full 20.
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &250_0000000,
+    );
+
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &4_0000000);
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &4_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "4 back for 250 BLND is under the prorated floor"
+    );
+
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &2_0000000);
+    assert_eq!(
+        sclient.harvest_reinvest(&keeper, &6_0000000, &false, &0),
+        6_0000000,
+        "6 back for 250 BLND clears the prorated floor"
+    );
+}
+
+#[test]
+fn test_broker_settlement_ignores_pre_existing_idle_underlying() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    // The vault is already sitting on 50 underlying *before* the claim — a
+    // donation, a rounding remainder, anything. The claim-time baseline is what
+    // stops it being counted as harvest proceeds: `amount_in` alone would be
+    // fully covered by it, and the pre-M-4 "is it held?" check would pass.
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &50_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &50_0000000, &false, &0),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "idle underlying held before the claim cannot settle it"
+    );
+}
+
+#[test]
+fn test_trait_harvest_refused_while_a_claim_awaits_settlement() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, keeper, _swap) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+
+    // The trait path would swap the pending claim's BLND and lever the proceeds
+    // in one call, leaving nothing for `harvest_reinvest` to measure.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &None),
+        Err(Ok(StrategyError::DeadlineExpired)),
+        "the old harvest path must not run through a pending settlement"
+    );
+}
+
+#[test]
+fn test_unsettled_claim_is_reported_when_a_later_claim_replaces_it() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, swap_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+
+    sclient.harvest_claim(&keeper);
+    TokenClient::new(&e, &blnd).transfer_from(
+        &swap_account,
+        &strategy,
+        &swap_account,
+        &1_000_0000000,
+    );
+
+    // The keeper never settles and simply waits the window out. The obligation
+    // cannot be enforced retroactively — the BLND is gone — but it does not get
+    // to vanish quietly either.
+    e.ledger()
+        .set_sequence_number(e.ledger().sequence() + crate::constants::HARVEST_APPROVAL_LEDGERS);
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &500_0000000);
+    sclient.harvest_claim(&keeper);
+
+    use soroban_sdk::{xdr, TryFromVal};
+    let unsettled = e
+        .events()
+        .all()
+        .filter_by_contract(&strategy)
+        .events()
+        .iter()
+        .filter(|ev| {
+            let xdr::ContractEventBody::V0(v0) = &ev.body;
+            !v0.topics.is_empty()
+                && Symbol::try_from_val(&e, &v0.topics[0])
+                    == Ok(Symbol::new(&e, "harvest_unsettled"))
+        })
+        .count();
+    assert_eq!(unsettled, 1, "an unsettled claim must be reported on-chain");
+
+    // The replacement claim is floored on its own balance, not the old one's.
+    let (blnd_claimed, _, floor, _) = sclient.pending_harvest();
+    assert_eq!(blnd_claimed, 500_0000000);
+    assert_eq!(floor, 10_0000000);
+}
+
+// ── Audit M-5: the trait `harvest` must never swap unprotected ────────────────
+//
+// `harvest(from, None)` — the natural call for a DeFindex-trait caller that does
+// not know this contract's private 16-byte `data` encoding — used to reach
+// Soroswap with `amount_out_min = 0`, while `harvest_reinvest` had refused
+// exactly that since M-4. The fix closes the asymmetry: the admin's
+// `min_harvest_rate` prices a floor over the BLND being swapped, the stricter of
+// that and the caller's own number is what reaches the router, and a swap with
+// neither is refused rather than run at zero protection.
+
+/// The private `data` encoding: `amount_out_min` as 16 big-endian bytes.
+fn min_out_data(e: &Env, amount_out_min: i128) -> Bytes {
+    Bytes::from_array(e, &amount_out_min.to_be_bytes())
+}
+
+/// A strategy with a real position, `blnd_amount` of BLND in hand and a mock
+/// Soroswap router quoting `rate` (underlying per `SCALAR_7` of BLND — the same
+/// units as `min_harvest_rate`, so a test can put the quote either side of the
+/// floor). Returns `(strategy, sclient, router, keeper)`.
+fn setup_trait_harvest<'a>(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+    blnd_amount: i128,
+    rate: i128,
+) -> (
+    Address,
+    crate::BlendLeverageStrategyClient<'a>,
+    MockSoroswapRouterClient<'a>,
+    Address,
+) {
+    let router = e.register(MockSoroswapRouter, (rate,));
+    let strategy =
+        register_real_strategy_with_loops_and_router(e, pool_addr, token, blnd, 3, &router);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    // The router pays the swap output out of its own balance.
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&router, &10_000_0000000);
+    StellarAssetClient::new(e, blnd)
+        .mock_all_auths()
+        .mint(&strategy, &blnd_amount);
+
+    let keeper = sclient.get_keeper();
+    (
+        strategy,
+        sclient,
+        MockSoroswapRouterClient::new(e, &router),
+        keeper,
+    )
+}
+
+#[test]
+fn test_trait_harvest_with_no_floor_on_either_side_is_refused() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // Quote 0.05/BLND — a perfectly good price. The point is that nothing on
+    // chain requires it to be one.
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    // No `min_harvest_rate`, no `data`: this is the call the finding is about.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &None),
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed)),
+        "an unfloored swap must be refused, not executed at whatever the route quotes"
+    );
+    // An explicit zero is the same request spelled out, and gets the same answer.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &Some(min_out_data(&e, 0))),
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed))
+    );
+
+    // Nothing was swapped: the refusal took the whole transaction with it.
+    assert_eq!(router.last_amount_out_min(), 0);
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        1_000_0000000,
+        "the BLND is still here, waiting for a floored harvest"
+    );
+
+    // The keeper's own number reopens the path without waiting on the admin.
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 40_0000000)));
+    assert_eq!(router.last_amount_out_min(), 40_0000000);
+}
+
+#[test]
+fn test_trait_harvest_uses_the_admin_floor_when_data_is_absent() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // 0.02 per BLND
+
+    sclient.harvest(&keeper, &None);
+
+    // 1000 BLND × 0.02 = 20 underlying, priced over the balance actually swapped.
+    assert_eq!(
+        router.last_amount_out_min(),
+        20_0000000,
+        "`None` now means the admin's floor, not zero"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        0,
+        "the harvest still runs — the floor is a bound, not a blocker"
+    );
+}
+
+#[test]
+fn test_trait_harvest_takes_the_stricter_of_the_caller_and_admin_floors() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // floor: 20 underlying
+
+    // A keeper asking for 1 stroop of protection does not get to undercut the
+    // admin — otherwise the fix would be one malformed `data` away from moot.
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 1)));
+    assert_eq!(router.last_amount_out_min(), 20_0000000);
+
+    // Stricter than the floor, on the other hand, is the caller's business: they
+    // may know the live price, which the admin's slack floor deliberately does not.
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+    sclient.harvest(&keeper, &Some(min_out_data(&e, 45_0000000)));
+    assert_eq!(router.last_amount_out_min(), 45_0000000);
+}
+
+#[test]
+fn test_trait_harvest_reverts_when_the_quote_is_below_the_admin_floor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // The route quotes 0.005/BLND — a quarter of the floor. This is the trade
+    // the finding says the vault should not be making silently.
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 50_000);
+
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    assert!(
+        sclient.try_harvest(&keeper, &None).is_err(),
+        "a swap 4× below the floor must revert at the router, not settle"
+    );
+    assert_eq!(
+        router.last_amount_out_min(),
+        0,
+        "the reverted swap left no state behind"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        1_000_0000000
+    );
+}
+
+#[test]
+fn test_trait_harvest_below_the_reward_threshold_needs_no_floor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    // Half a BLND, against a 1 BLND `reward_threshold`.
+    let (_strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 5000000, 500_000);
+
+    // `perform_reinvest` no-ops below the threshold, so there is no swap to
+    // protect and the floor requirement must not turn a no-op into a revert.
+    sclient.harvest(&keeper, &None);
+    assert_eq!(router.last_amount_out_min(), 0, "no swap ran");
+}
+
+// ── Audit M-2: stored reserves must reconcile with the real pool position ─────
+//
+// Finding ① below fixed the paths where the *strategy itself* moved the position.
+// M-2 is the complement: a position change the strategy did NOT initiate — a
+// liquidation seizing collateral, a Blend bad-debt socialization — was invisible
+// to the tracked ledger, so `compute_equity` kept quoting the pre-seizure
+// position and `withdraw` priced shares off the inflated figure. The shortfall
+// landed entirely on whoever was last out.
+//
+// These tests use a direct pool `WithdrawCollateral` submitted as the strategy to
+// a third party. It is not a liquidation auction, but it is the same event as far
+// as the strategy's accounting is concerned: collateral leaves the position
+// without the strategy asking, and nothing in the strategy records it.
+
+/// Open a real leveraged position through the production `deposit` entrypoint
+/// and return `(strategy, user)`. Uses the default 3-loop config (HF ≈ 1.27), so
+/// there is collateral headroom to seize without tripping the pool's own checks.
+fn open_position_for_seizure(
+    e: &Env,
+    pool_addr: &Address,
+    token: &Address,
+    blnd: &Address,
+) -> (Address, Address) {
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+
+    let user = Address::generate(e);
+    StellarAssetClient::new(e, token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    (strategy, user)
+}
+
+/// Move `amount` of collateral out of the strategy's pool position to `thief`,
+/// submitted as the strategy so the strategy's own accounting never sees it.
+fn seize_collateral(
+    e: &Env,
+    pool_addr: &Address,
+    strategy: &Address,
+    token: &Address,
+    amount: i128,
+) -> Address {
+    let thief = Address::generate(e);
+    e.as_contract(strategy, || {
+        pool::Client::new(e, pool_addr).submit(
+            strategy,
+            strategy,
+            &thief,
+            &vec![
+                e,
+                pool::Request {
+                    address: token.clone(),
+                    amount,
+                    request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+                },
+            ],
+        );
+    });
+    thief
+}
+
+// The core of M-2: after collateral leaves the position without the strategy's
+// involvement, the loss must show up in share pricing immediately — not on the
+// next deposit, not when an operator remembers to sync. Both `balance()` and
+// `position()` read through the reconciliation, so the write-down is priced in on
+// the very next read. Before the fix both would have reported the pre-seizure
+// equity, and a withdrawal at that price would have overpaid at the expense of
+// the remaining holders.
+#[test]
+fn test_seized_collateral_is_priced_into_balance_immediately() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let (strategy, user) = open_position_for_seizure(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    let balance_before = sclient.balance(&user);
+    let (equity_before, _, b_before, _, _, _) = sclient.position();
+    let stored_before = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+
+    // Seize ~10% of the collateral.
+    let seized = b_before / 10;
+    seize_collateral(&e, &pool_addr, &strategy, &token, seized);
+
+    // The tracked ledger is untouched — this is exactly the blind spot M-2 is
+    // about, and it is what the reconciliation has to see through.
+    let stored_after = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(
+        stored_after.total_b_tokens, stored_before.total_b_tokens,
+        "the seizure must be invisible to the raw stored ledger — otherwise this test proves nothing"
+    );
+
+    // The pool is the truth, and the views must now agree with it.
+    let pool_b = pool::Client::new(&e, &pool_addr)
+        .get_positions(&strategy)
+        .collateral
+        .get(cfg.reserve_id)
+        .unwrap_or(0);
+    assert!(
+        pool_b < stored_before.total_b_tokens,
+        "collateral must have left"
+    );
+
+    let (equity_after, _, b_after, _, _, _) = sclient.position();
+    let balance_after = sclient.balance(&user);
+
+    assert_eq!(
+        b_after, pool_b,
+        "M-2: position() must report the pool's collateral, not the stale ledger"
+    );
+    assert!(
+        equity_after < equity_before,
+        "M-2: seized collateral must reduce equity ({} -> {})",
+        equity_before,
+        equity_after
+    );
+    assert!(
+        balance_after < balance_before,
+        "M-2: the holder's priced balance must absorb the loss ({} -> {})",
+        balance_before,
+        balance_after
+    );
+
+    // The loss is priced at its real size, not approximated: equity fell by the
+    // underlying value of exactly the collateral that left.
+    let seized_value = (b_before - pool_b) * stored_before.b_rate / SCALAR_12;
+    assert_within_1e7(
+        equity_before - equity_after,
+        seized_value,
+        "equity write-down",
+    );
+
+    std::println!(
+        "M-2 seizure: b {} -> {} | equity {} -> {} | user balance {} -> {}",
+        b_before,
+        b_after,
+        equity_before,
+        equity_after,
+        balance_before,
+        balance_after
+    );
+}
+
+// The observability half of M-2. Pricing already self-corrects on read, but the
+// correction is silent — nothing on-chain says "the position changed and we did
+// not do it". `sync_reserves()` persists the write-down and emits `reserves_sync`
+// so the `alerts/` stack can detect a liquidation. Permissionless, idempotent.
+#[test]
+fn test_sync_reserves_writes_down_seizure_and_emits_event() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let (strategy, _user) = open_position_for_seizure(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // In sync to begin with: no correction, no event, nothing written.
+    assert_eq!(
+        sclient.sync_reserves(),
+        (0, 0),
+        "a position the strategy alone moved is already in sync"
+    );
+    assert!(
+        find_reserves_sync_event(&e, &strategy).is_none(),
+        "no event when there is nothing to correct"
+    );
+
+    let stored_before = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    let seized = stored_before.total_b_tokens / 10;
+    seize_collateral(&e, &pool_addr, &strategy, &token, seized);
+
+    // Anyone may call it — no keeper, no admin, no caller argument at all.
+    let (b_corr, d_corr) = sclient.sync_reserves();
+    let (ev_b_before, ev_b_after, ev_d_before, ev_d_after) =
+        find_reserves_sync_event(&e, &strategy).expect("a correction must emit reserves_sync");
+
+    let pool_positions = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pool_b = pool_positions.collateral.get(cfg.reserve_id).unwrap_or(0);
+    let pool_d = pool_positions.liabilities.get(cfg.reserve_id).unwrap_or(0);
+
+    let stored_after = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(
+        stored_after.total_b_tokens, pool_b,
+        "sync must write the stored ledger down to the pool"
+    );
+    assert_eq!(stored_after.total_d_tokens, pool_d, "debt side likewise");
+    assert_eq!(
+        b_corr,
+        stored_before.total_b_tokens - pool_b,
+        "returned correction must be the amount written down"
+    );
+    assert_eq!(d_corr, 0, "the seizure touched collateral only");
+
+    // Event payload describes the transition the alerts stack has to reason about.
+    assert_eq!(ev_b_before, stored_before.total_b_tokens, "event b before");
+    assert_eq!(ev_b_after, pool_b, "event b after");
+    assert_eq!(ev_d_before, stored_before.total_d_tokens, "event d before");
+    assert_eq!(ev_d_after, pool_d, "event d after");
+
+    // Idempotent: a second call has nothing to do and stays quiet.
+    assert_eq!(sclient.sync_reserves(), (0, 0), "second sync is a no-op");
+    assert!(
+        find_reserves_sync_event(&e, &strategy).is_none(),
+        "no-op sync must not emit"
+    );
+}
+
+// The reconciliation is deliberately one-directional: it clamps the tracked
+// totals DOWN to the pool's, never up. Following the pool upwards would mean any
+// collateral credited to the strategy's position moved the share price — the
+// lever an inflation attack needs, and the opposite of the property the audit's
+// "not exploitable" list rests on ("a donation cannot move the share price").
+//
+// Two things are pinned here. First, the assumption underneath: Blend does not
+// currently offer a way to credit somebody else's position — `submit`'s `to`
+// argument routes outgoing transfers, not incoming supply, so a `SupplyCollateral`
+// submitted with `to = strategy` credits the *sender*. Second, and the part that
+// matters if that ever changes: even with the pool reporting more collateral than
+// the strategy tracks, the views stay on the tracked figure.
+#[test]
+fn test_reconciliation_never_revises_the_position_upward() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let (strategy, user) = open_position_for_seizure(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    let collateral_of = |who: &Address| {
+        pool_client
+            .get_positions(who)
+            .collateral
+            .get(cfg.reserve_id)
+            .unwrap_or(0)
+    };
+
+    let (_, _, b_before, _, _, _) = sclient.position();
+
+    // A donor tries to supply collateral onto the STRATEGY's position.
+    let donor = Address::generate(&e);
+    let donation = 5_000_0000000_i128;
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&donor, &donation);
+    pool_client.submit(
+        &donor,
+        &donor,
+        &strategy,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: donation,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+
+    // It lands on the donor instead — the pool has no third-party supply path.
+    assert_eq!(
+        collateral_of(&strategy),
+        b_before,
+        "Blend must not let a third party credit the strategy's position"
+    );
+    assert!(
+        collateral_of(&donor) > 0,
+        "the supply landed on the sender, as expected"
+    );
+
+    // So construct the upward gap directly, and pin the rule that guards it:
+    // stored below the pool's measured position must NOT be revised up.
+    let balance_before = sclient.balance(&user);
+    let (equity_before, _, _, _, _, _) = sclient.position();
+    let understated = b_before - 1_000_0000000;
+    e.as_contract(&strategy, || {
+        let mut r = storage::get_strategy_reserves(&e);
+        r.total_b_tokens = understated;
+        storage::set_strategy_reserves(&e, r);
+    });
+
+    let (equity_after, _, b_after, _, _, _) = sclient.position();
+    assert_eq!(
+        b_after, understated,
+        "reconciliation must keep the lower tracked figure, not the pool's higher one"
+    );
+    assert!(
+        equity_after < equity_before && sclient.balance(&user) < balance_before,
+        "the understated position must price low, never be topped up from the pool"
+    );
+    assert_eq!(
+        sclient.sync_reserves(),
+        (0, 0),
+        "sync only writes down; an upward gap is not a correction"
+    );
+    assert_eq!(
+        e.as_contract(&strategy, || storage::get_strategy_reserves(&e))
+            .total_b_tokens,
+        understated,
+        "and sync must not have persisted an upward revision"
+    );
+}
+
+/// Decode the strategy's `("reserves_sync",)` event payload
+/// `(b_before, b_after, d_before, d_after)` from the LAST invocation's events.
+fn find_reserves_sync_event(e: &Env, strategy: &Address) -> Option<(i128, i128, i128, i128)> {
+    use soroban_sdk::{xdr, TryFromVal, Val};
+    let events = e.events().all().filter_by_contract(strategy);
+    for ev in events.events() {
+        let xdr::ContractEventBody::V0(v0) = &ev.body;
+        if v0.topics.len() != 1 {
+            continue;
+        }
+        if Symbol::try_from_val(e, &v0.topics[0]) != Ok(Symbol::new(e, "reserves_sync")) {
+            continue;
+        }
+        let data: Val = Val::try_from_val(e, &v0.data).ok()?;
+        return <(i128, i128, i128, i128)>::try_from_val(e, &data).ok();
+    }
+    None
 }
 
 // ── Finding ①: withdraw must keep stored reserves in sync with the pool ───────
@@ -2436,10 +3964,17 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
         let config = storage::get_config(&e);
         let r = reserves::get_strategy_reserves_updated(&e, &config);
         let equity = crate::leverage::compute_equity(&r).unwrap();
-        let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-        let hf =
-            compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, config.c_factor).unwrap();
+        let hf = compute_health_factor(
+            b_tokens,
+            d_tokens,
+            b_rate,
+            d_rate,
+            config.c_factor,
+            l_factor,
+        )
+        .unwrap();
         let underlying = shares_to_underlying(user_shares, &r).unwrap();
         (equity, hf, underlying)
     });
@@ -2482,4 +4017,162 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
         b_rate_before,
         d_rate_before,
     );
+}
+
+// ── H-1: the reported HF must carry Blend's l_factor liability markup ─────────
+//
+// `compute_health_factor` used to weight only the collateral side
+// (`HF = B × c_factor / D`) while Blend's own solvency check marks liabilities
+// *up* by dividing by the reserve's `l_factor`. The strategy's HF was therefore
+// systematically optimistic relative to the number that actually governs
+// liquidation, and the whole suite was blind to the term because every fixture
+// pinned `l_factor = 1.0`.
+//
+// These tests run against a reserve with a REAL markup and check the fix where
+// it matters: the strategy's HF crosses 1.0 exactly when the Blend pool starts
+// accepting a liquidation auction on the position.
+
+/// Ask the pool to open a user-liquidation auction against `user`, and report
+/// whether it will. This is Blend's own verdict on the position rather than a
+/// re-implementation of it: the pool rejects the auction outright while the
+/// position is healthy by its own measure.
+///
+/// Every percentage is swept because Blend accepts exactly the one that restores
+/// the user to its target health — anything smaller or larger is rejected with a
+/// different error — so a fixed handful of percentages would report a false
+/// "not liquidatable".
+fn blend_would_liquidate(e: &Env, pool_addr: &Address, user: &Address, asset: &Address) -> bool {
+    let assets = vec![e, asset.clone()];
+    (1u32..=100).any(|percent| {
+        pool::Client::new(e, pool_addr)
+            .mock_all_auths()
+            .try_new_auction(&0, user, &assets, &assets, &percent)
+            .is_ok()
+    })
+}
+
+#[test]
+fn test_health_factor_carries_pool_l_factor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    // Reserve with a genuine liability markup: l = 0.85, pool c = 0.95.
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env_with_l_factor(&e, 8_500_000);
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    // The view reports the pool's live risk parameters, and the constructor's
+    // `c_factor <= pool c_factor` invariant holds.
+    let (strategy_c, pool_c, l_factor) = sclient.risk_factors();
+    assert_eq!(
+        (strategy_c, pool_c, l_factor),
+        (9_000_000, 9_500_000, 8_500_000)
+    );
+    assert!(strategy_c <= pool_c);
+
+    let positions = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    let b = positions.collateral.get(config.reserve_id).unwrap_or(0);
+    let d = positions.liabilities.get(config.reserve_id).unwrap_or(0);
+    let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
+
+    // 1. The entrypoint reports the markup-aware number.
+    let hf = sclient.health_factor();
+    let expected = compute_health_factor(b, d, b_rate, d_rate, strategy_c, l_factor).unwrap();
+    assert_eq!(hf, expected);
+
+    // 2. Which is strictly below what the pre-H-1 formula reported.
+    let hf_pre_fix = compute_health_factor(b, d, b_rate, d_rate, strategy_c, SCALAR_7).unwrap();
+    assert!(
+        hf < hf_pre_fix,
+        "markup-aware HF {} should be below the l_factor-free {}",
+        hf,
+        hf_pre_fix
+    );
+
+    // 3. And it is a lower bound on Blend's own ratio, so HF >= 1.0 is a real
+    //    guarantee rather than a per-asset parameter coincidence.
+    let blend_ratio = compute_health_factor(b, d, b_rate, d_rate, pool_c, l_factor).unwrap();
+    assert!(
+        hf <= blend_ratio,
+        "strategy HF {} must not exceed Blend's ratio {}",
+        hf,
+        blend_ratio
+    );
+
+    // 4. The pool agrees the position is safe.
+    assert!(hf > SCALAR_7, "fixture should be healthy: hf={}", hf);
+    assert!(
+        !blend_would_liquidate(&e, &pool_addr, &strategy, &token),
+        "Blend should refuse to liquidate a position the strategy calls healthy"
+    );
+
+    std::println!(
+        "l_factor fixture: hf={} (pre-fix {}) blend_ratio={} b={} d={}",
+        hf,
+        hf_pre_fix,
+        blend_ratio,
+        b,
+        d
+    );
+}
+
+#[test]
+fn test_health_factor_tracks_a_governance_l_factor_cut() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e); // l = 1.0
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+
+    let hf_before = sclient.health_factor();
+    assert!(hf_before > SCALAR_7, "should open healthy: {}", hf_before);
+    assert!(!blend_would_liquidate(&e, &pool_addr, &strategy, &token));
+
+    // Blend governance re-parameterises the reserve, cutting l_factor to 0.60.
+    // This is why the strategy reads l_factor live instead of caching it at
+    // construction: a stored copy would keep reporting the stale, safe number.
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    let mut reserve_config = pool_client.get_reserve(&token).config;
+    reserve_config.l_factor = 6_000_000;
+    pool_client.queue_set_reserve(&token, &reserve_config);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 8 * 24 * 60 * 60);
+    pool_client.set_reserve(&token);
+    assert_eq!(sclient.risk_factors().2, 6_000_000);
+
+    // The strategy now reports the position as liquidatable — and so does Blend.
+    let hf_after = sclient.health_factor();
+    assert!(
+        hf_after < hf_before,
+        "HF should fall with l_factor: before={} after={}",
+        hf_before,
+        hf_after
+    );
+    assert!(
+        hf_after < SCALAR_7,
+        "HF should drop below 1.0 after the cut: {}",
+        hf_after
+    );
+    assert!(
+        blend_would_liquidate(&e, &pool_addr, &strategy, &token),
+        "Blend should accept a liquidation once the strategy's HF is below 1.0"
+    );
+
+    std::println!("governance l_factor cut: hf {} -> {}", hf_before, hf_after);
 }

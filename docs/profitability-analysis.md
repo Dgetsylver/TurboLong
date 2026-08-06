@@ -12,8 +12,8 @@ Four structural vulnerabilities were identified in the Blend leverage loop tool.
 |---|---|---|
 | Pool total supply | ~$115,000 USDC | `scripts/debug_blnd.ts:43` |
 | c_factor (USDC) | 0.95 | `blend.ts:116`, `leverage_sim.rs:388` |
-| l_factor (USDC) | 0.95 | `leverage_sim.rs:140` (printed, not used in HF formula) |
-| HF formula (on-chain) | `(supplied × c_factor) / borrowed` | `leverage_sim.rs:473` — no l_factor in denominator |
+| l_factor (USDC) | 0.95 | `leverage_sim.rs:140`; read live from the reserve config on-chain |
+| HF formula (on-chain) | `(supplied × c_factor × l_factor) / borrowed` | `leverage.rs:compute_health_factor` — matches Blend's own liability markup (audit H-1) |
 | Backstop take rate | 20% | `blend.ts:58` (2,000,000 / 1e7) |
 | Max utilization | 95% | `blend.ts:116` |
 | r_base | 0.03% | `blend.ts:326` (300,000 / 1e7) |
@@ -25,7 +25,7 @@ Four structural vulnerabilities were identified in the Blend leverage loop tool.
 | Tx cost | ~$0.0001 | BASE_FEE=100 stroops, negligible |
 | Flash loans | **DO NOT EXIST** on Soroban | Architecture constraint |
 
-### Interest Rate Curve (computed from `blend.ts:339-350`, `doc.md:73-83`)
+### Interest Rate Curve (computed from `blend.ts:339-350`, `docs/leverage-model.md:73-83`)
 
 | Utilization | Borrow APR | Supply APR | Spread (borrow − supply) |
 |---|---|---|---|

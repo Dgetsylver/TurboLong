@@ -521,7 +521,7 @@ fn execute_leverage_loop() {
 
     // ── 4. Execute leverage loops ─────────────────────────────────────────────
     //
-    // How many loops to run (13 keeps HF ≥ 1.05 at c=0.95, see doc.md).
+    // How many loops to run (13 keeps HF ≥ 1.05 at c=0.95, see docs/leverage-model.md).
     // The last loop in the table (loop 13) still borrows; loop 14 just
     // supplies the proceeds without borrowing to illustrate the final state.
     //

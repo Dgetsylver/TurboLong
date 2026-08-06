@@ -418,6 +418,97 @@ pub fn submit_deleverage(
     ))
 }
 
+/// Re-leverage: borrow `amount` of the underlying and immediately supply it back
+/// as collateral, in one atomic submit. The mirror of `submit_deleverage`.
+///
+/// Emitted as a single [borrow, supply] pair rather than layered like the
+/// deposit loop or `submit_deleverage`. The borrow comes first for the same
+/// reason the deposit loop supplies first — the proceeds of one request fund the
+/// next within the submit — and there is nothing for extra layers to buy here:
+/// the pool health-checks the finished request set, not each request, and the
+/// caller (`releverage`) re-reads the position afterwards and reverts if the
+/// result is not where it asked for. Splitting would only multiply request fees
+/// and rounding.
+///
+/// Returns `(b_token_delta, d_token_delta)` — both positive on success.
+pub fn submit_releverage(
+    e: &Env,
+    amount: i128,
+    config: &Config,
+) -> Result<(i128, i128), StrategyError> {
+    if amount <= 0 {
+        return Ok((0, 0));
+    }
+
+    let pool_client = BlendPoolClient::new(e, &config.pool);
+    let strategy = e.current_contract_address();
+
+    let pre_positions = pool_client.get_positions(&strategy);
+    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
+    let pre_d = pre_positions
+        .liabilities
+        .get(config.reserve_id)
+        .unwrap_or(0);
+
+    let requests: Vec<Request> = vec![
+        e,
+        Request {
+            address: config.asset.clone(),
+            amount,
+            request_type: REQUEST_TYPE_BORROW,
+        },
+        Request {
+            address: config.asset.clone(),
+            amount,
+            request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+        },
+    ];
+
+    // Approve the pool for the supply leg (the borrow leg pays for it).
+    let token_client = TokenClient::new(e, &config.asset);
+    e.authorize_as_current_contract(vec![
+        e,
+        InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: config.asset.clone(),
+                fn_name: Symbol::new(e, "approve"),
+                args: (
+                    strategy.clone(),
+                    config.pool.clone(),
+                    amount,
+                    e.ledger().sequence() + 1u32,
+                )
+                    .into_val(e),
+            },
+            sub_invocations: vec![e],
+        }),
+    ]);
+    token_client.approve(
+        &strategy,
+        &config.pool,
+        &amount,
+        &(e.ledger().sequence() + 1),
+    );
+
+    pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
+
+    let new_positions = pool_client.get_positions(&strategy);
+    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
+    let new_d = new_positions
+        .liabilities
+        .get(config.reserve_id)
+        .unwrap_or(0);
+
+    Ok((
+        new_b
+            .checked_sub(pre_b)
+            .ok_or(StrategyError::UnderflowOverflow)?,
+        new_d
+            .checked_sub(pre_d)
+            .ok_or(StrategyError::UnderflowOverflow)?,
+    ))
+}
+
 // ── Claim BLND emissions ─────────────────────────────────────────────────────
 
 /// Claim BLND emissions from both supply and borrow sides.
@@ -505,6 +596,36 @@ pub fn get_rates(e: &Env, config: &Config) -> (i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let reserve = pool_client.get_reserve(&config.asset);
     (reserve.data.b_rate, reserve.data.d_rate)
+}
+
+/// Fetch `(b_rate, d_rate, l_factor)` for the configured asset in a single pool
+/// call — the inputs every health-factor computation needs.
+///
+/// `l_factor` is the pool's *liability* factor (1e7): Blend measures solvency as
+/// `B × c_factor` against `D / l_factor`, so omitting it makes the strategy's HF
+/// systematically optimistic relative to the number that governs liquidation. It
+/// is read live rather than cached at construction because Blend governance can
+/// re-parameterise a reserve (`queue_set_reserve`), and a stale copy would fail
+/// in exactly the unsafe direction.
+pub fn get_rates_and_l_factor(e: &Env, config: &Config) -> (i128, i128, i128) {
+    let pool_client = BlendPoolClient::new(e, &config.pool);
+    let reserve = pool_client.get_reserve(&config.asset);
+    (
+        reserve.data.b_rate,
+        reserve.data.d_rate,
+        reserve.config.l_factor as i128,
+    )
+}
+
+/// Fetch the pool's own risk parameters for the configured asset:
+/// `(c_factor, l_factor)`, both 1e7-scaled.
+pub fn get_pool_risk_factors(e: &Env, config: &Config) -> (i128, i128) {
+    let pool_client = BlendPoolClient::new(e, &config.pool);
+    let reserve = pool_client.get_reserve(&config.asset);
+    (
+        reserve.config.c_factor as i128,
+        reserve.config.l_factor as i128,
+    )
 }
 
 /// Fetch current pool supply and borrow in underlying units.

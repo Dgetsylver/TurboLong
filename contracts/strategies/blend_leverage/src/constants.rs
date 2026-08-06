@@ -22,6 +22,46 @@ pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 /// unaffected (anyone can always protect a position).
 pub const REBALANCE_COOLDOWN_LEDGERS: u32 = 60;
 
+/// Minimum ledgers between keeper re-leverages (~1 day at ~5s/ledger).
+///
+/// Deliberately far slower than the rebalance cooldown: deleveraging is an
+/// emergency and must stay responsive, while adding leverage back is
+/// maintenance that is never urgent. The cap on *how much* leverage
+/// `releverage` can add is a level, not a rate (see `RELEVERAGE_HF_BUFFER`), so
+/// repeated calls converge rather than compound — this cooldown is about not
+/// churning the position through the pool (and the rounding each submit costs)
+/// rather than about bounding a compromised keeper.
+pub const RELEVERAGE_COOLDOWN_LEDGERS: u32 = 17_280;
+
+/// Hysteresis band above `orange_hf`, 1e7-scaled, for the re-leverage path.
+///
+/// `releverage` never targets a health factor below `orange_hf + this`, and only
+/// fires when the current HF clears that target by the same margin. Without the
+/// band a re-leverage would land the position exactly on the rebalance trigger,
+/// and the next interest accrual would hand it straight back to `rebalance` —
+/// leverage ping-ponging every cooldown for nothing but fees.
+///
+/// 0.02 sized against the decay it has to outlast: HF decays at roughly the
+/// borrow/supply spread (`d(ln HF)/dt ≈ r_supply − r_borrow`), so at a 4-point
+/// spread a 1.15 → 1.17 band is ~5 months of drift, and the position spends that
+/// whole time levered rather than oscillating.
+pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
+
+/// Ledgers a claim's BLND approval to the swap account stays live (~5 minutes
+/// at ~5s/ledger).
+///
+/// The approval exists for exactly one purpose: to let the off-chain Broker
+/// pull the just-claimed BLND in the transaction that follows `harvest_claim`.
+/// It was ~1 day (17_280 ledgers), which left a standing pull right over the
+/// vault's BLND for the 99.97% of that window when no harvest was in flight.
+/// Five minutes is the operational envelope of the claim → swap → settle
+/// round trip; anything longer is allowance the flow never uses.
+///
+/// The expiry is a backstop, not the control: `harvest_reinvest` revokes the
+/// allowance when it settles, and `harvest_claim` revokes any stale one before
+/// granting a fresh one. What the expiry bounds is the case where neither runs.
+pub const HARVEST_APPROVAL_LEDGERS: u32 = 60;
+
 /// Blend v2 request type constants
 pub const REQUEST_TYPE_SUPPLY_COLLATERAL: u32 = 2;
 pub const REQUEST_TYPE_WITHDRAW_COLLATERAL: u32 = 3;

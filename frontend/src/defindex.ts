@@ -70,7 +70,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     cFactor: 0.9,
     targetLoops: 4,
     minHf: 1.05,
-    orangeHf: 1.15,
+    orangeHf: 1.1,
   },
   {
     vaultId: "",
@@ -94,7 +94,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     cFactor: 0.75,
     targetLoops: 3,
     minHf: 1.05,
-    orangeHf: 1.15,
+    orangeHf: 1.1,
   },
   {
     vaultId: "",
@@ -114,8 +114,11 @@ const MAINNET_VAULTS: VaultConfig[] = [
 // (XLM, USDC, CETES, TESOURO — USTRY does not exist on testnet, so TESOURO
 // stands in for the 4th vault). vaultId/shareToken are filled post-deploy from
 // deployed-vaults.testnet.json (see scripts/wire_testnet_vaults.ts). Risk
-// params mirror scripts/deploy_strategy_testnet.ts but are only FALLBACKS:
-// syncVaultConfig() refreshes them from the contract's config() view at load.
+// params describe the vaults that are actually DEPLOYED, and are only
+// FALLBACKS: syncVaultConfig() refreshes them from the contract's config() view
+// at load. They no longer match deploy_strategy_testnet.ts, which moved USDC and
+// CETES to orange_hf 1.10 — `orange_hf` is constructor-only, so the live vaults
+// keep 1.15 until they are redeployed.
 const TESTNET_VAULTS: VaultConfig[] = [
   {
     vaultId: "CCGM3FT4HKLXGTD5FZYSIWTOPR4REIEMTTC23GU6PHSLBXBADKFQPEKR",
@@ -186,6 +189,15 @@ export interface VaultStats {
   bRate: bigint;
   dRate: bigint;
   healthFactor: number; // Strategy HF (1e7 scaled → float)
+  /**
+   * The pool's liability factor for this reserve (1e7 scaled → float), read
+   * live from `risk_factors()`. The contract's HF is
+   * `B × c_factor × l_factor / D` — Blend marks liabilities up by dividing by
+   * l_factor — so any client-side HF projection must carry it too or it will
+   * disagree with `healthFactor` above. Falls back to 1.0 for contracts
+   * predating the view.
+   */
+  lFactor: number;
   collateralValue: number; // b_tokens * b_rate in underlying
   debtValue: number; // d_tokens * d_rate in underlying
   leverage: number; // collateralValue / equity
@@ -297,6 +309,20 @@ export async function fetchVaultStats(vault: VaultConfig, poolReserves?: Reserve
     const hfRaw = Number(scValToNative(hfResult));
     const healthFactor = hfRaw > 1e15 ? Number.POSITIVE_INFINITY : hfRaw / 1e7;
 
+    // Live pool risk factors: (strategy_c_factor, pool_c_factor, l_factor).
+    // Read every refresh rather than cached with the rest of the config —
+    // Blend governance can re-parameterise a reserve at any time.
+    let lFactor = 1;
+    try {
+      const rfResult = await invokeRead(vault.vaultId, "risk_factors");
+      const rf = rfResult.value() as xdr.ScVal[];
+      const l = Number(scValToNative(rf[2])) / 1e7;
+      if (l > 0 && l <= 1) lFactor = l;
+    } catch {
+      // Contract predates risk_factors() or RPC hiccup — 1.0 keeps the
+      // projection equal to the pre-H-1 behaviour rather than breaking it.
+    }
+
     // Compute leveraged net APY from pool reserve data
     let netApy: number | null = null;
     let supplyApr: number | null = null;
@@ -324,6 +350,7 @@ export async function fetchVaultStats(vault: VaultConfig, poolReserves?: Reserve
       bRate,
       dRate,
       healthFactor,
+      lFactor,
       collateralValue,
       debtValue,
       leverage,

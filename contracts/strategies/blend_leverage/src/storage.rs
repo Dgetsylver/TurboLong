@@ -26,9 +26,16 @@ pub enum DataKey {
     ShareToken,
     /// Ledger sequence of the last keeper rebalance (for rate-limiting).
     LastRebalance,
+    /// Ledger sequence of the last keeper re-leverage (for rate-limiting).
+    LastReleverage,
     /// Keeper-controlled account allowed to pull claimed BLND for an off-chain
     /// (Stellar Broker) swap during the split harvest flow.
     SwapAccount,
+    /// Minimum underlying the vault will accept per `SCALAR_7` of BLND when an
+    /// off-chain harvest settles (admin-set). Gates the Broker path.
+    MinHarvestRate,
+    /// The in-flight `harvest_claim` awaiting settlement by `harvest_reinvest`.
+    PendingHarvest,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -193,6 +200,20 @@ pub fn get_last_rebalance(e: &Env) -> Option<u32> {
     e.storage().instance().get(&DataKey::LastRebalance)
 }
 
+// ── Keeper re-leverage rate-limit ────────────────────────────────────────────
+
+pub fn set_last_releverage(e: &Env, ledger: u32) {
+    e.storage()
+        .instance()
+        .set(&DataKey::LastReleverage, &ledger);
+}
+
+/// `None` when no re-leverage has ever been recorded — same explicit-Option
+/// reasoning as `get_last_rebalance`.
+pub fn get_last_releverage(e: &Env) -> Option<u32> {
+    e.storage().instance().get(&DataKey::LastReleverage)
+}
+
 // ── Swap account (off-chain Broker harvest path) ─────────────────────────────
 
 pub fn set_swap_account(e: &Env, account: &Address) {
@@ -208,6 +229,73 @@ pub fn get_swap_account(e: &Env) -> Address {
 
 pub fn has_swap_account(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::SwapAccount)
+}
+
+// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+
+/// Minimum underlying owed back per `SCALAR_7` (1e7) of BLND handed to the swap
+/// account, in the underlying's own smallest units.
+///
+/// A *floor*, not a price: the admin sets it well under the market BLND rate so
+/// ordinary spread, Broker fee and drift never trip it, and it only binds when
+/// a settlement comes back materially short. Because it is expressed as a ratio
+/// of smallest units it also absorbs any decimal difference between BLND and
+/// the underlying — with both at 7 decimals it is simply the BLND price in
+/// units of the underlying, 1e7-scaled (BLND at $0.02 against USDC → 200_000).
+///
+/// `None` when unset, which disables the Broker path: `harvest_claim` grants no
+/// allowance and the on-chain Soroswap route stays the fallback. Fail-closed is
+/// deliberate — an upgraded-but-unconfigured deployment loses a swap venue
+/// rather than silently keeping an unfloored one.
+pub fn set_min_harvest_rate(e: &Env, rate: i128) {
+    e.storage().instance().set(&DataKey::MinHarvestRate, &rate);
+}
+
+pub fn get_min_harvest_rate(e: &Env) -> Option<i128> {
+    e.storage().instance().get(&DataKey::MinHarvestRate)
+}
+
+/// A `harvest_claim` whose BLND has been approved to the swap account and whose
+/// proceeds have not yet been settled by `harvest_reinvest`.
+///
+/// The record is what ties the two halves of the split harvest together: it
+/// pins how much BLND was pullable, what the underlying balance was before any
+/// of it could come back, and the minimum that must return. Single-use — the
+/// settling call takes it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingHarvest {
+    /// BLND held by the strategy at claim time — the whole approved amount.
+    pub blnd_claimed: i128,
+    /// Underlying held at claim time, the baseline the settlement is measured
+    /// against. Idle underlying is normally ~0 (deposits are levered in the
+    /// same call), so growth over this baseline *is* the harvest proceeds.
+    pub underlying_before: i128,
+    /// Minimum underlying owed back if the whole `blnd_claimed` is pulled.
+    /// Prorated at settlement by how much BLND actually left.
+    pub floor: i128,
+    /// Ledger at which the swap account's allowance expires.
+    pub expiration: u32,
+}
+
+pub fn set_pending_harvest(e: &Env, pending: &PendingHarvest) {
+    e.storage()
+        .instance()
+        .set(&DataKey::PendingHarvest, pending);
+}
+
+pub fn get_pending_harvest(e: &Env) -> Option<PendingHarvest> {
+    e.storage().instance().get(&DataKey::PendingHarvest)
+}
+
+/// Read and clear the pending harvest — settlement consumes it, so a second
+/// `harvest_reinvest` cannot re-settle the same claim.
+pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
+    let pending = get_pending_harvest(e);
+    if pending.is_some() {
+        e.storage().instance().remove(&DataKey::PendingHarvest);
+    }
+    pending
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

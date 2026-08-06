@@ -158,7 +158,7 @@ swaps** with small live amounts and capture evidence:
 - Real funds. Use **small** amounts for the verification trades.
 - Seed liquidity is at risk to impermanent loss vs. the share's NAV drift —
   size deliberately; this is protocol-owned or team liquidity, document it.
-- Log any dev shortcut taken during listing to `SECURITY-TODO.md`.
+- Log any dev shortcut taken during listing to `docs/security-todo.md`.
 
 ---
 

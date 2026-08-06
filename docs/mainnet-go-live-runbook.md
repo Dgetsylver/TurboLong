@@ -7,8 +7,16 @@ keep keys in a secrets manager (`op run`), never inlined or committed.
 Prerequisites you provide:
 - `KEEPER_PUBKEY` — funded mainnet account (XLM for fees) that runs harvest +
   rebalance + pulls BLND for Broker swaps.
-- `ADMIN_PUBKEY` — admin (controls upgrades + `set_share_token`/`set_swap_account`);
-  ideally multisig/hardware.
+- `ADMIN_PUBKEY` — admin (controls upgrades + `set_share_token`/`set_swap_account`/
+  `set_min_harvest_rate`); ideally multisig/hardware.
+- `MIN_HARVEST_RATE_<SYMBOL>` — harvest floor, one per asset: minimum underlying
+  stroops owed per 1e7 BLND stroops. It is the Broker path's settlement floor
+  (audit M-4) and the trait `harvest`'s default slippage bound (audit M-5).
+  Derive from live prices at deploy time —
+  `floor((BLND_price / underlying_price) × 1e7 × (1 − haircut))`, haircut ~50% —
+  and re-check it before deploying. Omit an asset and its Broker path stays
+  closed and its trait `harvest` requires the keeper to pass an explicit
+  `amount_out_min`; it is admin-settable afterwards.
 - `DEPLOY_SECRET_KEY` — deployer secret (pays deploy fees), via `op run`.
 - Sign-off on the per-asset config in `scripts/deploy_strategy_mainnet.ts`.
 
@@ -51,7 +59,11 @@ op run -- env \
 ```
 
 Writes `deployed-vaults.mainnet.json` with `{strategy, token}` per asset. It also
-runs `set_share_token` + `set_swap_account` for each.
+runs `set_share_token` + `set_swap_account` for each, plus
+`set_min_harvest_rate` for every asset with a `MIN_HARVEST_RATE_<SYMBOL>` set —
+watch the log for `⚠ <SYMBOL>: … Broker harvest path left CLOSED`, which means
+that vault harvests via Soroswap only — and only with a keeper-supplied
+`amount_out_min` — until an admin sets the rate.
 
 ## 4. Wire the frontend
 
@@ -85,6 +97,14 @@ Get the DeFindex team to co-sign the deployments.
   — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
   the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
   HF, loops unwound, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  Above `orange_hf` the same pass drives the other direction: it simulates
+  `releverage` and submits only when the contract says it would restore leverage
+  an earlier unwind removed (audit M-3), logged as `action: "releverage"` with the
+  underlying borrowed. The contract owns the target and the ~1-day cooldown, so
+  the keeper needs no extra configuration for it — but note that on a vault whose
+  design HF sits below its `orange_hf`, re-leverage deliberately stops short of
+  `target_loops`; `preflight()` in the deploy script now fails on that
+  configuration.
   For a permanent deployment, use the hardened systemd unit + env template in
   `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the

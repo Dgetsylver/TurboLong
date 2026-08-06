@@ -32,7 +32,9 @@ rollback, comms, and the post-launch watch.
 Follow **`docs/mainnet-go-live-runbook.md`**:
 1. `DRY_RUN=1` deploy to validate args/config.
 2. Deploy 4 strategy + 4 share-token contracts; `set_share_token` +
-   `set_swap_account` each; persist `deployed-vaults.mainnet.json`.
+   `set_swap_account` + `set_min_harvest_rate` each (the last gates the Broker
+   harvest path — see the runbook's `MIN_HARVEST_RATE_*` note); persist
+   `deployed-vaults.mainnet.json`.
 3. Wire `frontend/src/defindex.ts` `MAINNET_VAULTS` from the deploy output (helper
    `scripts/wire_mainnet_vaults.ts`).
 4. Per-asset **deposit → loop → withdraw** with small amounts; capture tx hashes

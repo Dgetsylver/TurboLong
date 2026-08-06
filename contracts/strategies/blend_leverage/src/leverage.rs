@@ -139,15 +139,39 @@ pub fn underlying_to_shares(
 
 // ── Health factor ────────────────────────────────────────────────────────────
 
+/// Combine the strategy's collateral factor with the pool's liability factor into
+/// the single 1e7-scaled factor the HF math uses: `cl = c_factor × l_factor`.
+///
+/// Blend's own health check marks liabilities *up* rather than collateral down:
+/// a position is liquidatable once `B × pool_c_factor < D / l_factor`. Folding
+/// `l_factor` into the collateral side is algebraically identical
+/// (`B·c / (D/l) == B·c·l / D`) and keeps the formula to one division.
+///
+/// `l_factor` is read live from the pool's reserve config rather than stored, so
+/// a Blend governance change to the reserve's risk parameters is picked up on the
+/// next call instead of leaving a stale, optimistic value behind.
+#[inline]
+pub fn effective_c_factor(c_factor: i128, l_factor: i128) -> Result<i128, StrategyError> {
+    c_factor
+        .fixed_mul_floor(l_factor, SCALAR_7)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
 /// Calculate health factor for given b/d tokens.
-/// HF = (b_tokens × b_rate × c_factor) / (d_tokens × d_rate × SCALAR_7)
+/// HF = (b_tokens × b_rate × c_factor × l_factor) / (d_tokens × d_rate × SCALAR_7)
 /// Returns HF in 1e7 scale (1_000_000_0 = 1.0)
+///
+/// Because the strategy's `c_factor` is asserted at construction to be no larger
+/// than the pool's, this HF is a lower bound on Blend's own solvency ratio
+/// `(B × pool_c_factor) / (D / l_factor)`: HF ≥ 1.0 therefore implies the
+/// position is not liquidatable in Blend's terms.
 pub fn compute_health_factor(
     b_tokens: i128,
     d_tokens: i128,
     b_rate: i128,
     d_rate: i128,
     c_factor: i128,
+    l_factor: i128,
 ) -> Result<i128, StrategyError> {
     if d_tokens == 0 {
         return Ok(i128::MAX); // No debt = infinite HF
@@ -157,8 +181,12 @@ pub fn compute_health_factor(
         .fixed_mul_floor(b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
+    // supply_value × c_factor (1e7-scaled), then marked down by l_factor — the
+    // mirror of Blend marking the debt side up by dividing by l_factor.
     let weighted_supply = supply_value
         .checked_mul(c_factor)
+        .ok_or(StrategyError::ArithmeticError)?
+        .fixed_mul_floor(l_factor, SCALAR_7)
         .ok_or(StrategyError::ArithmeticError)?;
 
     let debt_value = d_tokens
@@ -175,6 +203,36 @@ pub fn compute_health_factor(
     weighted_supply
         .checked_div(debt_value)
         .ok_or(StrategyError::DivisionByZero)
+}
+
+/// Reference notional for the design-leverage derivation below. Large enough
+/// that per-layer truncation is immaterial across the full 20-loop range (the
+/// smallest layer at c = 0.5 is still ~9.5e5 stroops), small enough that
+/// `B × c_factor × l_factor` stays many orders inside i128.
+const DESIGN_NOTIONAL: i128 = 1_000_000_000_000; // 1e12
+
+/// The health factor a position freshly levered to `target_loops` sits at — the
+/// vault's *design* leverage expressed as an HF.
+///
+/// Derived by running the same `compute_totals` the deposit path runs, so the
+/// two cannot drift: whatever leverage `deposit` actually builds is the leverage
+/// this returns an HF for.
+///
+/// HF and leverage are the same statement about a position. At `HF = h` the
+/// ratio `B/D` is pinned to `h / cl`, hence `B/E = h / (h − cl)` — so capping
+/// `releverage`'s target HF at this value is exactly capping the position's
+/// leverage at `target_loops`, with no separate ratio check to keep in sync.
+/// Both sides carry the same live `l_factor`, so the resulting leverage ratio
+/// matches the design regardless of what the pool's liability markup is.
+pub fn design_health_factor(
+    c_factor: i128,
+    target_loops: u32,
+    l_factor: i128,
+) -> Result<i128, StrategyError> {
+    let (supply, borrow) = compute_totals(DESIGN_NOTIONAL, c_factor, target_loops);
+    // `compute_totals` returns underlying amounts, so feeding them in at unit
+    // rates (SCALAR_12 = 1.0) treats them as their own token quantities.
+    compute_health_factor(supply, borrow, SCALAR_12, SCALAR_12, c_factor, l_factor)
 }
 
 // ── Safety checks ────────────────────────────────────────────────────────────
@@ -194,6 +252,7 @@ pub fn check_deposit_safety(
     post_d_tokens: i128,
     b_rate: i128,
     d_rate: i128,
+    l_factor: i128,
     config: &Config,
 ) -> Result<(), StrategyError> {
     // 1. Current utilization check
@@ -229,13 +288,16 @@ pub fn check_deposit_safety(
         }
     }
 
-    // 3. Post-loop health factor check
+    // 3. Post-loop health factor check. `min_hf > 1.0` is a Blend-terms floor —
+    // the HF here already carries the pool's `l_factor` — so clearing it means
+    // the post-deposit position is not liquidatable by the pool's own measure.
     let hf = compute_health_factor(
         post_b_tokens,
         post_d_tokens,
         b_rate,
         d_rate,
         config.c_factor,
+        l_factor,
     )?;
     if hf < config.min_hf {
         panic_with_error!(e, StrategyError::ExternalError);
@@ -248,13 +310,14 @@ pub fn check_deposit_safety(
 /// to `target_hf`, and the number of leverage loops that covers it.
 ///
 /// Closed-form derivation (all values in underlying units):
-///   B = b_tokens × b_rate / SCALAR_12   (supply value)
-///   D = d_tokens × d_rate / SCALAR_12   (debt value)
-///   HF = B × c_factor / D               (current, in 1e7)
+///   B  = b_tokens × b_rate / SCALAR_12  (supply value)
+///   D  = d_tokens × d_rate / SCALAR_12  (debt value)
+///   cl = c_factor × l_factor            (effective collateral factor, 1e7)
+///   HF = B × cl / D                     (current, in 1e7)
 ///
 /// After repaying x underlying (and withdrawing x collateral):
-///   (B - x) × c_factor = target_hf × (D - x)
-///   x = (B × c_factor - target_hf × D) / (c_factor - target_hf)
+///   (B - x) × cl = target_hf × (D - x)
+///   x = (B × cl - target_hf × D) / (cl - target_hf)
 ///
 /// Returns `(repay_underlying, loops_needed)`.
 /// Returns `(0, 0)` if already at or above target_hf, or if no debt.
@@ -267,16 +330,24 @@ pub fn compute_partial_unwind(
     b_rate: i128,
     d_rate: i128,
     c_factor: i128,
+    l_factor: i128,
     target_hf: i128,
 ) -> Result<(i128, u32), StrategyError> {
     if d_tokens == 0 {
         return Ok((0, 0));
     }
 
-    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor)?;
+    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     if hf >= target_hf {
         return Ok((0, 0));
     }
+
+    // The HF the closed form solves for carries the pool's liability markup, so
+    // the equation is driven by the effective factor, not the raw c_factor.
+    // `layer_size` below stays on the raw c_factor: it describes the geometry of
+    // the *actual* borrow loop (and of `submit_deleverage`'s layers), which is
+    // unaffected by how the pool weights liabilities.
+    let cl = effective_c_factor(c_factor, l_factor)?;
 
     // Supply and debt values in underlying (SCALAR_12 precision)
     let supply_value = b_tokens
@@ -286,11 +357,11 @@ pub fn compute_partial_unwind(
         .fixed_mul_floor(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    // numerator   = B × c_factor - target_hf × D  (both in 1e7 × underlying)
-    // denominator = c_factor - target_hf           (in 1e7)
+    // numerator   = B × cl - target_hf × D  (both in 1e7 × underlying)
+    // denominator = cl - target_hf           (in 1e7)
     // x = numerator / denominator
     let numerator = supply_value
-        .checked_mul(c_factor)
+        .checked_mul(cl)
         .ok_or(StrategyError::ArithmeticError)?
         .checked_sub(
             target_hf
@@ -299,14 +370,14 @@ pub fn compute_partial_unwind(
         )
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // denominator = c_factor - target_hf; negative when target_hf > c_factor (always true for
-    // a healthy target), so we negate both sides.
+    // denominator = cl - target_hf; negative when target_hf > cl (always true for
+    // a healthy target, since cl <= c_factor < 1.0 < target), so we negate both sides.
     let denom = target_hf
-        .checked_sub(c_factor)
+        .checked_sub(cl)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
     if denom <= 0 {
-        // target_hf <= c_factor: can't reach target by partial unwind alone
+        // target_hf <= cl: can't reach target by partial unwind alone
         return Err(StrategyError::ArithmeticError);
     }
 
@@ -335,4 +406,117 @@ pub fn compute_partial_unwind(
 
     let loops = ((repay_underlying + layer_size - 1) / layer_size) as u32;
     Ok((repay_underlying, loops.clamp(1, 20)))
+}
+
+/// Compute the underlying amount to borrow (and immediately re-supply) to bring
+/// HF *down* to `target_hf` — the mirror image of `compute_partial_unwind`.
+///
+/// Same closed form, opposite sign. Borrowing x and supplying it back raises
+/// both sides of the position by x:
+///   (B + x) × cl = target_hf × (D + x)
+///   x = (B × cl − target_hf × D) / (target_hf − cl)
+///
+/// which is `compute_partial_unwind`'s `x = (B×cl − t×D) / (cl − t)` with the
+/// denominator negated. The shared numerator is the position's distance from the
+/// target: positive when HF sits *above* it (slack to re-lever, this function),
+/// negative when it sits below (debt to repay, that one). Equity `B − D` is
+/// invariant under the operation, so this moves the leverage ratio without
+/// touching the share price.
+///
+/// Returns the borrow amount in underlying, or `0` when HF is already at or
+/// below `target_hf` (nothing to re-lever). Works with `d_tokens == 0`: an
+/// unlevered position — the state a full unwind leaves behind — is precisely
+/// what this restores.
+pub fn compute_releverage(
+    b_tokens: i128,
+    d_tokens: i128,
+    b_rate: i128,
+    d_rate: i128,
+    c_factor: i128,
+    l_factor: i128,
+    target_hf: i128,
+) -> Result<i128, StrategyError> {
+    let cl = effective_c_factor(c_factor, l_factor)?;
+
+    // denominator = target_hf − cl, positive for any sane target (cl <= c_factor
+    // < 1.0 < target). A target at or below cl is unreachable by borrowing: the
+    // position asymptotes to cl as leverage grows without bound.
+    let denom = target_hf
+        .checked_sub(cl)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    if denom <= 0 {
+        return Err(StrategyError::ArithmeticError);
+    }
+
+    let supply_value = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let debt_value = d_tokens
+        .fixed_mul_floor(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    // numerator = B × cl − target_hf × D, positive exactly when HF > target_hf.
+    let numerator = supply_value
+        .checked_mul(cl)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_sub(
+            target_hf
+                .checked_mul(debt_value)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?;
+
+    if numerator <= 0 {
+        return Ok(0);
+    }
+
+    // −1 stroop, the mirror of the +1 in `compute_partial_unwind`: round the
+    // borrow *down* so the post-borrow HF lands at or a hair above the target,
+    // never below it.
+    Ok((numerator
+        .checked_div(denom)
+        .ok_or(StrategyError::DivisionByZero)?
+        - 1)
+    .max(0))
+}
+
+// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+//
+// The Broker harvest leaves the chain between `harvest_claim` and
+// `harvest_reinvest`: BLND is approved out, a swap happens off-chain, underlying
+// comes back. Nothing on-chain can observe the swap, but it *can* observe both
+// ends of it — how much BLND left and how much underlying arrived — and hold the
+// pair to a rate the admin fixed in advance. These two functions are that rate
+// arithmetic; the measurement lives in `harvest_reinvest`.
+//
+// Both round *up*, so rounding always favours the vault.
+
+/// Minimum underlying owed back for `blnd_amount` of BLND at `min_rate`
+/// (underlying smallest-units per `SCALAR_7` BLND smallest-units).
+pub fn harvest_floor(blnd_amount: i128, min_rate: i128) -> Result<i128, StrategyError> {
+    if blnd_amount <= 0 || min_rate <= 0 {
+        return Ok(0);
+    }
+    blnd_amount
+        .fixed_mul_ceil(min_rate, SCALAR_7)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
+/// The share of `floor` owed for the `spent` of `claimed` BLND that actually
+/// left the vault.
+///
+/// The Broker is free to pull less than the whole approval — or nothing at all,
+/// when the keeper claims and then routes through Soroswap instead — and the
+/// floor has to follow the BLND rather than the approval. `spent >= claimed`
+/// (the whole approval taken) owes the full floor.
+pub fn prorate_floor(floor: i128, spent: i128, claimed: i128) -> Result<i128, StrategyError> {
+    if floor <= 0 || spent <= 0 || claimed <= 0 {
+        return Ok(0);
+    }
+    if spent >= claimed {
+        return Ok(floor);
+    }
+    floor
+        .fixed_mul_ceil(spent, claimed)
+        .ok_or(StrategyError::ArithmeticError)
 }

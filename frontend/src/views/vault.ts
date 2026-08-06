@@ -357,7 +357,16 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
   const collateral = ready && stats ? `${fmt(stats.collateralValue)} ${sym}` : "—";
   const debt = ready && stats ? `${fmt(stats.debtValue)} ${sym}` : "—";
   const equity = ready && stats ? `${fmt(stats.totalEquity)} ${sym}` : "—";
-  const loops = ready ? `${vault.targetLoops}×` : "—";
+  // Realized leverage, not the configured loop count. The two diverge: a
+  // rebalance unwinds loops to protect the position and only the keeper's
+  // `releverage` puts them back, so `targetLoops` is where the vault aims, not
+  // where it is. `stats.leverage` is collateral ÷ equity measured from the live
+  // position — the same figure the net APY above is computed from.
+  const targetLoopLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  const leverage =
+    ready && stats
+      ? `${stats.leverage.toFixed(2)}× / ${targetLoopLeverage.toFixed(2)}×`
+      : "—";
 
   const stats4 = el("div", { class: "vault-stats4" }, [
     StatCard({
@@ -382,10 +391,10 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
     }),
     StatCard({
       label: lbl(
-        tt("vault.loops", "Loops"),
-        "How many times collateral was re-supplied and borrowed to build the leverage.",
+        tt("vault.leverage", "Leverage"),
+        "What the vault is actually levered at right now (collateral ÷ equity), against the target its loop configuration aims for. Rebalances lower it to protect the position; the keeper restores it.",
       ),
-      value: loops,
+      value: leverage,
     }),
   ]);
 
@@ -483,7 +492,13 @@ function yourPositionCard(
     const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
     const cAfter = cBefore + amount * targetLeverage;
     const dAfter = dBefore + amount * (targetLeverage - 1);
-    const hfAfter = dAfter > 0 ? (vault.cFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
+    // Same formula the contract uses: the debt side carries the pool's
+    // liability factor (HF = B × c_factor × l_factor / D). Without it the
+    // "after" figure would sit optimistically above the "before" one, which is
+    // read straight from `health_factor()`.
+    const lFactor = stats?.lFactor ?? 1;
+    const hfAfter =
+      dAfter > 0 ? (vault.cFactor * lFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
     const fb = formatHf(hfBefore);
     const fa = formatHf(hfAfter);
     depPreview.replaceChildren(

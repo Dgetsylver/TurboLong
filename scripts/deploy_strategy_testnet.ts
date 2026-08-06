@@ -2,7 +2,8 @@
  * Deploy the Turbolong BlendLeverage vaults to Stellar TESTNET — the full-flow
  * rehearsal for the mainnet D1 deploy. Mirrors deploy_strategy_mainnet.ts so the
  * testnet run exercises the exact same path (install both WASMs → per asset:
- * deploy strategy + deploy vault_share token + set_share_token + set_swap_account)
+ * deploy strategy + deploy vault_share token + set_share_token + set_swap_account
+ * + set_min_harvest_rate)
  * before any real funds are touched on mainnet.
  *
  * The testnet Blend pool exposes 4 reserves: XLM (native), USDC, CETES, TESOURO.
@@ -66,6 +67,7 @@ const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD"; // So
 // (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. Loops/min_hf/
 // orange_hf mirror the mainnet readiness table where the asset matches.
 const REWARD_THRESHOLD = 10_000_000n; // 1 BLND @ 7dp (low, so harvest triggers easily on testnet)
+const MIN_HARVEST_RATE = 1_000n;      // 0.0001 underlying per BLND — nominal, testnet only
 interface AssetCfg {
   symbol: string;
   asset: string;
@@ -74,9 +76,22 @@ interface AssetCfg {
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
 }
+// USDC and CETES mirror the mainnet `orange_hf` change (1.15 → 1.10): their
+// design HF — where a fresh deposit at `target_loops` lands — sits below 1.15
+// once the pool's `l_factor` is folded in, so at 1.15 every deposit would open
+// inside the rebalance band. See the derivation in deploy_strategy_mainnet.ts.
+// TESOURO (testnet-only stand-in) and XLM are left alone: their margin depends
+// on the testnet pool's `l_factor`, which this script does not read. Unlike the
+// mainnet script there is no preflight here to check it — run the mainnet
+// script's `preflight()` reasoning by hand before trusting a testnet rehearsal
+// of these two.
+//
+// The already-deployed testnet vaults in deployed-vaults.testnet.json predate
+// this change and still carry orange_hf 1.15; `orange_hf` is constructor-only,
+// so they keep it until redeployed.
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n },
   { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
   { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
 ];
@@ -198,6 +213,17 @@ async function main() {
 
     await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER)], `${a.symbol} set_swap_account`);
+    // Harvest floor: the Broker settlement floor (audit M-4) and the trait
+    // harvest's default `amount_out_min` (audit M-5). Testnet BLND has no
+    // meaningful price, so this is a nominal non-zero rate that opens both
+    // paths for end-to-end keeper testing; mainnet derives it from live prices
+    // (MIN_HARVEST_RATE_* in deploy_strategy_mainnet.ts).
+    await invoke(
+      strategy,
+      "set_min_harvest_rate",
+      [nativeToScVal(MIN_HARVEST_RATE, { type: "i128" })],
+      `${a.symbol} set_min_harvest_rate`,
+    );
 
     out[a.symbol] = {
       strategy,
