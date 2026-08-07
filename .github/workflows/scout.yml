@@ -1,0 +1,115 @@
+name: Scout
+
+# Soroban-specific static analysis (CoinFabrik Scout) for both contracts.
+#
+# This complements `contracts.yml`'s clippy step rather than duplicating it:
+# Scout's detectors know about Soroban, and several map straight onto rows in
+# docs/threat-model-stride.docx §2 — unprotected-update-current-contract-wasm
+# (Elevation.1), missing-new-admin-auth (Elevation.2), missing-initialization
+# -guard (Elevation.3), unprotected-token-admin-operation (Elevation.4),
+# excessive-token-approval / unrestricted-transfer-from (Tamper.7,
+# Elevation.6), storage-change-events (Repudiate.1), ineffective-extend-ttl
+# (DoS.5, DoS.9), integer-overflow-or-underflow and unsafe-unwrap (Tamper.2).
+# A detector firing where the model has no row is a gap in the model, and
+# belongs in §4's findings log.
+#
+# Installed from crates.io deliberately. At least one dev machine here has a
+# cargo-scout-audit built from a local path in another project, resolving its
+# detectors from a personal fork — so local output is not reproducible and CI
+# is the reference run.
+#
+# NON-BLOCKING for now: `continue-on-error` on the scan step, because the
+# §3.2 backlog is still open and a hard gate would fail every PR on day one.
+# Findings go to the job summary and an artifact. Flip that flag to false once
+# the backlog is clear, or once a baseline is agreed.
+on:
+  pull_request:
+    paths:
+      - "contracts/**"
+      - ".github/workflows/scout.yml"
+  push:
+    branches: [main, dev]
+    paths:
+      - "contracts/**"
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC, same slot as cargo-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: contracts/strategies/blend_leverage
+            name: blend_leverage
+          - crate: contracts/tokens/vault_share
+            name: vault_share
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Scout selects and installs its own nightly for the detectors; stable
+      # is only needed to build the tool itself.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+          cache-bin: true
+
+      # Scout compiles ~45 detectors into dylint libraries on first run. These
+      # are what makes a cold run slow; the drivers are keyed on the toolchain
+      # Scout picks, so a Scout upgrade invalidates them on its own.
+      - name: Cache dylint drivers
+        uses: actions/cache@v4
+        with:
+          path: ~/.dylint_drivers
+          key: dylint-${{ runner.os }}-${{ hashFiles('.github/workflows/scout.yml') }}
+          restore-keys: dylint-${{ runner.os }}-
+
+      - name: Install cargo-scout-audit
+        run: |
+          # No-op when Swatinem's cache-bin restored the binary.
+          command -v cargo-scout-audit >/dev/null \
+            || cargo install cargo-scout-audit --locked
+          cargo-scout-audit scout-audit --version
+
+      - name: Scout ${{ matrix.crate }}
+        id: scan
+        continue-on-error: true # <- set to false to gate PRs on findings
+        run: |
+          cargo scout-audit \
+            --manifest-path ${{ matrix.crate }}/Cargo.toml \
+            --output-format md \
+            --output-path scout-${{ matrix.name }}.md
+
+      - name: Publish findings to the job summary
+        if: always()
+        run: |
+          report="scout-${{ matrix.name }}.md"
+          {
+            echo "## Scout — \`${{ matrix.crate }}\`"
+            echo
+            if [ -s "$report" ]; then
+              cat "$report"
+            else
+              echo "_No report produced._ Scan outcome: \`${{ steps.scan.outcome }}\`."
+              echo "An empty report with a failing outcome means Scout errored"
+              echo "before analysis — check the scan step's log, not the model."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scout-${{ matrix.name }}
+          path: scout-${{ matrix.name }}.md
+          if-no-files-found: warn
