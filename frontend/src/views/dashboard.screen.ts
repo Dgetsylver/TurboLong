@@ -15,6 +15,8 @@ import {
 import { getVaults, fetchVaultStats, fetchUserVaultBalance } from "../defindex";
 import { getState, setState } from "../app/state";
 
+const aprToApy = (apr: number) => (Math.pow(1 + apr / 100 / 365, 365) - 1) * 100;
+
 function legsFromRows(
   rows: ReturnType<typeof aggregatePoolAccount>["rows"],
   priceBySymbol: Map<string, number>,
@@ -69,7 +71,7 @@ export async function loadDashboardData(addr: string): Promise<DashboardData> {
           name: vault.name,
           equityUsd: userPos.underlyingValue,
           share,
-          netApy: stats?.netApy ?? 0,
+          netApy: stats && stats.netApy != null ? aprToApy(stats.netApy) : 0,
           strategyHealth: stats?.healthFactor ?? 0,
         });
       } catch (e) {

@@ -70,8 +70,8 @@ import { toast, txShow, txStep, txHide } from "../app/chrome";
 
 const fmt = (n: number, d = 2) => n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
 const money = (n: number) => "$" + fmt(n, 2);
-/** APR (%) → compounded APY (%). Mirrors old-main's aprToApy exactly. */
-const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+/** Daily-compounded APR (%) → APY (%). */
+const aprToApy = (apr: number) => (Math.pow(1 + apr / 100 / 365, 365) - 1) * 100;
 
 const MIN_HF_NORMAL = 1.01;
 const MIN_HF_EXPERT = 1.00001;

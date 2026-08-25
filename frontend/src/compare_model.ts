@@ -15,8 +15,8 @@ import type { SnapshotPoint } from "./history";
 
 // ── APR → APY ────────────────────────────────────────────────────────────────
 
-/** Continuous-compounding APR → APY, in %. Matches the Trade form's convention. */
-export const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+/** Daily-compounding APR → APY, in percent. */
+export const aprToApy = (apr: number) => (Math.pow(1 + apr / 100 / 365, 365) - 1) * 100;
 
 // ── History windows ──────────────────────────────────────────────────────────
 
