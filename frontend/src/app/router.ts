@@ -1,7 +1,6 @@
 /**
  * View router. Owns the #app-main mount; on state.view change it builds the
- * matching screen. Screens are async builders so they can fetch on mount.
- * P2 ships placeholder screens — replaced by the real ones in P3+.
+ * matching typed screen. Screens own their async data loading on mount.
  */
 import { getState, subscribe, type View } from "./state";
 import { renderScreen } from "./screens";

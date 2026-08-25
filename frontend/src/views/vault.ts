@@ -34,8 +34,8 @@ import { t } from "../i18n";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** APR (percent) → compounded APY (percent). Mirrors old-main's aprToApy. */
-const aprToApy = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+/** Daily-compounded APR (%) → APY (%). */
+const aprToApy = (apr: number) => (Math.pow(1 + apr / 100 / 365, 365) - 1) * 100;
 
 /** Translate, but fall back to the literal when the key round-trips unchanged. */
 const tt = (key: string, fallback: string) => {

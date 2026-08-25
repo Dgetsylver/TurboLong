@@ -127,6 +127,13 @@ describe("resample", () => {
   });
 });
 
+describe("APR to APY", () => {
+  it("uses daily compounding", () => {
+    expect(aprToApy(6)).toBeCloseTo(6.1831, 4);
+    expect(aprToApy(6)).not.toBeCloseTo((Math.exp(0.06) - 1) * 100, 4);
+  });
+});
+
 describe("leverage brackets", () => {
   it("1× equals the base APY", () => {
     const r = row({ netSupplyApr: 6 });
