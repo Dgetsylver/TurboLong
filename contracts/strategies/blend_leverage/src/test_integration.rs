@@ -855,6 +855,51 @@ impl MockSoroswapRouter {
     }
 }
 
+// ── Malicious Soroswap router ────────────────────────────────────────────────
+
+#[contracttype]
+enum EvilRouterKey {
+    Thief,
+}
+
+/// A router that behaves the way a compromised one would: `router_pair_for`
+/// names an address of its own choosing rather than a real pair, the swap
+/// spends the transfer the strategy pre-authorized to send the input tokens
+/// there, and it then reports a swap that never happened. Nothing comes back.
+///
+/// This is the shape of the "router-controlled pair address" finding, and the
+/// strategy's defence is not to second-guess the pair but to measure what it
+/// actually received.
+#[contract]
+pub struct EvilSoroswapRouter;
+
+#[contractimpl]
+impl EvilSoroswapRouter {
+    pub fn __constructor(e: Env, thief: Address) {
+        e.storage().instance().set(&EvilRouterKey::Thief, &thief);
+    }
+
+    pub fn router_pair_for(e: Env, _token_a: Address, _token_b: Address) -> Address {
+        e.storage().instance().get(&EvilRouterKey::Thief).unwrap()
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        e: Env,
+        amount_in: i128,
+        amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> Vec<i128> {
+        let thief: Address = e.storage().instance().get(&EvilRouterKey::Thief).unwrap();
+        // Exactly the transfer the strategy authorized — to something that is
+        // not a pair.
+        TokenClient::new(&e, &path.get(0).unwrap()).transfer(&to, &thief, &amount_in);
+        // Claim the swap cleared the floor, and pay nothing for it.
+        vec![&e, amount_in, amount_out_min]
+    }
+}
+
 /// Register the real strategy via its constructor against the Blend fixture.
 fn register_real_strategy(
     e: &Env,
@@ -3031,6 +3076,66 @@ fn setup_trait_harvest<'a>(
         MockSoroswapRouterClient::new(e, &router),
         keeper,
     )
+}
+
+#[test]
+fn test_malicious_router_cannot_drain_the_claimed_blnd() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+
+    // The router is the strategy's own configured one — the case where it is
+    // malicious from the start, or has been upgraded out from under the vault.
+    let thief = Address::generate(&e);
+    let router = e.register(EvilSoroswapRouter, (thief.clone(),));
+    let strategy =
+        register_real_strategy_with_loops_and_router(&e, &pool_addr, &token, &blnd, 3, &router);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    StellarAssetClient::new(&e, &blnd)
+        .mock_all_auths()
+        .mint(&strategy, &1_000_0000000);
+
+    let keeper = sclient.get_keeper();
+
+    // A properly floored harvest — the keeper does everything right. The router
+    // takes the BLND to an address it made up and reports a swap at exactly the
+    // floor. The strategy measures its own balance instead of believing it.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &Some(min_out_data(&e, 40_0000000))),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
+        "a router that reports proceeds it never delivered must not settle a harvest"
+    );
+
+    // The revert took the authorized transfer with it.
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&strategy),
+        1_000_0000000,
+        "the BLND is still in the strategy"
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&thief),
+        0,
+        "and none of it reached the address the router named as the pair"
+    );
+
+    // Same answer on the explicit Soroswap route.
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1_000_0000000, &true, &40_0000000),
+        Err(Ok(StrategyError::UnderlyingAmountBelowMin))
+    );
+    assert_eq!(
+        TokenClient::new(&e, &blnd).balance(&thief),
+        0,
+        "neither route hands the BLND over on the router's word"
+    );
 }
 
 #[test]

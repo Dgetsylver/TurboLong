@@ -12,6 +12,21 @@ use crate::storage::Config;
 /// along a given path. Handles authorization and contract invocations.
 ///
 /// Copied from DeFindex blend_strategy/soroswap.rs with minor adaptations.
+///
+/// **Trust boundary.** `config.router` is a fully trusted dependency: it is
+/// fixed by the constructor and there is no setter, so it can only change by an
+/// admin wasm upgrade (which is unbounded anyway). The pair address is whatever
+/// `router_pair_for` returns, and the pre-authorization below lets the router
+/// move exactly `amount_in` of `path[0]` to it — no more, no deeper (empty
+/// `sub_invocations`), and only within this invocation.
+///
+/// Validating the returned pair here would buy little: a router able to name an
+/// arbitrary address can equally name a contract that answers `token_0`/
+/// `token_1` correctly. So the guarantee is placed on the *outcome* instead —
+/// `perform_reinvest` measures the underlying the strategy actually received
+/// and reverts unless it clears `amount_out_min`. A router that takes the
+/// authorized transfer without delivering gets nothing, because the transfer
+/// unwinds with the rest of the call.
 pub fn internal_swap_exact_tokens_for_tokens(
     e: &Env,
     amount_in: &i128,

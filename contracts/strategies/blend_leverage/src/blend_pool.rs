@@ -545,8 +545,14 @@ pub fn perform_reinvest(
         .checked_add(1)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // Swap BLND → underlying asset
-    let swapped_amounts = internal_swap_exact_tokens_for_tokens(
+    // Baseline taken before the router is invoked. What the swap delivered is
+    // measured here, against our own balance, rather than read out of the value
+    // the router chooses to return — see the trust note in `soroswap.rs`.
+    let asset_client = TokenClient::new(e, &config.asset);
+    let underlying_before = asset_client.balance(&e.current_contract_address());
+
+    // Swap BLND → underlying asset. The router's reported amounts are ignored.
+    internal_swap_exact_tokens_for_tokens(
         e,
         &blnd_balance,
         &amount_out_min,
@@ -556,12 +562,21 @@ pub fn perform_reinvest(
         config,
     )?;
 
-    let amount_out: i128 = swapped_amounts
-        .get(1)
-        .ok_or(StrategyError::InternalSwapError)?;
+    let amount_out = asset_client
+        .balance(&e.current_contract_address())
+        .checked_sub(underlying_before)
+        .ok_or(StrategyError::UnderflowOverflow)?;
 
-    if amount_out <= 0 {
-        return Ok((0, 0, 0));
+    // The floor is enforced on the measured delta, not on the router's word.
+    // `amount_out_min` is handed to the router as well, but a router that
+    // ignores it — or that spends the pre-authorized BLND transfer without
+    // paying for it, at whatever address `router_pair_for` named — fails here
+    // instead, reverting the whole harvest with the BLND still in the contract.
+    // Every caller that reaches a swap supplies a positive floor (the trait
+    // `harvest` refuses an unfloored one, `harvest_reinvest` requires
+    // `amount_out_min > 0`), so this is a live check rather than a formality.
+    if amount_out <= 0 || amount_out < amount_out_min {
+        return Err(StrategyError::UnderlyingAmountBelowMin);
     }
 
     // Re-leverage the swapped proceeds
