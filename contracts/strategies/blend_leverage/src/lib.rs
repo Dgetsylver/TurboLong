@@ -22,7 +22,7 @@ mod test_integration;
 mod test_leverage;
 
 use admin_sep::{Administratable, AdministratableExtension, Upgradable};
-use constants::{SCALAR_12, SCALAR_7};
+use constants::{MAX_LOOPS, SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
     check_min_health_factor, check_pool_utilization, compute_health_factor, compute_partial_unwind,
@@ -144,7 +144,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             "pool l_factor must be in (0, 1.0]"
         );
         assert!(
-            (1..=20).contains(&target_loops),
+            (1..=MAX_LOOPS).contains(&target_loops),
             "target_loops must be in [1, 20]"
         );
         assert!(min_hf > SCALAR_7, "min_hf must be > 1.0");
@@ -360,8 +360,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Calculate shares to burn + the intended proportional b/d tokens to
         // unwind. This does NOT persist the position (see `commit_withdraw`).
-        let (shares_to_burn, b_to_remove, d_to_remove, _preview) =
-            reserves::withdraw(&e, user_shares, amount, &reserves)?;
+        let (shares_to_burn, b_to_remove, d_to_remove) =
+            reserves::withdraw(user_shares, amount, &reserves)?;
 
         // Burn the caller's shares (minter burn — from already authorized above).
         token.burn_by_minter(&from, &shares_to_burn);

@@ -8,11 +8,10 @@ pub const SCALAR_12: i128 = 1_000_000_000_000;
 /// Above this, d-tokens become illiquid — liquidators can't redeem them.
 pub const MAX_SAFE_UTILIZATION: i128 = 9_500_000; // 0.95 in 1e7
 
-/// Maximum allowed borrow-supply APR spread (percentage points × 1e7).
-/// Abnormally high spreads may indicate rate manipulation.
-/// Reserved for a future rate-spread guard alongside the deposit safety checks.
-#[allow(dead_code)]
-pub const MAX_RATE_SPREAD: i128 = 15_000_000; // 15% in 1e7
+/// Deepest leverage loop a strategy can be configured with (`target_loops`).
+/// The deposit is one supply + one borrow at any depth; this bounds the series
+/// `compute_totals` sums.
+pub const MAX_LOOPS: u32 = 20;
 
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
@@ -58,8 +57,7 @@ pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
 ///
 /// 0.01 buys roughly 2.5–5 months of drift at a 2–4 point borrow/supply spread
 /// (the decay estimate under `RELEVERAGE_HF_BUFFER`) for about 3% of leverage at
-/// c = 0.90 — well under the up-to-a-layer overshoot the layered unwind used to
-/// leave. It must stay below `2 × RELEVERAGE_HF_BUFFER`: `releverage` only acts
+/// c = 0.90. It must stay below `2 × RELEVERAGE_HF_BUFFER`: `releverage` only acts
 /// once HF clears `orange_hf` by that much, so a narrower band can never hand a
 /// freshly rebalanced position straight back to it.
 pub const REBALANCE_HF_BUFFER: i128 = 100_000; // 0.01 in 1e7

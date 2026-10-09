@@ -1,11 +1,7 @@
 use blend_contract_sdk::pool::{Client as BlendPoolClient, Request};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    token::TokenClient,
-    vec, Address, Env, IntoVal, Symbol, Vec,
-};
+use soroban_sdk::{token::TokenClient, vec, Address, Env, Vec};
 
 use crate::{
     constants::{
@@ -38,30 +34,13 @@ use crate::{
 //
 // Blend also rejects any request that mints or burns zero b/d-tokens, so a leg
 // that would be zero is left out rather than sent.
-
-/// Approve the pool to pull up to `amount` of the underlying for the submit that
-/// immediately follows (expires next ledger).
-///
-/// Netting means the pool pulls only what the strategy owes on balance — the
-/// deposit for a lever-in, and nothing for the other submits, whose transfers
-/// net to zero or in the strategy's favour — so this bounds what can move rather
-/// than predicting it.
-fn approve_pool(e: &Env, config: &Config, amount: i128) {
-    let strategy = e.current_contract_address();
-    let expiration = e.ledger().sequence() + 1;
-    e.authorize_as_current_contract(vec![
-        e,
-        InvokerContractAuthEntry::Contract(SubContractInvocation {
-            context: ContractContext {
-                contract: config.asset.clone(),
-                fn_name: Symbol::new(e, "approve"),
-                args: (strategy.clone(), config.pool.clone(), amount, expiration).into_val(e),
-            },
-            sub_invocations: vec![e],
-        }),
-    ]);
-    TokenClient::new(e, &config.asset).approve(&strategy, &config.pool, &amount, &expiration);
-}
+//
+// Netting is also why only the lever-in grants the pool an allowance: it is the
+// one submit where the strategy owes on balance — exactly the deposit. The
+// others net to zero (deleverage, re-leverage) or in the strategy's favour
+// (unwind), so the pool pulls nothing, and a submit that did owe would revert
+// for want of an allowance rather than draw on idle underlying the strategy
+// holds (e.g. Broker proceeds awaiting `harvest_reinvest`).
 
 /// Lever `initial_amount` of the underlying into the position as one
 /// `[supply_collateral S, borrow D]` submit, `(S, D)` being the totals of the
@@ -83,7 +62,7 @@ pub fn submit_leverage_loop(
     let (pre_b, pre_d) = get_strategy_positions(e, config);
 
     let (total_supply, total_borrow) =
-        compute_totals(initial_amount, config.c_factor, config.target_loops);
+        compute_totals(initial_amount, config.c_factor, config.target_loops)?;
 
     // Supply first, so the borrow is checked against the final state. A dust
     // amount whose borrow floors to zero is supplied without one.
@@ -103,7 +82,14 @@ pub fn submit_leverage_loop(
         });
     }
 
-    approve_pool(e, config, total_supply);
+    // The pool nets the two legs and pulls only `S − D = initial_amount`, so that
+    // is all it may pull. The allowance expires next ledger.
+    TokenClient::new(e, &config.asset).approve(
+        &strategy,
+        &config.pool,
+        &initial_amount,
+        &(e.ledger().sequence() + 1),
+    );
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     let (new_b, new_d) = get_strategy_positions(e, config);
@@ -180,9 +166,6 @@ pub fn submit_unwind(
         request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
     });
 
-    if d_underlying > 0 {
-        approve_pool(e, config, d_underlying);
-    }
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     // Transfer equity to `to`
@@ -192,17 +175,6 @@ pub fn submit_unwind(
         .ok_or(StrategyError::UnderflowOverflow)?;
 
     if equity > 0 && to != &strategy {
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: config.asset.clone(),
-                    fn_name: Symbol::new(e, "transfer"),
-                    args: (strategy.clone(), to.clone(), equity).into_val(e),
-                },
-                sub_invocations: vec![e],
-            }),
-        ]);
         token_client.transfer(&strategy, to, &equity);
     }
 
@@ -223,13 +195,11 @@ pub fn submit_unwind(
 /// amount of collateral, as one `[repay, withdraw_collateral]` submit. Equity
 /// (`B − D`) does not move; only the leverage ratio falls.
 ///
-/// The amount is `compute_partial_unwind`'s, sized for a target HF, so the
-/// position lands on that target instead of up to a whole layer past it. Repay
-/// first: the withdraw is then checked against the final state, whose
-/// utilization is no higher than where the pool started (bar a stroop or two of
-/// rounding), so the unwind goes through as long as the pool has a few stroops
-/// free — a withdraw-first layer needed a whole layer of free liquidity. The two
-/// transfers net to zero.
+/// The amount is `compute_partial_unwind`'s, sized so the position lands on a
+/// target HF. Repay first: the withdraw is then checked against the final
+/// state, whose utilization is no higher than where the pool started (bar a
+/// stroop or two of rounding), so the unwind goes through as long as the pool
+/// has a few stroops free. The two transfers net to zero.
 ///
 /// Returns (b_tokens_removed, d_tokens_removed).
 pub fn submit_deleverage(
@@ -259,14 +229,17 @@ pub fn submit_deleverage(
         },
     ];
 
-    approve_pool(e, config, repay_underlying);
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     let (new_b, new_d) = get_strategy_positions(e, config);
 
     Ok((
-        pre_b.checked_sub(new_b).unwrap_or(0),
-        pre_d.checked_sub(new_d).unwrap_or(0),
+        pre_b
+            .checked_sub(new_b)
+            .ok_or(StrategyError::UnderflowOverflow)?,
+        pre_d
+            .checked_sub(new_d)
+            .ok_or(StrategyError::UnderflowOverflow)?,
     ))
 }
 
@@ -308,7 +281,6 @@ pub fn submit_releverage(
         },
     ];
 
-    approve_pool(e, config, amount);
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     let (new_b, new_d) = get_strategy_positions(e, config);

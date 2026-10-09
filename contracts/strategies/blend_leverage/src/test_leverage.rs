@@ -77,7 +77,7 @@ fn test_totals_match_loop_pairs() {
     let c = 9_500_000_i128;
     let n = 8;
 
-    let (total_supply, total_borrow) = compute_totals(initial, c, n);
+    let (total_supply, total_borrow) = compute_totals(initial, c, n).unwrap();
 
     // Verify against manual sum of loop pairs
     let (supplies, borrows, count) = compute_loop_pairs(initial, c, n);
@@ -95,7 +95,7 @@ fn test_totals_match_loop_pairs() {
 fn test_totals_leverage_ratio() {
     // With c=0.95 and 8 loops, leverage ≈ (1 - 0.95^9) / (1 - 0.95) ≈ 8.3
     let initial = 1_000_0000000_i128;
-    let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, 8);
+    let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, 8).unwrap();
 
     let leverage_x100 = total_supply * 100 / initial;
     // Leverage should be between 7 and 9
@@ -115,7 +115,7 @@ fn test_totals_net_equals_initial() {
     // For any number of loops, total_supply - total_borrow = initial deposit
     for n in 0..15 {
         let initial = 1_000_0000000_i128;
-        let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, n);
+        let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, n).unwrap();
         assert_eq!(
             total_supply - total_borrow,
             initial,
@@ -606,7 +606,7 @@ fn test_leverage_table_matches_simulator() {
     let c = 9_500_000_i128;
 
     for n in 0..=13 {
-        let (total_supply, _) = compute_totals(initial, c, n);
+        let (total_supply, _) = compute_totals(initial, c, n).unwrap();
         let our_lev_x1000 = total_supply * 1000 / initial;
 
         // Compute expected via float formula
@@ -720,12 +720,15 @@ fn test_withdraw_full() {
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // Withdraw all equity (1000)
-        let (burned, b_remove, d_remove, updated) =
-            reserves::withdraw(e, user_shares, 1_000_0000000, &reserves_state).unwrap();
+        let (burned, b_remove, d_remove) =
+            reserves::withdraw(user_shares, 1_000_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 0);
         assert_eq!(b_remove, 8_000_0000000);
         assert_eq!(d_remove, 7_000_0000000);
+
+        let updated =
+            reserves::commit_withdraw(e, burned, b_remove, d_remove, &reserves_state).unwrap();
         assert_eq!(updated.total_shares, 0);
         assert_eq!(updated.total_b_tokens, 0);
         assert_eq!(updated.total_d_tokens, 0);
@@ -741,12 +744,15 @@ fn test_withdraw_partial() {
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // Withdraw half equity (500)
-        let (burned, b_remove, d_remove, updated) =
-            reserves::withdraw(e, user_shares, 500_0000000, &reserves_state).unwrap();
+        let (burned, b_remove, d_remove) =
+            reserves::withdraw(user_shares, 500_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 500_0000000);
         assert_eq!(b_remove, 4_000_0000000); // half of 8000
         assert_eq!(d_remove, 3_500_0000000); // half of 7000
+
+        let updated =
+            reserves::commit_withdraw(e, burned, b_remove, d_remove, &reserves_state).unwrap();
         assert_eq!(updated.total_shares, 500_0000000);
     });
 }
@@ -760,7 +766,7 @@ fn test_withdraw_insufficient_balance() {
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // Try to withdraw more than the user's shares cover
-        let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
+        let result = reserves::withdraw(user_shares, 600_0000000, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -774,7 +780,7 @@ fn test_withdraw_refused_when_underwater() {
         let reserves_state = make_reserves(900_0000000, 1_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
 
-        let result = reserves::withdraw(e, 1_000_0000000, 1_0000000, &reserves_state);
+        let result = reserves::withdraw(1_000_0000000, 1_0000000, &reserves_state);
         assert!(matches!(
             result,
             Err(crate::StrategyError::InsufficientBalance)
@@ -1349,7 +1355,7 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
             for loops in [3_u32, 5, 8, 12] {
                 for deposit in [1_000_000_i128, 3_3333333, 1_000_0000000, 1_000_000_0000000] {
                     // The position a deposit at these rates builds, in tokens.
-                    let (supply, borrow) = compute_totals(deposit, c, loops);
+                    let (supply, borrow) = compute_totals(deposit, c, loops).unwrap();
                     let b = supply.fixed_div_floor(b_rate, SCALAR_12).unwrap();
                     let d = borrow.fixed_div_ceil(d_rate, SCALAR_12).unwrap();
                     let hf0 = compute_health_factor(b, d, b_rate, d_rate, c, l).unwrap();
@@ -1426,7 +1432,7 @@ fn test_design_hf_is_the_leverage_the_deposit_loop_builds() {
         for l in [SCALAR_7, 9_500_000_i128] {
             let cl = c * l / SCALAR_7;
             for loops in 1..=10u32 {
-                let (b, d) = compute_totals(notional, c, loops);
+                let (b, d) = compute_totals(notional, c, loops).unwrap();
                 let equity = b - d;
 
                 let h = design_health_factor(c, loops, l).unwrap();

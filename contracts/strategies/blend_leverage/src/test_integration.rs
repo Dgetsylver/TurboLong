@@ -544,8 +544,8 @@ fn test_deposit_withdraw_full_cycle() {
         );
 
         // === WITHDRAW === (user_shares read from the token in production)
-        let (burned, b_remove, d_remove, _) =
-            reserves::withdraw(&e, vault_minted, balance, &updated).unwrap();
+        let (burned, b_remove, d_remove) =
+            reserves::withdraw(vault_minted, balance, &updated).unwrap();
         assert_eq!(vault_minted - burned, 0, "All shares should be burned");
 
         // Verify b/d amounts are proportional
@@ -1626,7 +1626,7 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
     // The leverage ratio matches what a fresh deposit of the same equity would
     // have built — the HF cap and the loop geometry agree.
     let (design_supply, design_borrow) =
-        crate::leverage::compute_totals(1_000_000_000_000_i128, c_factor, target_loops);
+        crate::leverage::compute_totals(1_000_000_000_000_i128, c_factor, target_loops).unwrap();
     let design_lev = design_supply * SCALAR_7 / (design_supply - design_borrow);
     let lev = (b2 * b_rate / SCALAR_12) * SCALAR_7 / equity2;
     assert!(
@@ -2102,8 +2102,8 @@ fn test_unwind_pays_correct_equity_after_rates_accrue() {
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
         let equity = crate::leverage::compute_equity(&reserves).unwrap();
         let requested = equity / 4;
-        let (_burned, b_rm, d_rm, _updated) =
-            reserves::withdraw(&e, reserves.total_shares, requested, &reserves).unwrap();
+        let (_burned, b_rm, d_rm) =
+            reserves::withdraw(reserves.total_shares, requested, &reserves).unwrap();
         (requested, b_rm, d_rm)
     });
 
@@ -3272,7 +3272,7 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
     // … against a deposit whose borrow is ~24,390.
     let deposit = 10_000_0000000_i128;
     let (_, deposit_borrow) =
-        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops);
+        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops).unwrap();
     assert!(
         deposit_borrow > supply - borrow,
         "fixture: the deposit's borrow must exceed the free liquidity: {} vs {}",
@@ -3461,7 +3461,7 @@ fn test_deposit_refused_while_the_pool_is_above_the_cap() {
     // A deposit this large would itself bring utilization back to ~80%.
     let deposit = 50_000_0000000_i128;
     let (add_supply, add_borrow) =
-        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops);
+        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops).unwrap();
     assert!(
         (borrow + add_borrow) * SCALAR_7 / (supply + add_supply)
             <= crate::constants::MAX_SAFE_UTILIZATION,

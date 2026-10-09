@@ -6,8 +6,9 @@
  * position needs attention:
  *
  *   HF below the on-chain `orange_hf` → `rebalance_keeper(caller)`, the
- *     keeper-authorised, rate-limited entrypoint that unwinds the minimal loops
- *     to restore HF and emits a `rebalance` event with before/after HF and loops.
+ *     keeper-authorised, rate-limited entrypoint that repays just enough debt
+ *     to restore HF and emits a `rebalance` event with before/after HF and the
+ *     underlying repaid.
  *
  *   HF above it → `releverage(caller)`, which borrows against collateral the
  *     vault already holds to restore the leverage an earlier unwind removed.
@@ -206,8 +207,8 @@ async function simulateKeeperCall(
 
 /**
  * Sign + submit a keeper entrypoint; returns (txHash, returnValue, status).
- * The return value is loops unwound for `rebalance_keeper`, underlying borrowed
- * for `releverage`.
+ * The return value is underlying repaid for `rebalance_keeper`, underlying
+ * borrowed for `releverage`.
  */
 async function executeKeeperCall(
   v: Vault,
@@ -283,7 +284,7 @@ async function processVault(v: Vault): Promise<void> {
       action: "rebalance",
       before_hf: state.hf,
       after_hf: afterHf,
-      loops_unwound: res.result,
+      repaid: res.result,
       tx: res.tx,
       status: res.status,
     });
