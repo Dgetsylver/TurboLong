@@ -51,7 +51,7 @@
  *   KEEPER_INGEST_KEY       bearer token for POST /swap-routes
  *   KEEPER_SECRET           S... keeper key (only for --execute)
  *   VAULTS_JSON             JSON array of {symbol, strategyId, underlyingClassic, underlyingSoroban}
- *   QUOTE_AMOUNT_BLND       nominal BLND amount (stroops) to quote in dry-run (default 100e7)
+ *   QUOTE_AMOUNT_BLND       nominal BLND amount (stroops) to quote in dry-run (default 1000e7)
  *   HARVEST_MIN_BLND        min claimed BLND (stroops) to bother swapping (default 1e7 = 1 BLND)
  *   STELLAR_BROKER_PARTNER_KEY  Broker partner key for the trading session
  *   BROKER_TRADE_TIMEOUT_S  max seconds to wait for a Broker trade (default 180)
@@ -95,7 +95,9 @@ const KEEPER_SECRET = process.env.KEEPER_SECRET;
 const EXECUTE = process.argv.includes("--execute");
 const LOOP = process.argv.includes("--loop");
 const INTERVAL_S = Number(process.env.INTERVAL_S ?? "3600");
-const QUOTE_AMOUNT_BLND = BigInt(process.env.QUOTE_AMOUNT_BLND ?? "1000000000"); // 100 BLND @ 7dp
+// 1000 BLND @ 7dp: the Broker refuses quotes under $1 equivalent (~165 BLND at
+// $0.006), so anything smaller makes every dry-run look Soroswap-only.
+const QUOTE_AMOUNT_BLND = BigInt(process.env.QUOTE_AMOUNT_BLND ?? "10000000000");
 const HARVEST_MIN_BLND = BigInt(process.env.HARVEST_MIN_BLND ?? "10000000"); // 1 BLND @ 7dp
 const BROKER_PARTNER_KEY = process.env.STELLAR_BROKER_PARTNER_KEY;
 const BROKER_TRADE_TIMEOUT_S = Number(process.env.BROKER_TRADE_TIMEOUT_S ?? "180");
@@ -114,14 +116,16 @@ interface Vault {
   underlyingSoroban: string;     // Soroban (SAC) contract address
 }
 
-// Defaults cover the Broker-quotable underlyings; CETES/USTRY have no classic
-// Broker issuer → Soroswap-only (broker_quote logged as null). Override via
-// VAULTS_JSON with the real strategy IDs once the mainnet vaults are deployed.
+// Defaults cover every underlying the mainnet vaults use. All four are classic
+// assets, so the Broker can route them; CETES and USTRY have no direct BLND
+// pair on Soroswap, which makes the Broker their only working route (a harvest
+// under the Broker's $1 minimum stays in the vault for the next pass). Override
+// via VAULTS_JSON with the real strategy IDs once the mainnet vaults are deployed.
 const DEFAULT_VAULTS: Vault[] = [
   { symbol: "USDC", strategyId: "QUOTE_ONLY", underlyingClassic: "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN", underlyingSoroban: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" },
   { symbol: "XLM", strategyId: "QUOTE_ONLY", underlyingClassic: "XLM", underlyingSoroban: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA" },
-  { symbol: "CETES", strategyId: "QUOTE_ONLY", underlyingClassic: null, underlyingSoroban: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV" },
-  { symbol: "USTRY", strategyId: "QUOTE_ONLY", underlyingClassic: null, underlyingSoroban: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR" },
+  { symbol: "CETES", strategyId: "QUOTE_ONLY", underlyingClassic: "CETES-GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC", underlyingSoroban: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV" },
+  { symbol: "USTRY", strategyId: "QUOTE_ONLY", underlyingClassic: "USTRY-GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC", underlyingSoroban: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR" },
 ];
 
 const VAULTS: Vault[] = process.env.VAULTS_JSON ? JSON.parse(process.env.VAULTS_JSON) : DEFAULT_VAULTS;
