@@ -932,6 +932,7 @@ impl MockShareToken {
 enum RouterKey {
     Rate,
     LastMin,
+    LastPath,
 }
 
 /// Minimal stand-in for the Soroswap router, enough to exercise the strategy's
@@ -966,6 +967,7 @@ impl MockSoroswapRouter {
         e.storage()
             .instance()
             .set(&RouterKey::LastMin, &amount_out_min);
+        e.storage().instance().set(&RouterKey::LastPath, &path);
         let rate: i128 = e.storage().instance().get(&RouterKey::Rate).unwrap();
         let amount_out = amount_in * rate / SCALAR_7;
         if amount_out < amount_out_min {
@@ -973,8 +975,20 @@ impl MockSoroswapRouter {
         }
         let pair = e.current_contract_address();
         TokenClient::new(&e, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
-        TokenClient::new(&e, &path.get(1).unwrap()).transfer(&pair, &to, &amount_out);
-        vec![&e, amount_in, amount_out]
+        TokenClient::new(&e, &path.last().unwrap()).transfer(&pair, &to, &amount_out);
+        // One amount per token on the path, as the real router returns; the
+        // intermediate hops are not modelled.
+        let mut amounts = vec![&e, amount_in];
+        for _ in 2..path.len() {
+            amounts.push_back(0);
+        }
+        amounts.push_back(amount_out);
+        amounts
+    }
+
+    /// The path of the most recent swap.
+    pub fn last_path(e: Env) -> Vec<Address> {
+        e.storage().instance().get(&RouterKey::LastPath).unwrap()
     }
 
     /// The `amount_out_min` of the most recent swap.
@@ -3027,7 +3041,7 @@ fn test_lever_in_lands_on_target_hf_after_rates_drift() {
     let deposit = 1_234_5678901_i128;
     StellarAssetClient::new(&e, &token).mint(&strategy, &deposit);
     let (b, d) = e.as_contract(&strategy, || {
-        blend_pool::submit_lever_in(&e, deposit, &config).unwrap()
+        blend_pool::submit_lever_in(&e, deposit, &config, false).unwrap()
     });
 
     let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
@@ -3489,22 +3503,74 @@ fn test_partial_unwind_floors_the_keeper_target_at_the_rebalance_target() {
     );
 }
 
+// The Soroswap route of `harvest_reinvest` runs under the same floor as the
+// trait `harvest` (finding 1). With neither the keeper's `amount_out_min` nor the
+// admin's rate there is no floor, and the swap is refused rather than run
+// unprotected.
 #[test]
-fn test_harvest_reinvest_soroswap_requires_min_out() {
+fn test_soroswap_reinvest_without_any_floor_is_refused() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
-    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, _router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
 
-    // via_soroswap with amount_out_min = 0 must be rejected (mandatory slippage).
-    assert!(
-        sclient
-            .try_harvest_reinvest(&keeper, &1_000, &true, &0)
-            .is_err(),
-        "soroswap path requires non-zero amount_out_min"
+    match sclient.try_harvest_reinvest(&keeper, &1, &true, &0) {
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed)) => {}
+        other => std::panic!("expected OnlyPositiveAmountAllowed, got {:?}", other),
+    }
+}
+
+// The gap finding 1 named: with no claim pending (a Broker partial fill already
+// settled it, or a vault without a swap account), the Soroswap route used to be
+// held only to the keeper's own `amount_out_min`. It now gets the admin's floor
+// whenever that is the stricter one — a keeper passing 1 cannot sell for 1.
+#[test]
+fn test_soroswap_reinvest_without_a_claim_is_held_to_the_admin_floor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (_strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // 0.02 per BLND
+    assert!(sclient.try_pending_harvest().is_err(), "no claim in flight");
+
+    sclient.harvest_reinvest(&keeper, &1, &true, &1);
+
+    // 1000 BLND × 0.02 = 20 underlying, not the keeper's 1.
+    assert_eq!(router.last_amount_out_min(), 20_0000000);
+}
+
+// The on-chain route can go through an intermediate token (finding 6): BLND →
+// via → underlying, for an asset with no BLND pair of its own.
+#[test]
+fn test_soroswap_reinvest_swaps_through_swap_via() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+    let via = Address::generate(&e);
+
+    sclient.set_swap_via(&Some(via.clone()));
+    assert_eq!(sclient.swap_via(), Some(via.clone()));
+    let realized = sclient.harvest_reinvest(&keeper, &1, &true, &1);
+
+    assert_eq!(
+        router.last_path(),
+        vec![&e, blnd.clone(), via, token.clone()]
     );
+    assert_eq!(
+        realized, 50_0000000,
+        "the last hop's output is what is levered in"
+    );
+    assert_eq!(TokenClient::new(&e, &blnd).balance(&strategy), 0);
+
+    sclient.set_swap_via(&None);
+    assert_eq!(sclient.swap_via(), None);
 }
 
 // ── Audit M-4: the Broker harvest path must settle against an on-chain floor ──
@@ -4190,6 +4256,49 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
         "the honest holder withdraws deposit + harvest: {}",
         honest_back
     );
+}
+
+// When Blend refuses the levered reinvest — the pool on ice here (no new
+// borrowing), or the reserve over its max_util — harvest proceeds are supplied
+// unlevered rather than left idle in the strategy. A deposit asked for leverage,
+// so it still fails.
+#[test]
+fn test_harvest_reinvest_supplies_unlevered_when_blend_refuses_the_borrow() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.cost_estimate().budget().reset_unlimited();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+    let (_, _, b0, d0, _, _) = sclient.position();
+
+    pool::Client::new(&e, &pool_addr).set_status(&2); // admin on ice
+
+    let proceeds = 10_0000000_i128;
+    StellarAssetClient::new(&e, &token).mint(&strategy, &proceeds);
+    assert_eq!(
+        sclient.harvest_reinvest(&keeper, &proceeds, &false, &0),
+        proceeds
+    );
+
+    let (_, _, b1, d1, b_rate, _) = sclient.position();
+    assert_eq!(d1, d0, "no borrow while the pool is on ice");
+    assert!(
+        (b1 - b0) * b_rate / SCALAR_12 >= proceeds - 1,
+        "the proceeds are supplied: {} b-tokens",
+        b1 - b0
+    );
+    assert_eq!(
+        TokenClient::new(&e, &token).balance(&strategy),
+        0,
+        "nothing is left idle"
+    );
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &100_0000000);
+    assert!(sclient.try_deposit(&100_0000000, &user).is_err());
 }
 
 // ── Audit M-2: stored reserves must reconcile with the real pool position ─────

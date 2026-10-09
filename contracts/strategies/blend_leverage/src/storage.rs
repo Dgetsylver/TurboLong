@@ -36,6 +36,9 @@ pub enum DataKey {
     PendingHarvest,
     /// Harvest profit still being released into the share price.
     LockedProfit,
+    /// Optional intermediate token of the on-chain Soroswap harvest route
+    /// (BLND → via → underlying), admin-set.
+    SwapVia,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -220,6 +223,20 @@ pub fn get_swap_account(e: &Env) -> Address {
 
 pub fn has_swap_account(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::SwapAccount)
+}
+
+// ── Soroswap harvest route ───────────────────────────────────────────────────
+
+pub fn set_swap_via(e: &Env, via: &Option<Address>) {
+    match via {
+        Some(via) => e.storage().instance().set(&DataKey::SwapVia, via),
+        None => e.storage().instance().remove(&DataKey::SwapVia),
+    }
+}
+
+/// `None` swaps BLND straight to the underlying.
+pub fn get_swap_via(e: &Env) -> Option<Address> {
+    e.storage().instance().get(&DataKey::SwapVia)
 }
 
 // ── Harvest settlement floor (audit M-4) ─────────────────────────────────────

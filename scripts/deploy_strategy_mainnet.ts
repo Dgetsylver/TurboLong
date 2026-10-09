@@ -107,12 +107,13 @@ interface AssetCfg {
   targetHf: bigint;  // 1e7
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
+  swapVia?: string;  // intermediate of the on-chain Soroswap harvest route (set_swap_via)
 }
 const ASSETS: AssetCfg[] = [
   { symbol: "USDC",  asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", cFactor: 9_000_000n, targetHf: 11_300_000n, minHf: 10_500_000n, orangeHf: 11_000_000n }, // 4.11× @ l=0.95
-  { symbol: "USTRY", asset: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", cFactor: 8_500_000n, targetHf: 11_700_000n, minHf: 10_500_000n, orangeHf: 11_500_000n }, // 2.89× @ l=0.90
-  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetHf: 11_200_000n, minHf: 10_500_000n, orangeHf: 11_000_000n }, // 2.15× @ l=0.80
-  { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetHf: 12_200_000n, minHf: 11_000_000n, orangeHf: 12_000_000n }, // 1.76× @ l=0.75
+  { symbol: "USTRY", asset: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", cFactor: 8_500_000n, targetHf: 11_700_000n, minHf: 10_500_000n, orangeHf: 11_500_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 2.89× @ l=0.90
+  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetHf: 11_200_000n, minHf: 10_500_000n, orangeHf: 11_000_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 2.15× @ l=0.80
+  { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetHf: 12_200_000n, minHf: 11_000_000n, orangeHf: 12_000_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 1.76× @ l=0.75
 ];
 
 /**
@@ -375,6 +376,12 @@ async function main() {
       );
     } else {
       console.warn(`  ⚠ ${a.symbol}: MIN_HARVEST_RATE_${a.symbol} unset — Broker harvest path left CLOSED, trait harvest needs an explicit amount_out_min`);
+    }
+
+    // No BLND pair on Soroswap (USTRY, CETES) or a thin one (XLM): route the
+    // on-chain harvest swap through USDC.
+    if (a.swapVia) {
+      await invoke(strategy, "set_swap_via", [addr(a.swapVia)], `${a.symbol} set_swap_via`);
     }
 
     out[a.symbol] = {

@@ -197,7 +197,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Lever it in — one supply + one borrow; the pool nets the transfers, so
         // only `amount` leaves the contract.
-        let (b_delta, d_delta) = blend_pool::submit_lever_in(&e, amount, &config)?;
+        let (b_delta, d_delta) = blend_pool::submit_lever_in(&e, amount, &config, false)?;
 
         // Check what the pool settled rather than a projection of it. A failure
         // reverts the submit along with everything else.
@@ -238,12 +238,13 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// already gone into the pool. Settle through `harvest_reinvest` (which
     /// covers the Soroswap route) rather than interleaving the two.
     ///
-    /// **The swap always runs with a floor** (audit M-5). `data` optionally
-    /// carries the keeper's own `amount_out_min` as 16 big-endian bytes; the
-    /// admin's `min_harvest_rate` prices a second floor over the BLND actually
-    /// being swapped. The stricter of the two applies, so a keeper cannot
-    /// undercut the admin, and a swap with neither is refused rather than
-    /// executed unprotected — `harvest(from, None)`, the natural call for a
+    /// **The swap always runs with a floor** (audit M-5, see
+    /// `blend_pool::perform_reinvest`). `data` optionally carries the keeper's
+    /// own `amount_out_min` as 16 big-endian bytes; the admin's
+    /// `min_harvest_rate` prices a second floor over the BLND actually being
+    /// swapped. The stricter of the two applies, so a keeper cannot undercut the
+    /// admin, and a swap with neither is refused rather than executed
+    /// unprotected — `harvest(from, None)`, the natural call for a
     /// DeFindex-trait caller unaware of this contract's private encoding, used
     /// to mean `amount_out_min = 0`. It now means "use the admin's floor", and
     /// fails closed when there is none, the same way `harvest_claim` declines
@@ -271,8 +272,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let harvested_blnd = blend_pool::claim(&e, &config);
 
         // Parse the caller's minimum swap output from data bytes. Absent (or a
-        // nonsensical negative) it contributes nothing and the admin floor
-        // below is the only protection.
+        // nonsensical negative) it contributes nothing and the admin floor is
+        // the only protection.
         let caller_min: i128 = match &data {
             Some(bytes) if !bytes.is_empty() => {
                 let mut slice = [0u8; 16];
@@ -282,34 +283,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             _ => 0,
         };
 
-        // The admin's floor, priced over the BLND this call is about to swap —
-        // `perform_reinvest` swaps the whole balance, which is what
-        // `harvest_floor` is denominated in. Below `reward_threshold` there is
-        // no swap to protect and `perform_reinvest` returns a no-op, so the
-        // requirement is not imposed on a harvest that does nothing.
-        let blnd_balance =
-            TokenClient::new(&e, &config.blend_token).balance(&e.current_contract_address());
-        let amount_out_min = if blnd_balance >= config.reward_threshold {
-            let floor = match storage::get_min_harvest_rate(&e) {
-                Some(rate) => leverage::harvest_floor(blnd_balance, rate)?,
-                None => 0,
-            };
-            let effective = caller_min.max(floor);
-            if effective <= 0 {
-                // No floor from either side. Refusing costs a harvest cycle,
-                // which the admin reopens with `set_min_harvest_rate` (or the
-                // keeper with an explicit `data`); swapping anyway would spend
-                // the vault's yield at whatever price the route quotes.
-                return Err(StrategyError::OnlyPositiveAmountAllowed);
-            }
-            effective
-        } else {
-            caller_min.max(0)
-        };
-
-        // Swap BLND → underlying, then re-leverage
+        // Swap BLND → underlying under the floor, then re-leverage
         let (b_delta, d_delta, realized_underlying) =
-            blend_pool::perform_reinvest(&e, &config, amount_out_min)?;
+            blend_pool::perform_reinvest(&e, &config, caller_min)?;
 
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
@@ -956,13 +932,33 @@ impl BlendLeverageStrategy {
         }
     }
 
+    /// Route the on-chain Soroswap harvest swap through `via` — BLND → via →
+    /// underlying — or straight BLND → underlying with `None` (admin-gated).
+    ///
+    /// For an underlying with no BLND pair on Soroswap (CETES, USTRY) or a thin
+    /// one (XLM), the route through a deep intermediate (USDC) is the one that
+    /// works, or pays. The swap's floor prices the BLND, not the route, so it is
+    /// unaffected.
+    pub fn set_swap_via(e: Env, via: Option<Address>) -> Result<(), StrategyError> {
+        Self::require_admin(&e);
+        storage::set_swap_via(&e, &via);
+        extend_instance_ttl(&e);
+        Ok(())
+    }
+
+    /// The intermediate token of the on-chain Soroswap harvest route, if any.
+    pub fn swap_via(e: Env) -> Option<Address> {
+        storage::get_swap_via(&e)
+    }
+
     /// Set the harvest floor rate (admin-gated): the minimum underlying the
     /// vault will accept back per `SCALAR_7` of BLND it gives up, both in
     /// smallest units.
     ///
     /// One rate governs both harvest routes. On the off-chain (Broker) path it
     /// is the settlement floor `harvest_reinvest` measures the returned
-    /// underlying against (audit M-4); on the trait `harvest` it becomes the
+    /// underlying against (audit M-4); on the on-chain Soroswap swap (trait
+    /// `harvest`, and `harvest_reinvest` with `via_soroswap`) it becomes the
     /// swap's `amount_out_min` when the caller supplies no stricter one of its
     /// own (audit M-5). Same question in both cases — what is this BLND worth,
     /// at minimum — so the same answer serves.
@@ -1100,7 +1096,9 @@ impl BlendLeverageStrategy {
     /// Keeper-gated: re-leverage harvested proceeds via the chosen route.
     ///
     /// - `via_soroswap = true`: swap the strategy's BLND → underlying on-chain
-    ///   through Soroswap (mandatory non-zero `amount_out_min`), then re-leverage.
+    ///   through Soroswap, under the same floor as the trait `harvest` (the
+    ///   stricter of `amount_out_min` and the admin's `min_harvest_rate`), then
+    ///   re-leverage.
     /// - `via_soroswap = false` (Broker): the keeper has already swapped off-chain
     ///   and transferred `amount_in` of underlying back to the strategy; re-leverage
     ///   it directly (asserted to be held). `amount_out_min` is ignored here.
@@ -1171,10 +1169,6 @@ impl BlendLeverageStrategy {
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
 
         let (b_delta, d_delta, realized) = if via_soroswap {
-            // Mandatory slippage protection on the on-chain swap.
-            if amount_out_min <= 0 {
-                return Err(StrategyError::OnlyPositiveAmountAllowed);
-            }
             blend_pool::perform_reinvest(&e, &config, amount_out_min)?
         } else {
             let (b, d) = blend_pool::reinvest_underlying(&e, &config, amount_in)?;
