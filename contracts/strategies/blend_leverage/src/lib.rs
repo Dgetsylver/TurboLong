@@ -22,11 +22,11 @@ mod test_integration;
 mod test_leverage;
 
 use admin_sep::{Administratable, AdministratableExtension, Upgradable};
-use constants::{MAX_LOOPS, SCALAR_12, SCALAR_7};
+use constants::{RELEVERAGE_HF_BUFFER, SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
     check_min_health_factor, check_pool_utilization, compute_health_factor, compute_partial_unwind,
-    compute_releverage, design_health_factor, shares_to_underlying,
+    compute_releverage, shares_to_underlying,
 };
 use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
@@ -69,7 +69,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [3] reward_threshold: i128 — min BLND to trigger harvest
     ///   [4] keeper: Address        — authorized harvest caller
     ///   [5] c_factor: i128         — collateral factor (1e7)
-    ///   [6] target_loops: u32      — number of leverage loops
+    ///   [6] target_hf: i128        — health factor deposits are levered to (1e7)
     ///   [7] min_hf: i128           — minimum health factor (1e7)
     ///   [8] orange_hf: i128        — orange-zone threshold; partial unwind triggered below this (1e7)
     ///   [9] admin: Address         — authorized to upgrade the contract and set the share token
@@ -86,10 +86,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             .into_val(&e);
         let keeper: Address = init_args.get(4).expect("Missing: keeper").into_val(&e);
         let c_factor: i128 = init_args.get(5).expect("Missing: c_factor").into_val(&e);
-        let target_loops: u32 = init_args
-            .get(6)
-            .expect("Missing: target_loops")
-            .into_val(&e);
+        let target_hf: i128 = init_args.get(6).expect("Missing: target_hf").into_val(&e);
         let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
         let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
@@ -113,14 +110,15 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         //
         //   0 < c_factor < 1.0           — a collateral factor must be a fraction
         //   c_factor <= pool c_factor    — see the safety-margin derivation below
-        //   1 <= target_loops <= 20      — at least one leverage loop; 20 bounds
-        //                                  the loop `compute_totals` sums (the
-        //                                  deposit itself is one supply + one
-        //                                  borrow at any depth)
         //   min_hf > 1.0                 — never open a directly-liquidatable position
         //   orange_hf > min_hf           — orange (rebalance) zone sits above the
         //                                  hard deposit floor
-        // (orange_hf > c_factor is implied by orange_hf > min_hf > 1.0 > c_factor.)
+        //   target_hf >= orange_hf + RELEVERAGE_HF_BUFFER
+        //                                — deposits and re-leverage land clear of
+        //                                  the rebalance band; one opening inside it
+        //                                  would be handed straight to `rebalance`
+        // (orange_hf > c_factor, and target_hf > c_factor × l_factor, are implied
+        // by the chain above and 1.0 > c_factor.)
         //
         // Safety margin, derived rather than conventional. `compute_health_factor`
         // reports HF = B × c_factor × l_factor / D, while Blend liquidates once
@@ -143,12 +141,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             pool_l_factor > 0 && pool_l_factor <= SCALAR_7,
             "pool l_factor must be in (0, 1.0]"
         );
-        assert!(
-            (1..=MAX_LOOPS).contains(&target_loops),
-            "target_loops must be in [1, 20]"
-        );
         assert!(min_hf > SCALAR_7, "min_hf must be > 1.0");
         assert!(orange_hf > min_hf, "orange_hf must be > min_hf");
+        assert!(
+            target_hf >= orange_hf.saturating_add(RELEVERAGE_HF_BUFFER),
+            "target_hf must clear orange_hf by RELEVERAGE_HF_BUFFER"
+        );
 
         let config = Config {
             asset: asset.clone(),
@@ -159,7 +157,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             claim_ids,
             reward_threshold,
             c_factor,
-            target_loops,
+            target_hf,
             min_hf,
             orange_hf,
         };
@@ -180,8 +178,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// Flow:
     /// 1. Refuse if pool utilization is already above `MAX_SAFE_UTILIZATION`
     /// 2. Transfer `amount` from `from` to the strategy contract
-    /// 3. Lever it in: one SupplyCollateral + Borrow submit, sized to the
-    ///    `target_loops`-deep loop (`compute_totals`)
+    /// 3. Lever it in: one SupplyCollateral + Borrow submit, sized to land on
+    ///    `target_hf` (`compute_lever_in`)
     /// 4. Check what the pool settled: utilization, and HF >= `min_hf`
     /// 5. Track b/d token deltas, mint proportional shares
     /// 6. Return the depositor's underlying balance
@@ -203,7 +201,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Lever it in — one supply + one borrow; the pool nets the transfers, so
         // only `amount` leaves the contract.
-        let (b_delta, d_delta) = blend_pool::submit_leverage_loop(&e, amount, &config)?;
+        let (b_delta, d_delta) = blend_pool::submit_lever_in(&e, amount, &config)?;
 
         // Check what the pool settled rather than a projection of it. A failure
         // reverts the submit along with everything else.
@@ -646,7 +644,7 @@ impl BlendLeverageStrategy {
 
     /// Keeper-gated re-leverage: borrow against collateral the vault already
     /// holds, supply it straight back, and restore the leverage ratio toward
-    /// `target_loops`. Returns the underlying borrowed (`0` on a no-op).
+    /// `target_hf`. Returns the underlying borrowed (`0` on a no-op).
     ///
     /// This is the counterpart `rebalance` never had. Every other path that
     /// moves leverage removes it — `rebalance`, `rebalance_keeper` and
@@ -664,15 +662,16 @@ impl BlendLeverageStrategy {
     /// **What bounds it.** Adding leverage is the unsafe direction, so the keeper
     /// gets no discretion over the amount (unlike `partial_unwind`, where the
     /// keeper's target is trusted precisely because it can only make the position
-    /// safer). The target HF is derived entirely on-chain:
+    /// safer). The target is fixed on-chain:
     ///
-    /// - never below `design_health_factor(...)` — the HF of a position freshly
-    ///   levered to `target_loops`. HF and leverage are the same statement, so
-    ///   this *is* the "never exceed the configured leverage" cap;
-    /// - never below `orange_hf + RELEVERAGE_HF_BUFFER`, so a re-leverage cannot
-    ///   land on the rebalance trigger and start a ping-pong; and it only fires
-    ///   when the current HF clears that target by the same buffer, so the
-    ///   position has to have real slack before anything happens;
+    /// - it is `target_hf`, the HF a fresh deposit lands at. HF and leverage are
+    ///   the same statement, so this *is* the "never exceed the configured
+    ///   leverage" cap;
+    /// - `target_hf` sits at least `RELEVERAGE_HF_BUFFER` above `orange_hf`
+    ///   (asserted at construction), so a re-leverage cannot land on the
+    ///   rebalance trigger and start a ping-pong; and it only fires when the
+    ///   current HF clears the target by the same buffer, so the position has to
+    ///   have real slack before anything happens;
     /// - the pool's settled utilization is held to the same
     ///   `MAX_SAFE_UTILIZATION` a deposit faces — re-leveraging adds borrow
     ///   demand to the pool exactly as a deposit does;
@@ -707,17 +706,7 @@ impl BlendLeverageStrategy {
             return Ok(0); // no collateral to lever against
         }
 
-        // Target HF: design leverage, floored out of the rebalance band. When a
-        // deployment's design HF sits *inside* that band (`target_loops` levers
-        // past `orange_hf`, so every fresh deposit opens in the orange zone), the
-        // floor binds and re-leverage stops short of the configured loops rather
-        // than handing the position straight to `rebalance`.
-        let design_hf = design_health_factor(config.c_factor, config.target_loops, l_factor)?;
-        let floor = config
-            .orange_hf
-            .checked_add(constants::RELEVERAGE_HF_BUFFER)
-            .ok_or(StrategyError::UnderflowOverflow)?;
-        let target_hf = design_hf.max(floor);
+        let target_hf = config.target_hf;
 
         let before_hf = compute_health_factor(
             b_tokens,
@@ -811,19 +800,19 @@ impl BlendLeverageStrategy {
         Ok(storage::get_keeper(&e))
     }
 
-    /// Deployed risk configuration: `(c_factor, target_loops, min_hf, orange_hf)`
-    /// (i128s 1e7-scaled, `target_loops` a plain u32).
+    /// Deployed risk configuration: `(c_factor, target_hf, min_hf, orange_hf)`,
+    /// all 1e7-scaled.
     ///
     /// Read-only view for off-chain consumers (frontend, keeper, monitoring) so
     /// they can display and act on the *actual* on-chain thresholds instead of
     /// hardcoding copies of the deploy-script values, which silently drift when
     /// a strategy is redeployed or upgraded with different parameters.
-    pub fn config(e: Env) -> Result<(i128, u32, i128, i128), StrategyError> {
+    pub fn config(e: Env) -> Result<(i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
         Ok((
             config.c_factor,
-            config.target_loops,
+            config.target_hf,
             config.min_hf,
             config.orange_hf,
         ))

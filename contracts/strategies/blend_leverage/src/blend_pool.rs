@@ -8,7 +8,7 @@ use crate::{
         REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
         REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
     },
-    leverage::compute_totals,
+    leverage::compute_lever_in,
     soroswap::internal_swap_exact_tokens_for_tokens,
     storage::Config,
 };
@@ -43,16 +43,14 @@ use crate::{
 // holds (e.g. Broker proceeds awaiting `harvest_reinvest`).
 
 /// Lever `initial_amount` of the underlying into the position as one
-/// `[supply_collateral S, borrow D]` submit, `(S, D)` being the totals of the
-/// `target_loops`-deep loop (`compute_totals`).
+/// `[supply_collateral S, borrow D]` submit, sized by `compute_lever_in` to land
+/// on `config.target_hf` at the pool's live `l_factor`.
 ///
-/// One pair builds the position the loop would. Netting means only
-/// `S − D = initial_amount` leaves the strategy, and the single borrow is checked
-/// against the whole supply — the final state, which the loop only reached on its
-/// last step — so it is never harder on the pool than the loop was.
+/// Netting means only `S − D = initial_amount` leaves the strategy, and the
+/// borrow is checked against the whole supply.
 ///
 /// Returns (b_token_delta, d_token_delta) — the position deltas.
-pub fn submit_leverage_loop(
+pub fn submit_lever_in(
     e: &Env,
     initial_amount: i128,
     config: &Config,
@@ -61,8 +59,9 @@ pub fn submit_leverage_loop(
     let strategy = e.current_contract_address();
     let (pre_b, pre_d) = get_strategy_positions(e, config);
 
+    let (_, l_factor) = get_pool_risk_factors(e, config);
     let (total_supply, total_borrow) =
-        compute_totals(initial_amount, config.c_factor, config.target_loops)?;
+        compute_lever_in(initial_amount, config.c_factor, l_factor, config.target_hf)?;
 
     // Supply first, so the borrow is checked against the final state. A dust
     // amount whose borrow floors to zero is supplied without one.
@@ -351,7 +350,7 @@ pub fn perform_reinvest(
     }
 
     // Re-leverage the swapped proceeds
-    let (b_delta, d_delta) = submit_leverage_loop(e, amount_out, config)?;
+    let (b_delta, d_delta) = submit_lever_in(e, amount_out, config)?;
 
     Ok((b_delta, d_delta, amount_out))
 }
@@ -372,7 +371,7 @@ pub fn reinvest_underlying(
     if held < amount {
         return Err(StrategyError::InsufficientBalance);
     }
-    submit_leverage_loop(e, amount, config)
+    submit_lever_in(e, amount, config)
 }
 
 // ── Pool state queries ───────────────────────────────────────────────────────

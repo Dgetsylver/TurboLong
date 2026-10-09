@@ -40,8 +40,11 @@ export interface VaultConfig {
   decimals: number;
   /** Strategy c_factor (1e7 scaled) */
   cFactor: number;
-  /** Number of leverage loops */
-  targetLoops: number;
+  /**
+   * Health factor deposits are levered to (contract `target_hf`). The leverage
+   * it makes depends on the pool's live l_factor — see `targetLeverage`.
+   */
+  targetHf: number;
   /** Hard deposit floor: new deposits must land at HF ≥ min_hf */
   minHf: number;
   /**
@@ -56,7 +59,7 @@ export interface VaultConfig {
 
 // Mainnet vaults across the four Etherfuse-pool assets. vaultId/shareToken are
 // filled post-deploy from deployed-vaults.mainnet.json (see
-// scripts/wire_mainnet_vaults.ts). Risk params (cFactor/targetLoops/minHf/
+// scripts/wire_mainnet_vaults.ts). Risk params (cFactor/targetHf/minHf/
 // orangeHf) mirror scripts/deploy_strategy_mainnet.ts but are only FALLBACKS:
 // syncVaultConfig() refreshes them from the contract's config() view at load.
 const MAINNET_VAULTS: VaultConfig[] = [
@@ -68,7 +71,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     assetSymbol: "USDC",
     decimals: 7,
     cFactor: 0.9,
-    targetLoops: 4,
+    targetHf: 1.13,
     minHf: 1.05,
     orangeHf: 1.1,
   },
@@ -80,7 +83,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     assetSymbol: "USTRY",
     decimals: 7,
     cFactor: 0.85,
-    targetLoops: 3,
+    targetHf: 1.17,
     minHf: 1.05,
     orangeHf: 1.15,
   },
@@ -92,7 +95,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     assetSymbol: "CETES",
     decimals: 7,
     cFactor: 0.75,
-    targetLoops: 3,
+    targetHf: 1.12,
     minHf: 1.05,
     orangeHf: 1.1,
   },
@@ -104,7 +107,7 @@ const MAINNET_VAULTS: VaultConfig[] = [
     assetSymbol: "XLM",
     decimals: 7,
     cFactor: 0.7,
-    targetLoops: 2,
+    targetHf: 1.22,
     minHf: 1.1,
     orangeHf: 1.2,
   },
@@ -119,6 +122,10 @@ const MAINNET_VAULTS: VaultConfig[] = [
 // at load. They no longer match deploy_strategy_testnet.ts, which moved USDC and
 // CETES to orange_hf 1.10 — `orange_hf` is constructor-only, so the live vaults
 // keep 1.15 until they are redeployed.
+// These are the deployed testnet vaults, which predate `target_hf`: their
+// config() still returns a loop count, so the fallbacks below stand in. Each
+// targetHf is what the vault's loop count builds at the testnet pool's
+// l_factor, i.e. its actual leverage. A redeploy brings config() back in play.
 const TESTNET_VAULTS: VaultConfig[] = [
   {
     vaultId: "CCGM3FT4HKLXGTD5FZYSIWTOPR4REIEMTTC23GU6PHSLBXBADKFQPEKR",
@@ -129,7 +136,7 @@ const TESTNET_VAULTS: VaultConfig[] = [
     assetSymbol: "USDC",
     decimals: 7,
     cFactor: 0.9,
-    targetLoops: 4,
+    targetHf: 1.167,
     minHf: 1.05,
     orangeHf: 1.15,
   },
@@ -142,7 +149,7 @@ const TESTNET_VAULTS: VaultConfig[] = [
     assetSymbol: "CETES",
     decimals: 7,
     cFactor: 0.75,
-    targetLoops: 3,
+    targetHf: 1.159,
     minHf: 1.05,
     orangeHf: 1.15,
   },
@@ -155,7 +162,7 @@ const TESTNET_VAULTS: VaultConfig[] = [
     assetSymbol: "XLM",
     decimals: 7,
     cFactor: 0.7,
-    targetLoops: 2,
+    targetHf: 1.263,
     minHf: 1.1,
     orangeHf: 1.2,
   },
@@ -168,7 +175,7 @@ const TESTNET_VAULTS: VaultConfig[] = [
     assetSymbol: "TESOURO",
     decimals: 7,
     cFactor: 0.8,
-    targetLoops: 3,
+    targetHf: 1.089,
     minHf: 1.05,
     orangeHf: 1.15,
   },
@@ -245,9 +252,20 @@ const syncedVaultConfigs = new Set<string>();
  * hardcoded copies above (which only serve as fallback for contracts
  * predating the getter, or when the RPC read fails).
  *
- * config() returns (c_factor, target_loops, min_hf, orange_hf),
- * i128s 1e7-scaled except target_loops (u32).
+ * config() returns (c_factor, target_hf, min_hf, orange_hf), all i128s
+ * 1e7-scaled. A contract predating `target_hf` returns a loop count in its
+ * place, which fails the sanity check below and keeps the fallbacks.
  */
+/**
+ * Collateral ÷ equity of a deposit levered to the vault's `targetHf` at the
+ * pool's `lFactor`: `h / (h − c × l)`, as the contract sizes it
+ * (`compute_lever_in`).
+ */
+export function targetLeverage(vault: VaultConfig, lFactor: number): number {
+  const cl = vault.cFactor * lFactor;
+  return vault.targetHf > cl ? vault.targetHf / (vault.targetHf - cl) : Number.POSITIVE_INFINITY;
+}
+
 export async function syncVaultConfig(vault: VaultConfig): Promise<void> {
   if (!vault.vaultId || syncedVaultConfigs.has(vault.vaultId)) return;
 
@@ -255,13 +273,13 @@ export async function syncVaultConfig(vault: VaultConfig): Promise<void> {
     const result = await invokeRead(vault.vaultId, "config");
     const tuple = result.value() as xdr.ScVal[];
     const cFactor = Number(scValToNative(tuple[0])) / 1e7;
-    const targetLoops = Number(scValToNative(tuple[1]));
+    const targetHf = Number(scValToNative(tuple[1])) / 1e7;
     const minHf = Number(scValToNative(tuple[2])) / 1e7;
     const orangeHf = Number(scValToNative(tuple[3])) / 1e7;
 
-    if (cFactor > 0 && cFactor <= 1 && minHf >= 1 && orangeHf >= minHf) {
+    if (cFactor > 0 && cFactor <= 1 && minHf >= 1 && orangeHf >= minHf && targetHf > orangeHf) {
       vault.cFactor = cFactor;
-      vault.targetLoops = targetLoops;
+      vault.targetHf = targetHf;
       vault.minHf = minHf;
       vault.orangeHf = orangeHf;
       syncedVaultConfigs.add(vault.vaultId);

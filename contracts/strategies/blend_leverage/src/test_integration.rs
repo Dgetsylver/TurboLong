@@ -28,9 +28,7 @@ use crate::constants::{
     REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
     REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12, SCALAR_7,
 };
-use crate::leverage::{
-    compute_health_factor, compute_loop_pairs, compute_partial_unwind, shares_to_underlying,
-};
+use crate::leverage::{compute_health_factor, compute_partial_unwind, shares_to_underlying};
 use crate::storage::LeverageReserves;
 use crate::{blend_pool, reserves, storage, StrategyError};
 
@@ -209,7 +207,7 @@ fn make_config(e: &Env, pool_addr: &Address, token: &Address, blnd: &Address) ->
         claim_ids: Vec::from_array(e, [reserve_id * 2 + 1, reserve_id * 2]),
         reward_threshold: 1_0000000,
         c_factor: 9_000_000, // 0.90: below pool's c=0.95 to keep HF > 1.0
-        target_loops: 3,
+        target_hf: TARGET_HF,
         min_hf: 10_500_000,
         orange_hf: 11_500_000,
     }
@@ -260,6 +258,50 @@ fn accrue_interest(e: &Env, pool_addr: &Address, token: &Address, seconds: u64) 
             },
         ],
     );
+}
+
+/// The HF the real strategy levers to in these tests: what 3 loops at c = 0.90
+/// used to build.
+const TARGET_HF: i128 = 12_690_000;
+
+/// A deposit levered to this HF opens deep in the orange zone (what 8 loops at
+/// c = 0.90 used to build). The constructor refuses it as a target, so tests
+/// reach it through `set_target_hf` — the state rate drift or an `l_factor` cut
+/// leaves a real position in.
+const STRESSED_HF: i128 = 10_756_000;
+
+/// Loop depth for positions built step by step on a bare test contract.
+const TEST_LOOPS: u32 = 3;
+
+/// The `(supply, borrow)` steps of an `n_loops`-deep loop, the last borrow 0,
+/// and the step count — the request sequence `execute_leverage_loop_stepped`
+/// sends one submit at a time.
+fn compute_loop_pairs(
+    initial_amount: i128,
+    c_factor: i128,
+    n_loops: u32,
+) -> ([i128; 21], [i128; 21], u32) {
+    let n = n_loops.min(20) as usize;
+    let mut supplies = [0i128; 21];
+    let mut borrows = [0i128; 21];
+    let mut balance = initial_amount;
+    for i in 0..=n {
+        supplies[i] = balance;
+        if i < n {
+            borrows[i] = balance * c_factor / SCALAR_7;
+        }
+        balance = borrows[i];
+    }
+    (supplies, borrows, n as u32 + 1)
+}
+
+/// Overwrite the stored `target_hf`, bypassing the constructor's band check.
+fn set_target_hf(e: &Env, strategy: &Address, target_hf: i128) {
+    e.as_contract(strategy, || {
+        let mut config = storage::get_config(e);
+        config.target_hf = target_hf;
+        storage::set_config(e, config);
+    });
 }
 
 /// Execute a leverage loop step-by-step: supply→borrow in separate pool.submit() calls.
@@ -459,7 +501,7 @@ fn test_leverage_loop_builds_correct_position() {
         &token,
         deposit_amount,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     assert!(b_tokens > 0, "Should have b-tokens: {}", b_tokens);
@@ -516,7 +558,7 @@ fn test_deposit_withdraw_full_cycle() {
         &token,
         deposit_amount,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // Account for deposit in reserves
@@ -604,7 +646,7 @@ fn test_two_users_proportional() {
         &token,
         alice_amount,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // Bob deposits 2000
@@ -623,7 +665,7 @@ fn test_two_users_proportional() {
         &token,
         bob_amount,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     let post_bob = pool_client.get_positions(&strategy);
@@ -684,7 +726,7 @@ fn test_health_factor_from_pool() {
         &token,
         1_000_0000000,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
@@ -765,7 +807,7 @@ fn test_deleverage_step_by_step() {
         &token,
         1_000_0000000,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     let pool_client = pool::Client::new(&e, &pool_addr);
@@ -939,26 +981,26 @@ fn register_real_strategy(
     asset: &Address,
     blnd: &Address,
 ) -> Address {
-    register_real_strategy_with_loops(e, pool_addr, asset, blnd, 3)
+    register_real_strategy_with_target(e, pool_addr, asset, blnd, TARGET_HF)
 }
 
-/// Same as `register_real_strategy` but with a configurable `target_loops`.
+/// Same as `register_real_strategy` but with a configurable `target_hf`.
 /// At c = 0.90, 8 loops opens at HF ≈ 1.076 — above min_hf (1.05) so the
 /// deposit passes the safety check, but inside the orange zone (< 1.15), which
 /// is exactly the stressed fixture the auto-rebalance keeper tests need.
-fn register_real_strategy_with_loops(
+fn register_real_strategy_with_target(
     e: &Env,
     pool_addr: &Address,
     asset: &Address,
     blnd: &Address,
-    target_loops: u32,
+    target_hf: i128,
 ) -> Address {
-    register_real_strategy_with_loops_and_router(
+    register_real_strategy_with_target_and_router(
         e,
         pool_addr,
         asset,
         blnd,
-        target_loops,
+        target_hf,
         &Address::generate(e),
     )
 }
@@ -967,12 +1009,12 @@ fn register_real_strategy_with_loops(
 /// else the router is an unregistered generated address — fine, because no
 /// other test reaches the swap — but the trait-`harvest` slippage tests need a
 /// router that actually quotes and enforces `amount_out_min`.
-fn register_real_strategy_with_loops_and_router(
+fn register_real_strategy_with_target_and_router(
     e: &Env,
     pool_addr: &Address,
     asset: &Address,
     blnd: &Address,
-    target_loops: u32,
+    target_hf: i128,
     router: &Address,
 ) -> Address {
     let router = router.clone();
@@ -986,7 +1028,7 @@ fn register_real_strategy_with_loops_and_router(
         1_0000000_i128.into_val(e), // reward_threshold
         keeper.into_val(e),
         9_000_000_i128.into_val(e), // c_factor 0.90
-        target_loops.into_val(e),
+        target_hf.into_val(e),
         10_500_000_i128.into_val(e), // min_hf 1.05
         11_500_000_i128.into_val(e), // orange_hf 1.15
         admin.into_val(e),
@@ -1026,7 +1068,7 @@ fn test_share_token_wiring_set_migrate_balance() {
         &token,
         1_000_0000000,
         cfg.c_factor,
-        cfg.target_loops,
+        TEST_LOOPS,
     );
 
     // Seed a legacy VaultPos holder + reserves, then migrate onto the token.
@@ -1094,9 +1136,9 @@ fn test_config_view_exposes_constructor_risk_params() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
     // Values from register_real_strategy's init_args.
-    let (c_factor, target_loops, min_hf, orange_hf) = sclient.config();
+    let (c_factor, target_hf, min_hf, orange_hf) = sclient.config();
     assert_eq!(c_factor, 9_000_000, "c_factor 0.90");
-    assert_eq!(target_loops, 3, "target_loops");
+    assert_eq!(target_hf, TARGET_HF, "target_hf");
     assert_eq!(min_hf, 10_500_000, "min_hf 1.05");
     assert_eq!(orange_hf, 11_500_000, "orange_hf 1.15");
 }
@@ -1137,7 +1179,7 @@ fn open_stressed_strategy(
     token: &Address,
     blnd: &Address,
 ) -> Address {
-    let strategy = register_real_strategy_with_loops(e, pool_addr, token, blnd, 8);
+    let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
     let share = e.register(MockShareToken, ());
     sclient.set_share_token(&share);
@@ -1146,7 +1188,9 @@ fn open_stressed_strategy(
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
+    set_target_hf(e, &strategy, STRESSED_HF);
     sclient.deposit(&1_000_0000000, &user);
+    set_target_hf(e, &strategy, TARGET_HF);
     strategy
 }
 
@@ -1536,10 +1580,8 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let keeper = sclient.get_keeper();
 
-    let (c_factor, target_loops, _, _) = sclient.config();
+    let (c_factor, design_hf, _, _) = sclient.config();
     let (_, _, l_factor) = sclient.risk_factors();
-    let design_hf =
-        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
 
     let (_equity0, _, _, d0, _, _) = sclient.position();
     let hf0 = sclient.health_factor();
@@ -1593,9 +1635,10 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
     assert!(d2 > d1, "debt restored: {} vs {}", d2, d1);
 
     // The leverage ratio matches what a fresh deposit of the same equity would
-    // have built — the HF cap and the loop geometry agree.
+    // have built — the HF cap and the deposit sizing agree.
     let (design_supply, design_borrow) =
-        crate::leverage::compute_totals(1_000_000_000_000_i128, c_factor, target_loops).unwrap();
+        crate::leverage::compute_lever_in(1_000_000_000_000_i128, c_factor, l_factor, design_hf)
+            .unwrap();
     let design_lev = design_supply * SCALAR_7 / (design_supply - design_borrow);
     let lev = (b2 * b_rate / SCALAR_12) * SCALAR_7 / equity2;
     assert!(
@@ -1627,53 +1670,59 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
     );
 }
 
-// The hysteresis band, on-chain. On a deployment whose design leverage sits
-// *inside* the rebalance band (8 loops at c = 0.90 → design HF ≈ 1.076, below
-// orange_hf 1.15), re-levering all the way to design would hand the position
-// straight back to `rebalance` and the two would ping-pong every cooldown. The
-// floor binds instead: re-leverage stops at `orange_hf + RELEVERAGE_HF_BUFFER`,
-// and the proof it is far enough is that a rebalance immediately afterwards has
-// nothing to do.
+// A target inside the rebalance band — where every deposit would open as
+// `rebalance` bait, and a re-leverage would hand the position straight back to
+// it — is refused at construction rather than tolerated afterwards.
 #[test]
-fn test_releverage_floor_keeps_the_position_clear_of_the_rebalance_band() {
+#[should_panic]
+fn test_constructor_refuses_a_target_inside_the_rebalance_band() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    // orange_hf is 1.15 in these tests: the lowest target accepted is 1.17.
+    register_real_strategy_with_target(
+        &e,
+        &pool_addr,
+        &token,
+        &blnd,
+        11_500_000 + crate::constants::RELEVERAGE_HF_BUFFER - 1,
+    );
+}
+
+// The hysteresis band, on-chain. At the lowest target the constructor accepts,
+// `orange_hf + RELEVERAGE_HF_BUFFER`, a re-leverage lands just clear of the
+// rebalance band — and the proof it is far enough is that a rebalance
+// immediately afterwards has nothing to do.
+#[test]
+fn test_releverage_to_the_lowest_target_stays_clear_of_the_rebalance_band() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
     e.cost_estimate().budget().reset_unlimited();
 
-    let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
-    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
-
-    let (c_factor, target_loops, _, orange_hf) = sclient.config();
-    let (_, _, l_factor) = sclient.risk_factors();
-    let design_hf =
-        crate::leverage::design_health_factor(c_factor, target_loops, l_factor).unwrap();
-    assert!(
-        design_hf < orange_hf,
-        "fixture must be the pathological case: design {} vs orange {}",
-        design_hf,
-        orange_hf
-    );
-
+    let orange_hf = 11_500_000;
     let floor = orange_hf + crate::constants::RELEVERAGE_HF_BUFFER;
+    let strategy = register_real_strategy_with_target(&e, &pool_addr, &token, &blnd, floor);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    let keeper = sclient.get_keeper();
 
     // Deleverage well clear of the band, then re-lever.
     sclient.partial_unwind(&keeper, &(orange_hf + 3_000_000));
     let borrowed = sclient.releverage(&keeper);
-    assert!(borrowed > 0, "must re-lever toward the floor");
+    assert!(borrowed > 0, "must re-lever toward the target");
 
     let hf = sclient.health_factor();
     assert!(
-        hf >= floor,
-        "must stop at the floor, not the design HF: {} < {}",
-        hf,
-        floor
-    );
-    assert!(
-        hf <= floor + floor / 1_000,
-        "must reach the floor: {} vs {}",
+        hf >= floor && hf <= floor + floor / 1_000,
+        "must land on the target: {} vs {}",
         hf,
         floor
     );
@@ -2019,7 +2068,7 @@ fn test_unwind_pays_correct_equity_after_rates_accrue() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // Seed reserves to match (1 share == 1 underlying at entry, rates 1.0).
@@ -2149,7 +2198,7 @@ fn test_full_close_returns_all_equity_after_rates_accrue() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // Advance ~1 year and poke the reserve so interest is materialised.
@@ -2243,7 +2292,7 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // Advance ~1 year and poke the reserve so interest is materialised.
@@ -2359,7 +2408,7 @@ fn test_deleverage_repays_exactly_the_requested_amount() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
     accrue_interest(&e, &pool_addr, &token, 31_536_000);
 
@@ -2404,9 +2453,9 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-    let mut config = make_config(&e, &pool_addr, &token, &blnd);
-    // High leverage so the freshly-built position starts inside the orange zone.
-    config.target_loops = 8;
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    // High leverage (8 loops) so the freshly-built position starts inside the orange zone.
+    let loops = 8;
 
     seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
 
@@ -2423,7 +2472,7 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        loops,
     );
 
     let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
@@ -2492,9 +2541,9 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-    let mut config = make_config(&e, &pool_addr, &token, &blnd);
-    // High leverage so the position sits inside the orange zone.
-    config.target_loops = 8;
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    // High leverage (8 loops) so the position sits inside the orange zone.
+    let loops = 8;
 
     seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
 
@@ -2511,7 +2560,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
         &token,
         deposit,
         config.c_factor,
-        config.target_loops,
+        loops,
     );
 
     // Advance ~1 year and poke the reserve so interest is materialised and the
@@ -2731,7 +2780,7 @@ fn test_unwind_of_a_dust_share_repays_its_debt() {
         &token,
         1_000_0000000,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     let user = Address::generate(&e);
@@ -2827,14 +2876,16 @@ fn test_rebalance_works_near_full_utilization() {
         ],
     );
 
-    // A stressed 8-loop position (HF ≈ 1.076) opened through the real deposit.
-    let strategy = register_real_strategy_with_loops(&e, &pool_addr, &token, &blnd, 8);
+    // A stressed position (HF ≈ 1.076) opened through the real deposit.
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let share = e.register(MockShareToken, ());
     sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token).mint(&user, &10_000_0000000);
+    set_target_hf(&e, &strategy, STRESSED_HF);
     sclient.deposit(&10_000_0000000, &user);
+    set_target_hf(&e, &strategy, TARGET_HF);
 
     // A borrower posts the second reserve and borrows the leverage asset up to
     // ~98.9% utilization (the reserve's max is 99%); the lender then withdraws
@@ -2919,100 +2970,87 @@ fn test_rebalance_works_near_full_utilization() {
     );
 }
 
-// One [supply, borrow] submit builds the position the loop did. Two identical
-// pools with a year of interest accrued: one levered through the loop's own
-// request sequence, one through the production submit. Same totals, same
-// position — the single submit rounds once per side instead of once per step,
-// which can only leave the vault a few tokens better off — and only the deposit
-// leaves the strategy, which ends up holding nothing.
+// One [supply, borrow] submit lands a deposit on `target_hf`, on a real pool
+// whose rates have drifted off 1.0 after a year of interest — and only the
+// deposit leaves the strategy, which ends up holding nothing.
 #[test]
-fn test_lever_in_matches_the_loop_position() {
+fn test_lever_in_lands_on_target_hf_after_rates_drift() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.cost_estimate().budget().reset_unlimited();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    // Background borrowing, so the rates drift off 1.0.
+    let whale = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&whale, &1_000_000_0000000);
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    pool_client.submit(
+        &whale,
+        &whale,
+        &whale,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 1_000_000_0000000,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ],
+    );
+    pool_client.submit(
+        &whale,
+        &whale,
+        &whale,
+        &vec![
+            &e,
+            pool::Request {
+                address: token.clone(),
+                amount: 500_000_0000000,
+                request_type: REQUEST_TYPE_BORROW,
+            },
+        ],
+    );
+    accrue_interest(&e, &pool_addr, &token, 31_536_000);
+
+    let strategy = e.register(TestStrategyContract, ());
     let deposit = 1_234_5678901_i128;
-    let loops = 8_u32;
-    let build = |single: bool| -> (i128, i128, i128) {
-        let e = Env::default();
-        e.mock_all_auths();
-        e.cost_estimate().budget().reset_unlimited();
-        let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-        let mut config = make_config(&e, &pool_addr, &token, &blnd);
-        config.target_loops = loops;
+    StellarAssetClient::new(&e, &token).mint(&strategy, &deposit);
+    let (b, d) = e.as_contract(&strategy, || {
+        blend_pool::submit_lever_in(&e, deposit, &config).unwrap()
+    });
 
-        // Background borrowing, so the rates drift off 1.0.
-        let whale = Address::generate(&e);
-        StellarAssetClient::new(&e, &token).mint(&whale, &1_000_000_0000000);
-        let pool_client = pool::Client::new(&e, &pool_addr);
-        pool_client.submit(
-            &whale,
-            &whale,
-            &whale,
-            &vec![
-                &e,
-                pool::Request {
-                    address: token.clone(),
-                    amount: 1_000_000_0000000,
-                    request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
-                },
-            ],
-        );
-        pool_client.submit(
-            &whale,
-            &whale,
-            &whale,
-            &vec![
-                &e,
-                pool::Request {
-                    address: token.clone(),
-                    amount: 500_000_0000000,
-                    request_type: REQUEST_TYPE_BORROW,
-                },
-            ],
-        );
-        accrue_interest(&e, &pool_addr, &token, 31_536_000);
-
-        let strategy = e.register(TestStrategyContract, ());
-        StellarAssetClient::new(&e, &token).mint(&strategy, &deposit);
-        let (b, d) = if single {
-            e.as_contract(&strategy, || {
-                blend_pool::submit_leverage_loop(&e, deposit, &config).unwrap()
-            })
-        } else {
-            execute_leverage_loop_stepped(
-                &e,
-                &pool_addr,
-                &strategy,
-                &token,
-                deposit,
-                config.c_factor,
-                loops,
-            )
-        };
-        (b, d, TokenClient::new(&e, &token).balance(&strategy))
-    };
-
-    let (loop_b, loop_d, _) = build(false);
-    let (b, d, idle) = build(true);
-    std::println!("loop b={} d={} | single b={} d={}", loop_b, loop_d, b, d);
-
-    let steps = loops as i128 + 1;
+    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
     assert!(
-        b >= loop_b && b - loop_b <= steps,
-        "collateral must match the loop, rounding in the vault's favour: {} vs {}",
-        b,
-        loop_b
+        b_rate > SCALAR_12 && d_rate > b_rate,
+        "rates must have drifted"
+    );
+    let hf = compute_health_factor(b, d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
+    std::println!(
+        "lever-in at rates ({}, {}): hf {} vs target {}",
+        b_rate,
+        d_rate,
+        hf,
+        config.target_hf
     );
     assert!(
-        d <= loop_d && loop_d - d <= steps,
-        "debt must match the loop, rounding in the vault's favour: {} vs {}",
-        d,
-        loop_d
+        (hf - config.target_hf).abs() <= 2,
+        "the deposit lands on the target: {} vs {}",
+        hf,
+        config.target_hf
     );
-    assert_eq!(idle, 0, "only the deposit leaves the strategy");
+    assert_eq!(
+        TokenClient::new(&e, &token).balance(&strategy),
+        0,
+        "only the deposit leaves the strategy, and all of it"
+    );
 }
 
 // The after-submit gate holds a deposit to `min_hf` on the position Blend
-// actually settled. 20 loops at c = 0.90 builds an HF of ≈ 1.014: Blend accepts
-// it (its floor is 1.0, measured with the pool's c = 0.95), but the vault's floor
-// is 1.05, so the deposit must revert as a whole — the user's transfer included.
+// actually settled. A target of 1.014 (far below what the constructor accepts,
+// written straight to storage) builds a position Blend accepts (its floor is
+// 1.0, measured with the pool's c = 0.95), but the vault's floor is 1.05, so the
+// deposit must revert as a whole — the user's transfer included.
 #[test]
 fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     let e = Env::default();
@@ -3021,7 +3059,8 @@ fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
     e.cost_estimate().budget().reset_unlimited();
 
-    let strategy = register_real_strategy_with_loops(&e, &pool_addr, &token, &blnd, 20);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    set_target_hf(&e, &strategy, 10_140_000);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let share = e.register(MockShareToken, ());
     sclient.set_share_token(&share);
@@ -3240,8 +3279,10 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
 
     // … against a deposit whose borrow is ~24,390.
     let deposit = 10_000_0000000_i128;
+    let (_, l_factor) = blend_pool::get_pool_risk_factors(&e, &config);
     let (_, deposit_borrow) =
-        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops).unwrap();
+        crate::leverage::compute_lever_in(deposit, config.c_factor, l_factor, config.target_hf)
+            .unwrap();
     assert!(
         deposit_borrow > supply - borrow,
         "fixture: the deposit's borrow must exceed the free liquidity: {} vs {}",
@@ -3329,11 +3370,8 @@ fn test_releverage_larger_than_the_free_liquidity() {
     sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
 
     // What `releverage` will borrow, from the same inputs it reads.
-    let (c_factor, target_loops, _, orange_hf) = sclient.config();
+    let (c_factor, target, _, _) = sclient.config();
     let (_, _, l_factor) = sclient.risk_factors();
-    let target = crate::leverage::design_health_factor(c_factor, target_loops, l_factor)
-        .unwrap()
-        .max(orange_hf + crate::constants::RELEVERAGE_HF_BUFFER);
     let (_, _, b, d, b_rate, d_rate) = sclient.position();
     let x = crate::leverage::compute_releverage(b, d, b_rate, d_rate, c_factor, l_factor, target)
         .unwrap();
@@ -3384,7 +3422,7 @@ fn test_unwind_of_a_share_with_no_equity_is_refused() {
         &token,
         1_000_0000000,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
     accrue_interest(&e, &pool_addr, &token, 31_536_000);
 
@@ -3429,8 +3467,10 @@ fn test_deposit_refused_while_the_pool_is_above_the_cap() {
 
     // A deposit this large would itself bring utilization back to ~80%.
     let deposit = 50_000_0000000_i128;
+    let (_, l_factor) = blend_pool::get_pool_risk_factors(&e, &config);
     let (add_supply, add_borrow) =
-        crate::leverage::compute_totals(deposit, config.c_factor, config.target_loops).unwrap();
+        crate::leverage::compute_lever_in(deposit, config.c_factor, l_factor, config.target_hf)
+            .unwrap();
     assert!(
         (borrow + add_borrow) * SCALAR_7 / (supply + add_supply)
             <= crate::constants::MAX_SAFE_UTILIZATION,
@@ -3469,7 +3509,7 @@ fn test_settled_position_check_refuses_a_pool_above_the_cap() {
         &token,
         1_000_0000000,
         config.c_factor,
-        config.target_loops,
+        TEST_LOOPS,
     );
 
     // … in a pool left 96% utilized.
@@ -3958,8 +3998,9 @@ fn setup_trait_harvest<'a>(
     Address,
 ) {
     let router = e.register(MockSoroswapRouter, (rate,));
-    let strategy =
-        register_real_strategy_with_loops_and_router(e, pool_addr, token, blnd, 3, &router);
+    let strategy = register_real_strategy_with_target_and_router(
+        e, pool_addr, token, blnd, TARGET_HF, &router,
+    );
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
     sclient.set_share_token(&e.register(MockShareToken, ()));
 
@@ -4580,7 +4621,7 @@ fn test_real_withdraw_entrypoint_keeps_reserves_in_sync() {
     sclient.set_share_token(&share);
 
     // Fund a user and deposit through the REAL entrypoint (runs the real
-    // submit_leverage_loop + reserves::deposit reconciliation).
+    // submit_lever_in + reserves::deposit reconciliation).
     let user = Address::generate(&e);
     let token_admin = StellarAssetClient::new(&e, &token);
     let deposit = 1_000_0000000_i128;

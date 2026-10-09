@@ -17,7 +17,7 @@ rollback, comms, and the post-launch watch.
       parity, lint/build, e2e, audit, gitleaks).
 - [ ] Final mainnet WASM built (`cargo build --target wasm32v1-none --release`),
       hash recorded — includes D2 receipt token + D3 admin/upgrade.
-- [ ] Mainnet config signed off: per-asset `c_factor` (≤ pool), `target_loops`,
+- [ ] Mainnet config signed off: per-asset `c_factor` (≤ pool), `target_hf`,
       `min_hf`, `orange_hf`, `reward_threshold` (see `project` notes /
       `mainnet-go-live-runbook.md`).
 - [ ] **Keeper** account created + funded; pubkey set. **Admin** account created

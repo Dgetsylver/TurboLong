@@ -18,12 +18,15 @@
   active; Soroswap router `CAG5LRYQ…`). Per-asset strategy `c_factor` sits safely
   below the pool's current value (buffer for HF):
 
-  | Asset | Contract | Strategy cFactor | Pool cFactor (live) | Loops | min_hf | orange_hf |
-  |---|---|---|---|---|---|---|
-  | USDC  | `CCW67TSZ…JMI75` | 0.90 | 0.95 | 4 | 1.05 | 1.15 |
-  | USTRY | `CBLV4ATS…PNUR`  | 0.85 | 0.90 | 3 | 1.05 | 1.15 |
-  | CETES | `CAL6ER2T…6VXV`  | 0.75 | 0.80 | 3 | 1.05 | 1.15 |
-  | XLM   | `CAS3J7GY…OWMA`  | 0.70 | 0.75 | 2 | 1.10 | 1.20 |
+  | Asset | Contract | Strategy cFactor | Pool cFactor / lFactor (live) | target_hf | Leverage | min_hf | orange_hf |
+  |---|---|---|---|---|---|---|---|
+  | USDC  | `CCW67TSZ…JMI75` | 0.90 | 0.95 / 0.95 | 1.13 | 4.11× | 1.05 | 1.10 |
+  | USTRY | `CBLV4ATS…PNUR`  | 0.85 | 0.90 / 0.90 | 1.17 | 2.89× | 1.05 | 1.15 |
+  | CETES | `CAL6ER2T…6VXV`  | 0.75 | 0.80 / 0.80 | 1.12 | 2.15× | 1.05 | 1.10 |
+  | XLM   | `CAS3J7GY…OWMA`  | 0.70 | 0.75 / 0.75 | 1.22 | 1.76× | 1.10 | 1.20 |
+
+  Leverage is `target_hf / (target_hf − c_factor × l_factor)` at the live
+  l_factor; the contract refuses a `target_hf` less than 0.02 above `orange_hf`.
 
   `reward_threshold = 100 BLND`. (Pool's 5th reserve TESOURO is intentionally out
   of the D1 4-asset scope.)
@@ -38,7 +41,7 @@
 3. **`ADMIN_PUBKEY`** — `G…` admin (upgrade + `set_share_token`/`set_swap_account`).
    Defaults to the deployer; **recommend a multisig/hardware key**.
 4. **Risk-param sign-off** — approve (or adjust) the per-asset `c_factor` /
-   `target_loops` / `min_hf` / `orange_hf` / `reward_threshold` table above.
+   `target_hf` / `min_hf` / `orange_hf` / `reward_threshold` table above.
 
 ## Run it
 

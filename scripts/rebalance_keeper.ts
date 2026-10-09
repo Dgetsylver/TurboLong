@@ -14,8 +14,8 @@
  *     vault already holds to restore the leverage an earlier unwind removed.
  *     Without this the position is a ratchet: every unwind is permanent and
  *     holders keep earning the reduced yield (audit M-3). The keeper makes no
- *     judgement about *how much* — the contract derives the target from
- *     `target_loops` and refuses to land inside the rebalance band — so the
+ *     judgement about *how much* — the contract re-levers to its configured
+ *     `target_hf`, which sits clear of the rebalance band — so the
  *     keeper only has to ask, and a no-op costs nothing but a simulation.
  *
  * Modes:
@@ -138,7 +138,7 @@ interface VaultState {
   hf: number; // health factor as a float
   minHf: number;
   orangeHf: number;
-  targetLoops: number | null;
+  targetHf: number | null;
   hasDebt: boolean;
   hasCollateral: boolean;
   configSource: "on-chain" | "fallback";
@@ -150,14 +150,14 @@ const FALLBACK_MIN_HF = Number(process.env.FALLBACK_MIN_HF ?? "1.05");
 const FALLBACK_ORANGE_HF = Number(process.env.FALLBACK_ORANGE_HF ?? "1.15");
 
 async function readVaultState(v: Vault): Promise<VaultState> {
-  // config() = (c_factor, target_loops, min_hf, orange_hf) — the on-chain
+  // config() = (c_factor, target_hf, min_hf, orange_hf) — the on-chain
   // source of truth for thresholds (anti-drift: never hardcode these). Older
   // deployments don't expose it; fall back to env-configured thresholds. The
   // contract re-checks HF < orange_hf on-chain anyway, so a stale fallback can
   // only cause a harmless no-op call, never an over-unwind.
-  let cfg: [bigint, number, bigint, bigint] | null = null;
+  let cfg: [bigint, bigint, bigint, bigint] | null = null;
   try {
-    cfg = (await simRead(v.strategyId, "config")) as [bigint, number, bigint, bigint];
+    cfg = (await simRead(v.strategyId, "config")) as [bigint, bigint, bigint, bigint];
   } catch {
     // pre-config() deployment — use fallback thresholds
   }
@@ -167,7 +167,7 @@ async function readVaultState(v: Vault): Promise<VaultState> {
     hf: Number(hfRaw) / Number(HF_SCALAR),
     minHf: cfg ? Number(cfg[2]) / Number(HF_SCALAR) : FALLBACK_MIN_HF,
     orangeHf: cfg ? Number(cfg[3]) / Number(HF_SCALAR) : FALLBACK_ORANGE_HF,
-    targetLoops: cfg ? Number(cfg[1]) : null,
+    targetHf: cfg ? Number(cfg[1]) / Number(HF_SCALAR) : null,
     hasDebt: BigInt(pos[3]) > 0n,
     hasCollateral: BigInt(pos[2]) > 0n,
     configSource: cfg ? "on-chain" : "fallback",
@@ -258,6 +258,7 @@ async function processVault(v: Vault): Promise<void> {
     hf: state.hf,
     min_hf: state.minHf,
     orange_hf: state.orangeHf,
+    target_hf: state.targetHf,
     has_debt: state.hasDebt,
     config_source: state.configSource,
   };

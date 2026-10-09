@@ -59,8 +59,11 @@ pub struct Config {
     pub reward_threshold: i128,
     /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95)
     pub c_factor: i128,
-    /// Target number of supply+borrow loops
-    pub target_loops: u32,
+    /// Health factor a deposit is levered to (1e7 scaled, e.g. 11_300_000 =
+    /// 1.13), in Blend's terms: the pool's live `l_factor` is part of it. It is
+    /// the vault's leverage, `B/E = target_hf / (target_hf − c_factor × l_factor)`.
+    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (asserted at construction).
+    pub target_hf: i128,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
     /// Orange-zone threshold: HF below this triggers partial unwind (1e7 scaled).

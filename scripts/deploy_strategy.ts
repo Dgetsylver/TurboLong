@@ -69,7 +69,7 @@ async function main() {
     nativeToScVal(10_000_000n, { type: "i128" }), // [3] reward_threshold (1 BLND)
     addrScVal(KEEPER),                            // [4] keeper
     nativeToScVal(9_000_000n, { type: "i128" }),  // [5] c_factor (0.90)
-    nativeToScVal(3, { type: "u32" }),            // [6] target_loops
+    nativeToScVal(11_700_000n, { type: "i128" }), // [6] target_hf (1.17)
     nativeToScVal(10_500_000n, { type: "i128" }), // [7] min_hf (1.05)
     nativeToScVal(11_500_000n, { type: "i128" }), // [8] orange_hf (1.15)
     addrScVal(account),                           // [9] admin (deployer, testnet)

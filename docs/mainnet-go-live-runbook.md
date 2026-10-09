@@ -100,11 +100,9 @@ Get the DeFindex team to co-sign the deployments.
   Above `orange_hf` the same pass drives the other direction: it simulates
   `releverage` and submits only when the contract says it would restore leverage
   an earlier unwind removed (audit M-3), logged as `action: "releverage"` with the
-  underlying borrowed. The contract owns the target and the ~1-day cooldown, so
-  the keeper needs no extra configuration for it — but note that on a vault whose
-  design HF sits below its `orange_hf`, re-leverage deliberately stops short of
-  `target_loops`; `preflight()` in the deploy script now fails on that
-  configuration.
+  underlying borrowed. The contract owns the target (`target_hf`, which it keeps
+  at least 0.02 above `orange_hf`) and the ~1-day cooldown, so the keeper needs
+  no extra configuration for it.
   For a permanent deployment, use the hardened systemd unit + env template in
   `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the

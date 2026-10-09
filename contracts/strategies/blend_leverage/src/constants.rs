@@ -8,11 +8,6 @@ pub const SCALAR_12: i128 = 1_000_000_000_000;
 /// Above this, d-tokens become illiquid — liquidators can't redeem them.
 pub const MAX_SAFE_UTILIZATION: i128 = 9_500_000; // 0.95 in 1e7
 
-/// Deepest leverage loop a strategy can be configured with (`target_loops`).
-/// The deposit is one supply + one borrow at any depth; this bounds the series
-/// `compute_totals` sums.
-pub const MAX_LOOPS: u32 = 20;
-
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
