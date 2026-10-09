@@ -7,7 +7,7 @@ const DAY: u32 = 17_280; // ledgers per day (~5s)
 const INSTANCE_BUMP: u32 = 30 * DAY;
 const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY;
 
-// Balances/allowances live in persistent storage with a generous TTL window.
+// Balances: persistent storage, generous TTL. Allowances: temporary (set_allowance).
 const PERSIST_BUMP: u32 = 120 * DAY;
 const PERSIST_THRESHOLD: u32 = PERSIST_BUMP - 20 * DAY;
 
