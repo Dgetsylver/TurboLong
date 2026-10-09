@@ -94,9 +94,9 @@ Get the DeFindex team to co-sign the deployments.
   (DRY-RUN: reads on-chain `config()` thresholds + `health_factor()`, simulates
   only). Then run the live service:
   `op run -- env NETWORK=mainnet VAULTS_JSON=… npx tsx rebalance_keeper.ts --execute --loop`
-  — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
-  the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
-  HF, underlying repaid, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, and
+  appends every probe/rebalance (before/after HF, underlying repaid, tx hash) to
+  `docs/evidence/rebalance-keeper-log.jsonl`.
   Above `orange_hf` the same pass drives the other direction: it simulates
   `releverage` and submits only when the contract says it would restore leverage
   an earlier unwind removed (audit M-3), logged as `action: "releverage"` with the

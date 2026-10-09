@@ -557,11 +557,15 @@ impl BlendLeverageStrategy {
         Ok((b_correction, d_correction))
     }
 
-    /// Keeper-authorised, rate-limited auto-rebalance. Repays just enough debt to
-    /// bring HF back to `orange_hf + REBALANCE_HF_BUFFER` when it has dropped into
-    /// the orange zone. Limited to once per `REBALANCE_COOLDOWN_LEDGERS`; emits a
-    /// `rebalance` event with before/after HF and the underlying repaid. Returns
-    /// the underlying repaid.
+    /// Keeper-authorised auto-rebalance: `rebalance`, attributed to the keeper.
+    /// Repays just enough debt to bring HF back to `orange_hf +
+    /// REBALANCE_HF_BUFFER` when it has dropped into the orange zone; emits a
+    /// `rebalance` event with the keeper as caller, before/after HF and the
+    /// underlying repaid. Returns the underlying repaid.
+    ///
+    /// Not rate-limited, and nothing would be gained by it: `rebalance` offers
+    /// the same unwind to anyone, and the unwind limits itself — it acts only
+    /// below `orange_hf` and lands above it, so a repeat call is a no-op.
     pub fn rebalance_keeper(e: Env, caller: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
@@ -570,19 +574,10 @@ impl BlendLeverageStrategy {
             return Err(StrategyError::NotAuthorized);
         }
 
-        // Rate-limit.
-        let now = e.ledger().sequence();
-        if let Some(last) = storage::get_last_rebalance(&e) {
-            if now < last.saturating_add(constants::REBALANCE_COOLDOWN_LEDGERS) {
-                return Err(StrategyError::NotAuthorized);
-            }
-        }
-
         let config = storage::get_config(&e);
         let (before_hf, after_hf, repaid) =
             unwind_to(&e, &config, config.orange_hf, rebalance_target(&config)?)?;
         if repaid > 0 {
-            storage::set_last_rebalance(&e, now);
             emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
         }
         Ok(repaid)
@@ -682,10 +677,8 @@ impl BlendLeverageStrategy {
     /// Rate-limited to once per `RELEVERAGE_COOLDOWN_LEDGERS`. A no-op does not
     /// consume the cooldown. Emits a `releverage` event when leverage is added.
     ///
-    /// Note the cooldown rejection is `DeadlineExpired`, not `NotAuthorized`:
-    /// the caller *is* authorized, it is simply too early, and reusing the
-    /// authorization error for a timing failure is what makes `rebalance_keeper`'s
-    /// cooldown misleading to operators today.
+    /// The cooldown rejection is `DeadlineExpired`, not `NotAuthorized`: the
+    /// caller *is* authorized, it is simply too early.
     pub fn releverage(e: Env, caller: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);

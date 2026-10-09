@@ -6,7 +6,7 @@
  * position needs attention:
  *
  *   HF below the on-chain `orange_hf` → `rebalance_keeper(caller)`, the
- *     keeper-authorised, rate-limited entrypoint that repays just enough debt
+ *     keeper-authorised entrypoint that repays just enough debt
  *     to restore HF and emits a `rebalance` event with before/after HF and the
  *     underlying repaid.
  *
@@ -26,9 +26,8 @@
  *             when the simulation says it would restore leverage. Requires
  *             KEEPER_SECRET (the strategy's keeper account) — provide it via a
  *             secrets manager (`op run`), never commit it.
- *   --loop    Keep running: re-check every INTERVAL_S (default 300s ≈ the
- *             60-ledger on-chain cooldown). Combine with --execute for the
- *             production keeper service.
+ *   --loop    Keep running: re-check every INTERVAL_S (default 300s). Combine
+ *             with --execute for the production keeper service.
  *
  * Env:
  *   NETWORK          testnet | mainnet            (default testnet)

@@ -1185,9 +1185,8 @@ fn find_rebalance_event(
 // Drives the REAL `rebalance_keeper` entrypoint against a REAL stressed
 // position on the REAL Blend pool and asserts every observable in the spec:
 // HF restored to the rebalance target (orange_hf + REBALANCE_HF_BUFFER), a
-// positive repay returned, the `rebalance` event emitted with a payload
-// consistent with the on-chain state transition, and the rate-limit timestamp
-// recorded.
+// positive repay returned, and the `rebalance` event emitted with a payload
+// consistent with the on-chain state transition.
 #[test]
 fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
     let e = Env::default();
@@ -1242,14 +1241,6 @@ fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
     );
     assert_eq!(ev_after, after_hf, "event after_hf matches post-state");
 
-    // The rate-limit timestamp was recorded (a real rebalance consumes it).
-    let last = e.as_contract(&strategy, || storage::get_last_rebalance(&e));
-    assert_eq!(
-        last,
-        Some(e.ledger().sequence()),
-        "LastRebalance must be set after a real unwind"
-    );
-
     std::println!(
         "keeper rebalance: hf {} -> {} (target {}), repaid={}",
         before_hf,
@@ -1259,14 +1250,12 @@ fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
     );
 }
 
-// T2.3 spec: "rate-limited". On-chain proof of the 60-ledger cooldown: after a
-// real (repaid > 0) keeper rebalance, an immediate second call is rejected; once
-// REBALANCE_COOLDOWN_LEDGERS have elapsed the keeper may call again (a safe
-// no-op here since HF is already restored). The permissionless `rebalance`
-// stays available inside the cooldown window (anyone can always protect the
-// vault).
+// The rebalance needs no rate limit: it acts only below `orange_hf` and lands
+// above it, so an immediate repeat — by the keeper, or by anyone through the
+// permissionless `rebalance` — repays nothing, emits nothing and leaves the
+// position exactly where the first call put it.
 #[test]
-fn test_rebalance_keeper_cooldown_rate_limits_on_chain() {
+fn test_rebalance_keeper_repeat_call_is_a_noop() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
@@ -1277,45 +1266,35 @@ fn test_rebalance_keeper_cooldown_rate_limits_on_chain() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let keeper = sclient.get_keeper();
 
-    // First keeper rebalance does real work and arms the cooldown.
     let repaid = sclient.rebalance_keeper(&keeper);
     assert!(repaid > 0, "first call must unwind");
+    let hf = sclient.health_factor();
+    let position = sclient.position();
 
-    // Second call inside the cooldown window is rejected — even for the keeper.
-    assert!(
-        sclient.try_rebalance_keeper(&keeper).is_err(),
-        "keeper must be rate-limited inside the cooldown window"
-    );
-
-    // One ledger short of expiry: still rejected.
-    e.ledger().with_mut(|li| {
-        li.sequence_number += crate::constants::REBALANCE_COOLDOWN_LEDGERS - 1;
-    });
-    assert!(
-        sclient.try_rebalance_keeper(&keeper).is_err(),
-        "cooldown must hold until the full window has elapsed"
-    );
-
-    // The permissionless safety valve is NOT rate-limited.
-    sclient.rebalance();
-
-    // At exactly cooldown expiry the keeper may call again (no-op: HF restored).
-    e.ledger().with_mut(|li| {
-        li.sequence_number += 1;
-    });
     assert_eq!(
         sclient.rebalance_keeper(&keeper),
         0,
-        "post-cooldown call succeeds (no-op, HF already at target)"
+        "an immediate repeat repays nothing"
+    );
+    assert!(
+        find_rebalance_event(&e, &strategy, &keeper).is_none(),
+        "no event on the repeat"
+    );
+    sclient.rebalance();
+
+    assert_eq!(sclient.health_factor(), hf, "HF untouched by the repeats");
+    assert_eq!(
+        sclient.position(),
+        position,
+        "position untouched by the repeats"
     );
 }
 
 // T2.3 spec edge case: "already at floor". A healthy position (HF >= orange_hf,
 // debt outstanding) must be a clean no-op: nothing repaid, no `rebalance`
-// event, and — critically — the cooldown NOT consumed, so the keeper is never
-// locked out of a real rebalance by an earlier no-op probe.
+// event, position untouched.
 #[test]
-fn test_rebalance_keeper_already_at_floor_noop_does_not_consume_cooldown() {
+fn test_rebalance_keeper_already_at_floor_is_a_noop() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
@@ -1347,16 +1326,6 @@ fn test_rebalance_keeper_already_at_floor_noop_does_not_consume_cooldown() {
         "no event on a no-op"
     );
     assert_eq!(sclient.health_factor(), hf, "position untouched");
-
-    // The no-op must not consume the cooldown: an immediate second keeper call
-    // is still allowed (also a no-op), and LastRebalance stays unset.
-    let last = e.as_contract(&strategy, || storage::get_last_rebalance(&e));
-    assert_eq!(last, None, "no-op must not arm the cooldown");
-    assert_eq!(
-        sclient.rebalance_keeper(&keeper),
-        0,
-        "immediate retry allowed after a no-op"
-    );
 }
 
 // ── partial_unwind target bounding (audit M-1) ───────────────────────────────
@@ -1755,8 +1724,8 @@ fn test_releverage_noop_without_slack_does_not_consume_cooldown() {
 
 // Rate limit, on-chain: a real re-leverage arms the cooldown, and the rejection
 // inside the window is `DeadlineExpired` — the caller *is* authorized, it is
-// simply too early, and reusing `NotAuthorized` for that is what makes
-// `rebalance_keeper`'s cooldown misleading to operators (audit L-7).
+// simply too early, and reusing `NotAuthorized` for that misleads operators
+// (audit L-7).
 #[test]
 fn test_releverage_cooldown_rate_limits_on_chain() {
     let e = Env::default();

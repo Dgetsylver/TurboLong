@@ -16,16 +16,11 @@ pub const MAX_LOOPS: u32 = 20;
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
-/// Minimum ledgers between keeper-triggered rebalances (~5 minutes at ~5s/
-/// ledger). Rate-limits the automation; the permissionless `rebalance` is
-/// unaffected (anyone can always protect a position).
-pub const REBALANCE_COOLDOWN_LEDGERS: u32 = 60;
-
 /// Minimum ledgers between keeper re-leverages (~1 day at ~5s/ledger).
 ///
-/// Deliberately far slower than the rebalance cooldown: deleveraging is an
-/// emergency and must stay responsive, while adding leverage back is
-/// maintenance that is never urgent. The cap on *how much* leverage
+/// Only this direction is rate-limited: deleveraging is an emergency and must
+/// stay responsive, while adding leverage back is maintenance that is never
+/// urgent. The cap on *how much* leverage
 /// `releverage` can add is a level, not a rate (see `RELEVERAGE_HF_BUFFER`), so
 /// repeated calls converge rather than compound — this cooldown is about not
 /// churning the position through the pool (and the rounding each submit costs)
@@ -52,7 +47,7 @@ pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
 /// `orange_hf + this` rather than to the trigger itself. The unwind is a single
 /// exact repay that lands on its target to within a few 1e-7, and a position
 /// parked exactly on the trigger is back under it after a few minutes of
-/// interest — without the band the keeper would rebalance every cooldown, a
+/// interest — without the band the keeper would rebalance on every pass, a
 /// sliver of debt at a time.
 ///
 /// 0.01 buys roughly 2.5–5 months of drift at a 2–4 point borrow/supply spread

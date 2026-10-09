@@ -24,8 +24,6 @@ pub enum DataKey {
     /// The SEP-41 vault-share token contract — the canonical per-user share
     /// ledger. The strategy is its minter (mints on deposit, burns on withdraw).
     ShareToken,
-    /// Ledger sequence of the last keeper rebalance (for rate-limiting).
-    LastRebalance,
     /// Ledger sequence of the last keeper re-leverage (for rate-limiting).
     LastReleverage,
     /// Keeper-controlled account allowed to pull claimed BLND for an off-chain
@@ -187,19 +185,6 @@ pub fn has_share_token(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::ShareToken)
 }
 
-// ── Keeper rebalance rate-limit ──────────────────────────────────────────────
-
-pub fn set_last_rebalance(e: &Env, ledger: u32) {
-    e.storage().instance().set(&DataKey::LastRebalance, &ledger);
-}
-
-/// `None` when no keeper rebalance has ever been recorded. An explicit Option
-/// (instead of a `0` sentinel) so a rebalance recorded at any ledger sequence
-/// — including 0 in test environments — correctly arms the cooldown.
-pub fn get_last_rebalance(e: &Env) -> Option<u32> {
-    e.storage().instance().get(&DataKey::LastRebalance)
-}
-
 // ── Keeper re-leverage rate-limit ────────────────────────────────────────────
 
 pub fn set_last_releverage(e: &Env, ledger: u32) {
@@ -208,8 +193,9 @@ pub fn set_last_releverage(e: &Env, ledger: u32) {
         .set(&DataKey::LastReleverage, &ledger);
 }
 
-/// `None` when no re-leverage has ever been recorded — same explicit-Option
-/// reasoning as `get_last_rebalance`.
+/// `None` when no re-leverage has ever been recorded. An explicit Option
+/// (instead of a `0` sentinel) so a re-leverage recorded at any ledger sequence
+/// — including 0 in test environments — correctly arms the cooldown.
 pub fn get_last_releverage(e: &Env) -> Option<u32> {
     e.storage().instance().get(&DataKey::LastReleverage)
 }
