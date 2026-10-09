@@ -22,7 +22,7 @@ mod test_integration;
 mod test_leverage;
 
 use admin_sep::{Administratable, AdministratableExtension, Upgradable};
-use constants::{RELEVERAGE_HF_BUFFER, SCALAR_12, SCALAR_7};
+use constants::{MAX_ASSET_DECIMALS, RELEVERAGE_HF_BUFFER, SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
     check_min_health_factor, compute_health_factor, compute_partial_unwind, compute_releverage,
@@ -90,6 +90,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
         let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
+
+        // The share math has i128 headroom for up to 7 decimals only.
+        assert!(
+            TokenClient::new(&e, &asset).decimals() <= MAX_ASSET_DECIMALS,
+            "asset decimals must be <= 7"
+        );
 
         // Look up the reserve index and risk parameters from the pool
         let pool_client = blend_contract_sdk::pool::Client::new(&e, &pool);

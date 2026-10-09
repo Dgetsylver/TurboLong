@@ -1166,6 +1166,30 @@ fn test_config_view_exposes_constructor_risk_params() {
     assert_eq!(orange_hf, 11_500_000, "orange_hf 1.15");
 }
 
+/// A token reporting 18 decimals, for the constructor's decimals check.
+#[contract]
+pub struct EighteenDecimalsToken;
+
+#[contractimpl]
+impl EighteenDecimalsToken {
+    pub fn decimals(_e: Env) -> u32 {
+        18
+    }
+}
+
+// Share pricing multiplies shares by equity in i128, which a high-decimals
+// asset overflows at trivial sizes (~13 tokens at 18 decimals), so the
+// constructor refuses one (finding 20).
+#[test]
+#[should_panic(expected = "asset decimals must be <= 7")]
+fn test_constructor_refuses_an_asset_with_more_than_7_decimals() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, _token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let token = e.register(EighteenDecimalsToken, ());
+    register_real_strategy(&e, &pool_addr, &token, &blnd);
+}
+
 // ── Risk parameter setters (finding 19) ──────────────────────────────────────
 
 // The admin can retune the risk parameters without a redeploy, and the change

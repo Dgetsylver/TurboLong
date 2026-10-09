@@ -7,6 +7,17 @@ pub const SCALAR_12: i128 = 1_000_000_000_000;
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
+/// Most decimals the underlying may have (asserted at construction).
+///
+/// The share math multiplies shares by equity, and withdraw sizing shares by
+/// collateral, in i128 — and the first deposit mints one share per underlying
+/// unit. The tighter of the two overflows once equity passes about
+/// √(i128::MAX / leverage) units: ~6.5e18 at 4×, which is ~650 billion tokens
+/// at 7 decimals (every Stellar classic asset) but ~6.5 tokens at 18. A
+/// higher-decimals asset would need 256-bit intermediates (`SorobanFixedPoint`)
+/// in the share math first.
+pub const MAX_ASSET_DECIMALS: u32 = 7;
+
 /// Ledgers over which each harvest's profit is released into the share price
 /// (~1 day at ~5s/ledger).
 ///
