@@ -183,38 +183,33 @@ pub fn deposit(
 
 // ── Withdraw accounting ──────────────────────────────────────────────────────
 
-/// Account for a withdrawal from the leveraged position.
+/// Size a withdrawal of `amount` of equity: the shares to burn and the b/d
+/// tokens that carry them out.
 ///
-/// Process:
-/// 1. Determine share proportion to burn
-/// 2. Calculate proportional b/d tokens
-/// 3. Update totals
+/// Every quantity rounds against the withdrawer — the shares burned round up,
+/// the collateral they take rounds down and the debt they repay rounds up — so
+/// the holders who stay never inherit a sliver of the leaver's debt.
 ///
-/// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove, preview_reserves)`.
+/// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove)`.
 ///
 /// `user_shares` is the caller's current token balance (read by `lib.rs` from
-/// the share token, not from strategy storage). This no longer writes
-/// `VaultPos`: the caller burns `shares_to_burn` from the token.
+/// the share token, not from strategy storage); the caller burns
+/// `shares_to_burn` from the token.
 ///
-/// IMPORTANT: this function does **not** persist the position. The returned
-/// `b/d_tokens_to_remove` are the *intended* unwind amounts (fed to
-/// `submit_unwind`); the `preview_reserves` are the corresponding projected
-/// state and are exact only when token≈underlying. The real reserves are
-/// committed by `commit_withdraw` from the pool's *measured* deltas, so stored
-/// reserves stay in lock-step with the actual pool position (Finding ①).
+/// Nothing is persisted here. The token amounts are what `submit_unwind` is
+/// asked to remove; `commit_withdraw` then records what the pool *measurably*
+/// removed, so stored reserves stay in lock-step with the actual pool position
+/// (Finding ①).
 pub fn withdraw(
-    _e: &Env,
     user_shares: i128,
     amount: i128, // underlying amount requested
     reserves: &LeverageReserves,
-) -> Result<(i128, i128, i128, LeverageReserves), StrategyError> {
-    let mut reserves = reserves.clone();
-
+) -> Result<(i128, i128, i128), StrategyError> {
     if user_shares <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
 
-    let total_equity = compute_equity(&reserves)?;
+    let total_equity = compute_equity(reserves)?;
     if total_equity <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
@@ -233,30 +228,10 @@ pub fn withdraw(
         .fixed_mul_floor(reserves.total_b_tokens, reserves.total_shares)
         .ok_or(StrategyError::ArithmeticError)?;
     let d_tokens_to_remove = shares_to_burn
-        .fixed_mul_floor(reserves.total_d_tokens, reserves.total_shares)
+        .fixed_mul_ceil(reserves.total_d_tokens, reserves.total_shares)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    // Project the post-withdraw state for the caller's preview/return value.
-    // NOTE: not persisted here — see `commit_withdraw` (Finding ①).
-    reserves.total_shares = reserves
-        .total_shares
-        .checked_sub(shares_to_burn)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    reserves.total_b_tokens = reserves
-        .total_b_tokens
-        .checked_sub(b_tokens_to_remove)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    reserves.total_d_tokens = reserves
-        .total_d_tokens
-        .checked_sub(d_tokens_to_remove)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-
-    Ok((
-        shares_to_burn,
-        b_tokens_to_remove,
-        d_tokens_to_remove,
-        reserves,
-    ))
+    Ok((shares_to_burn, b_tokens_to_remove, d_tokens_to_remove))
 }
 
 /// Commit a withdrawal to storage using the b/d tokens the pool *actually*
@@ -266,9 +241,10 @@ pub fn withdraw(
 ///
 /// `reserves` is the pre-withdraw snapshot (with refreshed rates). `shares_to_burn`
 /// is the amount burned from the share token; `b_removed`/`d_removed` are the
-/// measured pool deltas. Position totals use `saturating_sub` so a full close
-/// that clears a stroop more than was tracked (e.g. the `i64::MAX` dust sweep)
-/// floors at zero instead of reverting.
+/// measured pool deltas. Position totals use `saturating_sub` as a floor: the
+/// measured removal should never exceed the share it was computed from, but if
+/// it ever did — the pool can hold more than the tracked totals, which only
+/// reconcile downward — the total floors at zero instead of reverting.
 ///
 /// Returns the persisted, post-withdraw reserves.
 pub fn commit_withdraw(

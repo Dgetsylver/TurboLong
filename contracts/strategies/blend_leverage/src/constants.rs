@@ -8,11 +8,10 @@ pub const SCALAR_12: i128 = 1_000_000_000_000;
 /// Above this, d-tokens become illiquid — liquidators can't redeem them.
 pub const MAX_SAFE_UTILIZATION: i128 = 9_500_000; // 0.95 in 1e7
 
-/// Maximum allowed borrow-supply APR spread (percentage points × 1e7).
-/// Abnormally high spreads may indicate rate manipulation.
-/// Reserved for future rate-spread guard in check_deposit_safety.
-#[allow(dead_code)]
-pub const MAX_RATE_SPREAD: i128 = 15_000_000; // 15% in 1e7
+/// Deepest leverage loop a strategy can be configured with (`target_loops`).
+/// The deposit is one supply + one borrow at any depth; this bounds the series
+/// `compute_totals` sums.
+pub const MAX_LOOPS: u32 = 20;
 
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
@@ -46,6 +45,24 @@ pub const RELEVERAGE_COOLDOWN_LEDGERS: u32 = 17_280;
 /// spread a 1.15 → 1.17 band is ~5 months of drift, and the position spends that
 /// whole time levered rather than oscillating.
 pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
+
+/// Landing margin above `orange_hf`, 1e7-scaled, for the rebalance path.
+///
+/// `rebalance` still fires once HF drops below `orange_hf`, but it unwinds to
+/// `orange_hf + this` rather than to the trigger itself. The unwind is a single
+/// exact repay that lands on its target to within a few 1e-7, and a position
+/// parked exactly on the trigger is back under it after a few minutes of
+/// interest — without the band the keeper would rebalance every cooldown, a
+/// sliver of debt at a time.
+///
+/// 0.01 buys roughly 2.5–5 months of drift at a 2–4 point borrow/supply spread
+/// (the decay estimate under `RELEVERAGE_HF_BUFFER`) for about 3% of leverage at
+/// c = 0.90. It must stay below `2 × RELEVERAGE_HF_BUFFER`: `releverage` only acts
+/// once HF clears `orange_hf` by that much, so a narrower band can never hand a
+/// freshly rebalanced position straight back to it.
+pub const REBALANCE_HF_BUFFER: i128 = 100_000; // 0.01 in 1e7
+
+const _: () = assert!(REBALANCE_HF_BUFFER < 2 * RELEVERAGE_HF_BUFFER);
 
 /// Ledgers a claim's BLND approval to the swap account stays live (~5 minutes
 /// at ~5s/ledger).
