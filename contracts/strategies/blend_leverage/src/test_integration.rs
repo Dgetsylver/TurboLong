@@ -1166,6 +1166,82 @@ fn test_config_view_exposes_constructor_risk_params() {
     assert_eq!(orange_hf, 11_500_000, "orange_hf 1.15");
 }
 
+// ── Risk parameter setters (finding 19) ──────────────────────────────────────
+
+// The admin can retune the risk parameters without a redeploy, and the change
+// applies to the next deposit: here a lower target_hf levers it further.
+#[test]
+fn test_set_risk_params_applies_to_the_next_deposit() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+
+    sclient.set_risk_params(&9_000_000, &11_800_000, &10_600_000, &11_600_000);
+    assert_eq!(
+        sclient.config(),
+        (9_000_000, 11_800_000, 10_600_000, 11_600_000)
+    );
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    let hf = sclient.health_factor();
+    assert!(
+        (hf - 11_800_000).abs() <= 2,
+        "the deposit lands on the new target: {}",
+        hf
+    );
+
+    sclient.set_reward_threshold(&5_0000000);
+    let stored = e.as_contract(&strategy, || storage::get_config(&e).reward_threshold);
+    assert_eq!(stored, 5_0000000);
+}
+
+// The setter runs the constructor's own validation, against the live pool: a
+// target inside the rebalance band, or a c_factor above the pool's (what a Blend
+// governance cut would leave), is refused and nothing changes.
+#[test]
+fn test_set_risk_params_is_validated_like_the_constructor() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let before = sclient.config();
+
+    // orange_hf 1.15 needs target_hf >= 1.17.
+    assert!(sclient
+        .try_set_risk_params(&9_000_000, &11_699_999, &10_500_000, &11_500_000)
+        .is_err());
+    // The test pool's c_factor is 0.95.
+    assert!(sclient
+        .try_set_risk_params(&9_600_000, &TARGET_HF, &10_500_000, &11_500_000)
+        .is_err());
+    assert!(sclient.try_set_reward_threshold(&0).is_err());
+    assert_eq!(sclient.config(), before, "a refused change changes nothing");
+}
+
+// Both setters are admin-gated: with no authorization mocked, they are refused.
+#[test]
+fn test_risk_setters_require_the_admin() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    e.set_auths(&[]);
+    assert!(sclient
+        .try_set_risk_params(&9_000_000, &TARGET_HF, &10_500_000, &11_500_000)
+        .is_err());
+    assert!(sclient.try_set_reward_threshold(&5_0000000).is_err());
+}
+
 // ── Auto-rebalance keeper auth & rate-limit (T2.3) ────────────────────────────
 
 #[test]

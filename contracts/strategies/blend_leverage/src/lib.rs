@@ -103,49 +103,13 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         check_positive_amount(reward_threshold).expect("reward_threshold must be positive");
 
-        // Validate risk parameters at deploy time. A misconfiguration here would
-        // either allow unsafe leverage or permanently brick liquidation
-        // protection (`compute_partial_unwind` requires orange_hf > c_factor),
-        // so these invariants are enforced before any funds can enter.
-        //
-        //   0 < c_factor < 1.0           — a collateral factor must be a fraction
-        //   c_factor <= pool c_factor    — see the safety-margin derivation below
-        //   min_hf > 1.0                 — never open a directly-liquidatable position
-        //   orange_hf > min_hf           — orange (rebalance) zone sits above the
-        //                                  hard deposit floor
-        //   target_hf >= orange_hf + RELEVERAGE_HF_BUFFER
-        //                                — deposits and re-leverage land clear of
-        //                                  the rebalance band; one opening inside it
-        //                                  would be handed straight to `rebalance`
-        // (orange_hf > c_factor, and target_hf > c_factor × l_factor, are implied
-        // by the chain above and 1.0 > c_factor.)
-        //
-        // Safety margin, derived rather than conventional. `compute_health_factor`
-        // reports HF = B × c_factor × l_factor / D, while Blend liquidates once
-        // B × pool_c_factor < D / l_factor, i.e. once B × pool_c_factor × l_factor / D
-        // drops below 1.0. With c_factor <= pool_c_factor the strategy's HF is a
-        // lower bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed
-        // in Blend's terms and no per-asset buffer convention is needed to make it
-        // hold. (The deploy script's habit of setting c_factor strictly below the
-        // pool's is still useful — it buys borrow headroom — but the vault's
-        // solvency no longer depends on it.)
-        assert!(
-            c_factor > 0 && c_factor < SCALAR_7,
-            "c_factor must be in (0, 1.0)"
-        );
-        assert!(
-            c_factor <= pool_c_factor,
-            "c_factor must not exceed the pool's c_factor"
-        );
-        assert!(
-            pool_l_factor > 0 && pool_l_factor <= SCALAR_7,
-            "pool l_factor must be in (0, 1.0]"
-        );
-        assert!(min_hf > SCALAR_7, "min_hf must be > 1.0");
-        assert!(orange_hf > min_hf, "orange_hf must be > min_hf");
-        assert!(
-            target_hf >= orange_hf.saturating_add(RELEVERAGE_HF_BUFFER),
-            "target_hf must clear orange_hf by RELEVERAGE_HF_BUFFER"
+        validate_risk_params(
+            c_factor,
+            target_hf,
+            min_hf,
+            orange_hf,
+            pool_c_factor,
+            pool_l_factor,
         );
 
         let config = Config {
@@ -379,6 +343,61 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
         shares_to_underlying(user_shares, &reserves, reserves::locked_profit(&e)?)
     }
+}
+
+/// The risk-parameter invariants, enforced at construction and on every
+/// `set_risk_params` against the pool's live reserve config. A misconfiguration
+/// would either allow unsafe leverage or brick liquidation protection
+/// (`compute_partial_unwind` requires orange_hf > c_factor), so it is refused
+/// before it can apply:
+///
+///   0 < c_factor < 1.0           — a collateral factor must be a fraction
+///   c_factor <= pool c_factor    — see the safety-margin derivation below
+///   min_hf > 1.0                 — never open a directly-liquidatable position
+///   orange_hf > min_hf           — orange (rebalance) zone sits above the
+///                                  hard deposit floor
+///   target_hf >= orange_hf + RELEVERAGE_HF_BUFFER
+///                                — deposits and re-leverage land clear of
+///                                  the rebalance band; one opening inside it
+///                                  would be handed straight to `rebalance`
+/// (orange_hf > c_factor, and target_hf > c_factor × l_factor, are implied by
+/// the chain above and 1.0 > c_factor.)
+///
+/// Safety margin, derived rather than conventional. `compute_health_factor`
+/// reports HF = B × c_factor × l_factor / D, while Blend liquidates once
+/// B × pool_c_factor < D / l_factor, i.e. once B × pool_c_factor × l_factor / D
+/// drops below 1.0. With c_factor <= pool_c_factor the strategy's HF is a lower
+/// bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed in Blend's
+/// terms and no per-asset buffer convention is needed to make it hold. (The
+/// deploy script's habit of setting c_factor strictly below the pool's is still
+/// useful — it buys borrow headroom — but the vault's solvency no longer depends
+/// on it.)
+fn validate_risk_params(
+    c_factor: i128,
+    target_hf: i128,
+    min_hf: i128,
+    orange_hf: i128,
+    pool_c_factor: i128,
+    pool_l_factor: i128,
+) {
+    assert!(
+        c_factor > 0 && c_factor < SCALAR_7,
+        "c_factor must be in (0, 1.0)"
+    );
+    assert!(
+        c_factor <= pool_c_factor,
+        "c_factor must not exceed the pool's c_factor"
+    );
+    assert!(
+        pool_l_factor > 0 && pool_l_factor <= SCALAR_7,
+        "pool l_factor must be in (0, 1.0]"
+    );
+    assert!(min_hf > SCALAR_7, "min_hf must be > 1.0");
+    assert!(orange_hf > min_hf, "orange_hf must be > min_hf");
+    assert!(
+        target_hf >= orange_hf.saturating_add(RELEVERAGE_HF_BUFFER),
+        "target_hf must clear orange_hf by RELEVERAGE_HF_BUFFER"
+    );
 }
 
 /// Post-submit safety gate for `deposit`: the position's HF must be at or above
@@ -949,6 +968,63 @@ impl BlendLeverageStrategy {
     /// The intermediate token of the on-chain Soroswap harvest route, if any.
     pub fn swap_via(e: Env) -> Option<Address> {
         storage::get_swap_via(&e)
+    }
+
+    /// Change the risk parameters (admin-gated), under the constructor's own
+    /// validation against the pool's live reserve config — notably
+    /// `c_factor <= pool c_factor`, so a Blend governance cut can be followed
+    /// within its timelock.
+    ///
+    /// Takes effect at once: new deposits and harvests lever to the new
+    /// `target_hf`; `releverage` moves the existing position toward it when it
+    /// is lower, the keeper's `partial_unwind` when it is higher; and a higher
+    /// `orange_hf` can make the position eligible for `rebalance` immediately.
+    /// Emits `risk_params` with the new `(c_factor, target_hf, min_hf,
+    /// orange_hf)`.
+    pub fn set_risk_params(
+        e: Env,
+        c_factor: i128,
+        target_hf: i128,
+        min_hf: i128,
+        orange_hf: i128,
+    ) -> Result<(), StrategyError> {
+        Self::require_admin(&e);
+        let mut config = storage::get_config(&e);
+        let (pool_c_factor, pool_l_factor) = blend_pool::get_pool_risk_factors(&e, &config);
+        validate_risk_params(
+            c_factor,
+            target_hf,
+            min_hf,
+            orange_hf,
+            pool_c_factor,
+            pool_l_factor,
+        );
+
+        config.c_factor = c_factor;
+        config.target_hf = target_hf;
+        config.min_hf = min_hf;
+        config.orange_hf = orange_hf;
+        storage::set_config(&e, config);
+        extend_instance_ttl(&e);
+        e.events().publish(
+            (Symbol::new(&e, "risk_params"),),
+            (c_factor, target_hf, min_hf, orange_hf),
+        );
+        Ok(())
+    }
+
+    /// Change the minimum BLND balance a harvest swaps (admin-gated). Emits
+    /// `reward_threshold`.
+    pub fn set_reward_threshold(e: Env, reward_threshold: i128) -> Result<(), StrategyError> {
+        Self::require_admin(&e);
+        check_positive_amount(reward_threshold)?;
+        let mut config = storage::get_config(&e);
+        config.reward_threshold = reward_threshold;
+        storage::set_config(&e, config);
+        extend_instance_ttl(&e);
+        e.events()
+            .publish((Symbol::new(&e, "reward_threshold"),), reward_threshold);
+        Ok(())
     }
 
     /// Set the harvest floor rate (admin-gated): the minimum underlying the
