@@ -1,5 +1,6 @@
 use blend_contract_sdk::pool::{Client as BlendPoolClient, Request};
 use defindex_strategy_core::StrategyError;
+use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     token::TokenClient,
@@ -9,21 +10,67 @@ use soroban_sdk::{
 use crate::{
     constants::{
         REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
-        REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12, SCALAR_7,
+        REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
     },
-    leverage::{compute_step, loop_step_count},
+    leverage::compute_totals,
     soroswap::internal_swap_exact_tokens_for_tokens,
     storage::Config,
 };
 
-// ── Leverage loop submission ─────────────────────────────────────────────────
+// ── Position changes ─────────────────────────────────────────────────────────
+//
+// Every position change is one `submit_with_allowance` of at most two requests.
+// Two properties of the Blend v2 pool make that enough:
+//
+// - Token transfers are settled once, after every request has been applied, and
+//   netted per asset: the strategy is pulled from (`transfer_from`) only when it
+//   owes the pool on balance, and paid only the surplus. Plain `submit` does not
+//   net; this module never uses it.
+// - Each `borrow` and `withdraw_collateral` request checks that the reserve's
+//   utilization is below 100% at the moment it runs. Max utilization, the
+//   health factor and min collateral are checked once, on the final state.
+//
+// So each submit lists the request that lowers utilization first — supply before
+// borrow, repay before withdraw — and its one utilization-raising request runs
+// its below-100% check against the submit's final state rather than a halfway
+// one. For a borrow that is already implied by the final max-utilization check;
+// for a withdraw it asks only that the pool can pay out the net amount.
+//
+// Blend also rejects any request that mints or burns zero b/d-tokens, so a leg
+// that would be zero is left out rather than sent.
 
-/// Submit a leverage loop to the Blend pool as a single atomic submit.
+/// Approve the pool to pull up to `amount` of the underlying for the submit that
+/// immediately follows (expires next ledger).
 ///
-/// Blend pool processes requests sequentially: for each supply request it pulls
-/// tokens, for each borrow request it sends tokens. So alternating
-/// [supply, borrow, supply, borrow, ..., supply] works atomically — borrow
-/// proceeds fund the next supply step within the same submit() call.
+/// Netting means the pool pulls only what the strategy owes on balance — the
+/// deposit for a lever-in, and nothing for the other submits, whose transfers
+/// net to zero or in the strategy's favour — so this bounds what can move rather
+/// than predicting it.
+fn approve_pool(e: &Env, config: &Config, amount: i128) {
+    let strategy = e.current_contract_address();
+    let expiration = e.ledger().sequence() + 1;
+    e.authorize_as_current_contract(vec![
+        e,
+        InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: config.asset.clone(),
+                fn_name: Symbol::new(e, "approve"),
+                args: (strategy.clone(), config.pool.clone(), amount, expiration).into_val(e),
+            },
+            sub_invocations: vec![e],
+        }),
+    ]);
+    TokenClient::new(e, &config.asset).approve(&strategy, &config.pool, &amount, &expiration);
+}
+
+/// Lever `initial_amount` of the underlying into the position as one
+/// `[supply_collateral S, borrow D]` submit, `(S, D)` being the totals of the
+/// `target_loops`-deep loop (`compute_totals`).
+///
+/// One pair builds the position the loop would. Netting means only
+/// `S − D = initial_amount` leaves the strategy, and the single borrow is checked
+/// against the whole supply — the final state, which the loop only reached on its
+/// last step — so it is never harder on the pool than the loop was.
 ///
 /// Returns (b_token_delta, d_token_delta) — the position deltas.
 pub fn submit_leverage_loop(
@@ -33,84 +80,33 @@ pub fn submit_leverage_loop(
 ) -> Result<(i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
+    let (pre_b, pre_d) = get_strategy_positions(e, config);
 
-    // Get pre-loop positions
-    let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let pre_d = pre_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let (total_supply, total_borrow) =
+        compute_totals(initial_amount, config.c_factor, config.target_loops);
 
-    // Build all requests: [supply, borrow, supply, borrow, ..., supply]
-    // The pool sums all supply amounts and does one transfer_from for the total.
-    // Using submit_with_allowance: we approve the pool for the total supply amount,
-    // and the pool uses transferFrom to pull tokens.
-    let count = loop_step_count(config.target_loops);
-    let mut requests: Vec<Request> = Vec::new(e);
-    let mut total_supply = 0i128;
-    let mut balance = initial_amount;
-
-    for i in 0..count {
-        let is_final = i == config.target_loops.min(20);
-        let (supply, borrow) = compute_step(balance, config.c_factor, is_final);
-        balance = borrow;
-
-        if supply > 0 {
-            requests.push_back(Request {
-                address: config.asset.clone(),
-                amount: supply,
-                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
-            });
-            total_supply += supply;
-        }
-
-        if borrow > 0 {
-            requests.push_back(Request {
-                address: config.asset.clone(),
-                amount: borrow,
-                request_type: REQUEST_TYPE_BORROW,
-            });
-        }
+    // Supply first, so the borrow is checked against the final state. A dust
+    // amount whose borrow floors to zero is supplied without one.
+    let mut requests: Vec<Request> = vec![
+        e,
+        Request {
+            address: config.asset.clone(),
+            amount: total_supply,
+            request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+        },
+    ];
+    if total_borrow > 0 {
+        requests.push_back(Request {
+            address: config.asset.clone(),
+            amount: total_borrow,
+            request_type: REQUEST_TYPE_BORROW,
+        });
     }
 
-    // Approve pool to spend total supply amount via allowance
-    let token_client = TokenClient::new(e, &config.asset);
-    e.authorize_as_current_contract(vec![
-        e,
-        InvokerContractAuthEntry::Contract(SubContractInvocation {
-            context: ContractContext {
-                contract: config.asset.clone(),
-                fn_name: Symbol::new(e, "approve"),
-                args: (
-                    strategy.clone(),
-                    config.pool.clone(),
-                    total_supply,
-                    e.ledger().sequence() + 1u32,
-                )
-                    .into_val(e),
-            },
-            sub_invocations: vec![e],
-        }),
-    ]);
-    token_client.approve(
-        &strategy,
-        &config.pool,
-        &total_supply,
-        &(e.ledger().sequence() + 1),
-    );
-
-    // Single atomic submit using allowance-based transfers
+    approve_pool(e, config, total_supply);
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
-    // Read final positions
-    let new_positions = pool_client.get_positions(&strategy);
-    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let new_d = new_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
-
+    let (new_b, new_d) = get_strategy_positions(e, config);
     let b_delta = new_b
         .checked_sub(pre_b)
         .ok_or(StrategyError::UnderflowOverflow)?;
@@ -123,14 +119,25 @@ pub fn submit_leverage_loop(
 
 // ── Unwind (partial or full) ─────────────────────────────────────────────────
 
-/// Unwind a proportional share of the leveraged position.
+/// Unwind a proportional share of the leveraged position as one
+/// `[repay d, withdraw_collateral b]` submit, paying the equity to `to`.
 ///
-/// Blend pool processes requests sequentially within a single submit():
-/// withdraw sends tokens to strategy, repay pulls them back. Alternating
-/// [withdraw, repay, withdraw, repay, ..., withdraw] works atomically —
-/// the same pattern as the leverage loop but in reverse.
+/// Blend request amounts are denominated in the UNDERLYING asset, but the caller
+/// passes b/d-TOKEN quantities, so both are converted with the current pool
+/// rates (the two only coincide while the rates sit at 1.0) — and rounded
+/// against the withdrawer. The repay rounds *up*, so the pool burns exactly
+/// `d_tokens_to_remove`: none of the share's debt is left behind for the
+/// remaining holders, a full close needs no `i64::MAX` sweep, and a non-zero
+/// share can never round down to a zero-token burn. The withdraw rounds *down*,
+/// so it burns at most `b_tokens_to_remove`.
 ///
-/// The final extra withdraw (after all debt is repaid) extracts the equity.
+/// Repay first, so the withdraw is checked against the final state. Netting
+/// means the pool pays out only `b − d` — the equity — and the strategy needs
+/// no balance of its own. A share with no debt in it (a debt-free or dust-debt
+/// position) sends the withdraw alone. A share too small to carry any equity out
+/// once rounded is refused with `AmountBelowMinDust` rather than unwound: the
+/// caller burns the shares first, and an unwind that pays nothing would take
+/// them for nothing.
 ///
 /// Returns (b_tokens_removed, d_tokens_removed).
 pub fn submit_unwind(
@@ -144,126 +151,38 @@ pub fn submit_unwind(
     let token_client = TokenClient::new(e, &config.asset);
     let strategy = e.current_contract_address();
 
-    let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let pre_d = pre_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
-
+    let (pre_b, pre_d) = get_strategy_positions(e, config);
     let pre_balance = token_client.balance(&strategy);
 
-    // Blend request amounts are denominated in the UNDERLYING asset, but the
-    // caller passes b/d-TOKEN quantities. Convert with the current pool rates
-    // (underlying = tokens × rate / SCALAR_12). The two are only equal while the
-    // rates sit at 1.0; once interest accrues they diverge, so skipping this
-    // conversion makes the unwind repay/withdraw the wrong amounts.
-    let reserve = pool_client.get_reserve(&config.asset);
-    let b_rate = reserve.data.b_rate;
-    let d_rate = reserve.data.d_rate;
+    let (b_rate, d_rate) = get_rates(e, config);
     let d_underlying = d_tokens_to_remove
-        .checked_mul(d_rate)
-        .ok_or(StrategyError::ArithmeticError)?
-        / SCALAR_12;
+        .fixed_mul_ceil(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
     let b_underlying = b_tokens_to_remove
-        .checked_mul(b_rate)
-        .ok_or(StrategyError::ArithmeticError)?
-        / SCALAR_12;
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
 
-    // Build atomic unwind: [withdraw, repay] × N steps + [withdraw equity].
-    // Split the underlying debt evenly across target_loops steps.
-    // Each step withdraws and repays the same amount, maintaining HF.
-    // The final withdraw extracts the equity (b - d difference).
+    if b_underlying <= d_underlying {
+        return Err(StrategyError::AmountBelowMinDust);
+    }
+
     let mut requests: Vec<Request> = Vec::new(e);
-    let mut total_repay = 0i128;
-
-    let n_steps = config.target_loops.max(1);
-    let repay_per_step = d_underlying / n_steps as i128;
-
-    // Check if this is a full close (removing all debt)
-    let pool_client_inner = BlendPoolClient::new(e, &config.pool);
-    let cur_positions = pool_client_inner.get_positions(&strategy);
-    let total_d = cur_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
-    let is_full_close = d_tokens_to_remove >= total_d;
-
-    for i in 0..n_steps {
-        let is_last = i == n_steps - 1;
-
-        // For repay: only use i64::MAX on full close's last step (cleans dust).
-        // For partial unwinds, use exact amounts so the pool doesn't repay all debt.
-        let repay_amount = if is_last && is_full_close {
-            i64::MAX as i128
-        } else if is_last {
-            d_underlying - repay_per_step * (n_steps as i128 - 1)
-        } else {
-            repay_per_step
-        };
-
-        // Withdraw same amount as repay in each pair — this frees collateral to cover repayment.
-        // The equity portion (b - d, in underlying) is withdrawn separately at the end.
-        let withdraw_amount = if is_last {
-            d_underlying - repay_per_step * (n_steps as i128 - 1)
-        } else {
-            repay_per_step
-        };
-
+    if d_underlying > 0 {
         requests.push_back(Request {
             address: config.asset.clone(),
-            amount: withdraw_amount,
-            request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-        });
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount: repay_amount,
+            amount: d_underlying,
             request_type: REQUEST_TYPE_REPAY,
         });
-        total_repay += repay_amount;
     }
+    requests.push_back(Request {
+        address: config.asset.clone(),
+        amount: b_underlying,
+        request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+    });
 
-    // Final: withdraw equity portion (collateral minus debt that was removed),
-    // in underlying.
-    let equity_withdraw = b_underlying.checked_sub(d_underlying).unwrap_or(0);
-
-    if equity_withdraw > 0 {
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount: equity_withdraw,
-            request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-        });
+    if d_underlying > 0 {
+        approve_pool(e, config, d_underlying);
     }
-
-    // Approve pool to spend total repay amount via allowance
-    if total_repay > 0 {
-        let token_client_inner = TokenClient::new(e, &config.asset);
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: config.asset.clone(),
-                    fn_name: Symbol::new(e, "approve"),
-                    args: (
-                        strategy.clone(),
-                        config.pool.clone(),
-                        total_repay,
-                        e.ledger().sequence() + 1u32,
-                    )
-                        .into_val(e),
-                },
-                sub_invocations: vec![e],
-            }),
-        ]);
-        token_client_inner.approve(
-            &strategy,
-            &config.pool,
-            &total_repay,
-            &(e.ledger().sequence() + 1),
-        );
-    }
-
-    // Single atomic submit using allowance-based transfers
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     // Transfer equity to `to`
@@ -288,12 +207,7 @@ pub fn submit_unwind(
     }
 
     // Read final positions for return
-    let end_positions = pool_client.get_positions(&strategy);
-    let end_b = end_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let end_d = end_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let (end_b, end_d) = get_strategy_positions(e, config);
 
     let b_removed = pre_b
         .checked_sub(end_b)
@@ -305,112 +219,50 @@ pub fn submit_unwind(
     Ok((b_removed, d_removed))
 }
 
-/// Deleverage by unwinding loops to improve health factor.
-/// Builds alternating [withdraw, repay, ...] requests and submits atomically.
+/// Deleverage by `repay_underlying`: repay that much debt and withdraw the same
+/// amount of collateral, as one `[repay, withdraw_collateral]` submit. Equity
+/// (`B − D`) does not move; only the leverage ratio falls.
+///
+/// The amount is `compute_partial_unwind`'s, sized for a target HF, so the
+/// position lands on that target instead of up to a whole layer past it. Repay
+/// first: the withdraw is then checked against the final state, whose
+/// utilization is no higher than where the pool started (bar a stroop or two of
+/// rounding), so the unwind goes through as long as the pool has a few stroops
+/// free — a withdraw-first layer needed a whole layer of free liquidity. The two
+/// transfers net to zero.
+///
 /// Returns (b_tokens_removed, d_tokens_removed).
 pub fn submit_deleverage(
     e: &Env,
-    unwind_loops: u32,
+    repay_underlying: i128,
     config: &Config,
 ) -> Result<(i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
 
-    let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let pre_d = pre_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
-
-    if pre_d == 0 {
+    let (pre_b, pre_d) = get_strategy_positions(e, config);
+    if pre_d == 0 || repay_underlying <= 0 {
         return Ok((0, 0));
     }
 
-    // Size one unwind layer as `debt × (1 - c_factor)`, in UNDERLYING — the same
-    // definition `compute_partial_unwind` uses to derive `unwind_loops`, so that
-    // unwinding N loops repays ≈ the intended `repay_underlying`. (The previous
-    // implementation seeded the layers from total collateral, producing layers
-    // several times larger than the position, which over-unwound or reverted.)
-    // Blend request amounts are denominated in the underlying asset, so convert
-    // the d-token debt with the current d_rate.
-    let reserve = pool_client.get_reserve(&config.asset);
-    let debt_underlying = pre_d
-        .checked_mul(reserve.data.d_rate)
-        .ok_or(StrategyError::ArithmeticError)?
-        / SCALAR_12;
-    let layer = debt_underlying
-        .checked_mul(SCALAR_7 - config.c_factor)
-        .ok_or(StrategyError::ArithmeticError)?
-        / SCALAR_7;
-    if layer <= 0 {
-        return Ok((0, 0));
-    }
-
-    // Build all (withdraw, repay) pairs for a single atomic submit, each step
-    // HF-neutral (withdraw == repay). Cap the cumulative repay at the outstanding
-    // debt so we never over-repay or withdraw more collateral than exists.
-    let mut requests: Vec<Request> = Vec::new(e);
-    let mut total_repay = 0i128;
-    let mut remaining_debt = debt_underlying;
-
-    for _ in 0..unwind_loops.min(20) {
-        let amount = layer.min(remaining_debt);
-        if amount <= 0 {
-            break;
-        }
-
-        requests.push_back(Request {
+    let requests: Vec<Request> = vec![
+        e,
+        Request {
             address: config.asset.clone(),
-            amount,
-            request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-        });
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount,
+            amount: repay_underlying,
             request_type: REQUEST_TYPE_REPAY,
-        });
-        total_repay += amount;
-        remaining_debt -= amount;
-    }
+        },
+        Request {
+            address: config.asset.clone(),
+            amount: repay_underlying,
+            request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+        },
+    ];
 
-    if total_repay > 0 {
-        let token_client = TokenClient::new(e, &config.asset);
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: config.asset.clone(),
-                    fn_name: Symbol::new(e, "approve"),
-                    args: (
-                        strategy.clone(),
-                        config.pool.clone(),
-                        total_repay,
-                        e.ledger().sequence() + 1u32,
-                    )
-                        .into_val(e),
-                },
-                sub_invocations: vec![e],
-            }),
-        ]);
-        token_client.approve(
-            &strategy,
-            &config.pool,
-            &total_repay,
-            &(e.ledger().sequence() + 1),
-        );
-    }
+    approve_pool(e, config, repay_underlying);
+    pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
-    if !requests.is_empty() {
-        pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
-    }
-
-    let new_positions = pool_client.get_positions(&strategy);
-    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let new_d = new_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let (new_b, new_d) = get_strategy_positions(e, config);
 
     Ok((
         pre_b.checked_sub(new_b).unwrap_or(0),
@@ -418,17 +270,15 @@ pub fn submit_deleverage(
     ))
 }
 
-/// Re-leverage: borrow `amount` of the underlying and immediately supply it back
-/// as collateral, in one atomic submit. The mirror of `submit_deleverage`.
+/// Re-leverage: supply `amount` of the underlying as collateral and borrow the
+/// same amount back, in one atomic submit. The mirror of `submit_deleverage`.
 ///
-/// Emitted as a single [borrow, supply] pair rather than layered like the
-/// deposit loop or `submit_deleverage`. The borrow comes first for the same
-/// reason the deposit loop supplies first — the proceeds of one request fund the
-/// next within the submit — and there is nothing for extra layers to buy here:
-/// the pool health-checks the finished request set, not each request, and the
-/// caller (`releverage`) re-reads the position afterwards and reverts if the
-/// result is not where it asked for. Splitting would only multiply request fees
-/// and rounding.
+/// Supply first, for the same reason the deposit does: the borrow is then
+/// checked against the final state. The order is not about funding — the two
+/// transfers net to zero, so the strategy needs no balance of its own either
+/// way. The pool health-checks the finished request set, and the caller
+/// (`releverage`) re-reads the position afterwards and reverts if the result is
+/// not where it asked for.
 ///
 /// Returns `(b_token_delta, d_token_delta)` — both positive on success.
 pub fn submit_releverage(
@@ -442,62 +292,26 @@ pub fn submit_releverage(
 
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
-
-    let pre_positions = pool_client.get_positions(&strategy);
-    let pre_b = pre_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let pre_d = pre_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let (pre_b, pre_d) = get_strategy_positions(e, config);
 
     let requests: Vec<Request> = vec![
         e,
         Request {
             address: config.asset.clone(),
             amount,
-            request_type: REQUEST_TYPE_BORROW,
+            request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
         },
         Request {
             address: config.asset.clone(),
             amount,
-            request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            request_type: REQUEST_TYPE_BORROW,
         },
     ];
 
-    // Approve the pool for the supply leg (the borrow leg pays for it).
-    let token_client = TokenClient::new(e, &config.asset);
-    e.authorize_as_current_contract(vec![
-        e,
-        InvokerContractAuthEntry::Contract(SubContractInvocation {
-            context: ContractContext {
-                contract: config.asset.clone(),
-                fn_name: Symbol::new(e, "approve"),
-                args: (
-                    strategy.clone(),
-                    config.pool.clone(),
-                    amount,
-                    e.ledger().sequence() + 1u32,
-                )
-                    .into_val(e),
-            },
-            sub_invocations: vec![e],
-        }),
-    ]);
-    token_client.approve(
-        &strategy,
-        &config.pool,
-        &amount,
-        &(e.ledger().sequence() + 1),
-    );
-
+    approve_pool(e, config, amount);
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
-    let new_positions = pool_client.get_positions(&strategy);
-    let new_b = new_positions.collateral.get(config.reserve_id).unwrap_or(0);
-    let new_d = new_positions
-        .liabilities
-        .get(config.reserve_id)
-        .unwrap_or(0);
+    let (new_b, new_d) = get_strategy_positions(e, config);
 
     Ok((
         new_b

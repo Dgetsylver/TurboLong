@@ -6,8 +6,11 @@ use soroban_sdk::{panic_with_error, Env};
 
 // ── Leverage loop computation ────────────────────────────────────────────────
 //
-// Produces n+1 pairs: n (supply, borrow) pairs + 1 final supply-only.
-// Identical to execute_loop.rs:168 `compute_requests()`.
+// A deposit's leverage is the n-loop geometric series below: n (supply, borrow)
+// pairs + 1 final supply-only, identical to `compute_requests()` in
+// src/bin/execute_loop.rs. It is no longer submitted step by step:
+// `compute_totals` sums it and `submit_leverage_loop` sends the two totals as
+// one supply + one borrow.
 //
 // Loop 0:   supply initial,        borrow initial × c
 // Loop 1:   supply initial × c,    borrow initial × c²
@@ -23,7 +26,7 @@ use soroban_sdk::{panic_with_error, Env};
 ///
 /// Returns (supply, borrow) for this step.
 #[inline]
-pub fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i128) {
+fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i128) {
     if is_final {
         (balance, 0)
     } else {
@@ -34,7 +37,7 @@ pub fn compute_step(balance: i128, c_factor: i128, is_final: bool) -> (i128, i12
 
 /// Total number of steps in a leverage loop (n_loops supply+borrow pairs + 1 final supply).
 #[inline]
-pub fn loop_step_count(n_loops: u32) -> u32 {
+fn loop_step_count(n_loops: u32) -> u32 {
     (n_loops + 1).min(21)
 }
 
@@ -237,63 +240,51 @@ pub fn design_health_factor(
 
 // ── Safety checks ────────────────────────────────────────────────────────────
 
-/// Check safety conditions before depositing.
-/// - Pool utilization must be below MAX_SAFE_UTILIZATION
-/// - Projected utilization after the loop must be below MAX_SAFE_UTILIZATION
-/// - Post-loop HF must be above min_hf
-#[allow(clippy::too_many_arguments)] // safety check legitimately needs the full pool + position context
-pub fn check_deposit_safety(
+/// Refuse when the pool's utilization is above `MAX_SAFE_UTILIZATION`.
+///
+/// `deposit` runs this on the current figures before its Blend submit (no new
+/// borrow demand on an already-strained pool), and `deposit` and `releverage`
+/// run it on the settled figures after theirs (the submit itself must not have
+/// pushed the pool past the cap). Reading the settled pool replaces projecting
+/// the submit's effect onto it. The harvest paths, which lever in only swapped
+/// rewards, are not gated.
+pub fn check_pool_utilization(
     e: &Env,
     pool_supply_underlying: i128,
     pool_borrow_underlying: i128,
-    additional_supply: i128,
-    additional_borrow: i128,
-    post_b_tokens: i128,
-    post_d_tokens: i128,
-    b_rate: i128,
-    d_rate: i128,
-    l_factor: i128,
-    config: &Config,
 ) -> Result<(), StrategyError> {
-    // 1. Current utilization check
     if pool_supply_underlying > 0 {
-        let current_util = pool_borrow_underlying
+        let util = pool_borrow_underlying
             .checked_mul(SCALAR_7)
             .ok_or(StrategyError::ArithmeticError)?
             .checked_div(pool_supply_underlying)
             .ok_or(StrategyError::DivisionByZero)?;
 
-        if current_util > MAX_SAFE_UTILIZATION {
+        if util > MAX_SAFE_UTILIZATION {
             panic_with_error!(e, StrategyError::ExternalError);
         }
     }
+    Ok(())
+}
 
-    // 2. Projected utilization check
-    let proj_supply = pool_supply_underlying
-        .checked_add(additional_supply)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    let proj_borrow = pool_borrow_underlying
-        .checked_add(additional_borrow)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-
-    if proj_supply > 0 {
-        let proj_util = proj_borrow
-            .checked_mul(SCALAR_7)
-            .ok_or(StrategyError::ArithmeticError)?
-            .checked_div(proj_supply)
-            .ok_or(StrategyError::DivisionByZero)?;
-
-        if proj_util > MAX_SAFE_UTILIZATION {
-            panic_with_error!(e, StrategyError::ExternalError);
-        }
-    }
-
-    // 3. Post-loop health factor check. `min_hf > 1.0` is a Blend-terms floor —
-    // the HF here already carries the pool's `l_factor` — so clearing it means
-    // the post-deposit position is not liquidatable by the pool's own measure.
+/// Refuse a position whose health factor is below `config.min_hf`.
+///
+/// Run on the position Blend actually settled, not a projection of it.
+/// `min_hf > 1.0` is a Blend-terms floor — the HF here already carries the
+/// pool's `l_factor` — so clearing it means the position is not liquidatable by
+/// the pool's own measure.
+pub fn check_min_health_factor(
+    e: &Env,
+    b_tokens: i128,
+    d_tokens: i128,
+    b_rate: i128,
+    d_rate: i128,
+    l_factor: i128,
+    config: &Config,
+) -> Result<(), StrategyError> {
     let hf = compute_health_factor(
-        post_b_tokens,
-        post_d_tokens,
+        b_tokens,
+        d_tokens,
         b_rate,
         d_rate,
         config.c_factor,
@@ -302,12 +293,11 @@ pub fn check_deposit_safety(
     if hf < config.min_hf {
         panic_with_error!(e, StrategyError::ExternalError);
     }
-
     Ok(())
 }
 
-/// Compute the minimal underlying amount to repay (and withdraw) to restore HF
-/// to `target_hf`, and the number of leverage loops that covers it.
+/// Compute the underlying amount to repay (and withdraw) so that, once Blend has
+/// settled the pair, HF sits at or just above `target_hf`.
 ///
 /// Closed-form derivation (all values in underlying units):
 ///   B  = b_tokens × b_rate / SCALAR_12  (supply value)
@@ -319,11 +309,18 @@ pub fn check_deposit_safety(
 ///   (B - x) × cl = target_hf × (D - x)
 ///   x = (B × cl - target_hf × D) / (cl - target_hf)
 ///
-/// Returns `(repay_underlying, loops_needed)`.
-/// Returns `(0, 0)` if already at or above target_hf, or if no debt.
-/// `repay_underlying` is clamped at the outstanding debt value: for degenerate
-/// positions (equity <= 0, i.e. B <= D) the closed form yields x >= D, which
-/// means a full close — never an over-repay.
+/// The closed form is exact; the pool is not. Blend burns `ceil(x / b_rate)`
+/// b-tokens for the withdraw and `floor(x / d_rate)` d-tokens for the repay, and
+/// `B`/`D` above are already floored — every rounding lands against HF, enough to
+/// leave the exact `x` one unit (1e-7) short of the target in a third to a half
+/// of cases, i.e. still inside the orange zone it was meant to leave. `x` is
+/// therefore padded by `unwind_rounding_margin` (≈25 stroops at typical
+/// parameters).
+///
+/// Returns `0` if already at or above target_hf, or if there is no debt.
+/// The result is clamped at the outstanding debt value: for degenerate positions
+/// (equity <= 0, i.e. B <= D) the closed form yields x >= D, which means a full
+/// close — never an over-repay.
 pub fn compute_partial_unwind(
     b_tokens: i128,
     d_tokens: i128,
@@ -332,21 +329,18 @@ pub fn compute_partial_unwind(
     c_factor: i128,
     l_factor: i128,
     target_hf: i128,
-) -> Result<(i128, u32), StrategyError> {
+) -> Result<i128, StrategyError> {
     if d_tokens == 0 {
-        return Ok((0, 0));
+        return Ok(0);
     }
 
     let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     if hf >= target_hf {
-        return Ok((0, 0));
+        return Ok(0);
     }
 
     // The HF the closed form solves for carries the pool's liability markup, so
     // the equation is driven by the effective factor, not the raw c_factor.
-    // `layer_size` below stays on the raw c_factor: it describes the geometry of
-    // the *actual* borrow loop (and of `submit_deleverage`'s layers), which is
-    // unaffected by how the pool weights liabilities.
     let cl = effective_c_factor(c_factor, l_factor)?;
 
     // Supply and debt values in underlying (SCALAR_12 precision)
@@ -382,30 +376,59 @@ pub fn compute_partial_unwind(
     }
 
     // x = -numerator / denom  (numerator is negative when HF < target_hf)
-    // +1 stroop to clear the threshold; clamped at the debt so a zero/negative
-    // equity position resolves to a full close instead of an over-repay.
-    let repay_underlying = (numerator
+    // +1 stroop to clear the threshold, plus the rounding margin; clamped at the
+    // debt so a zero/negative equity position resolves to a full close instead
+    // of an over-repay.
+    let margin = unwind_rounding_margin(b_rate, d_rate, cl, target_hf)?;
+    let repay_underlying = numerator
         .checked_neg()
         .ok_or(StrategyError::ArithmeticError)?
         .checked_div(denom)
         .ok_or(StrategyError::DivisionByZero)?
-        + 1)
-    .min(debt_value);
+        .checked_add(1 + margin)
+        .ok_or(StrategyError::UnderflowOverflow)?
+        .min(debt_value);
 
-    // Convert repay amount to loop count.
-    // Each loop layer ≈ initial × c_factor^k. The smallest layer (last borrow) ≈
-    // total_debt × (1 - c_factor/SCALAR_7). We count how many layers sum to repay_underlying.
-    let layer_size = debt_value
-        .checked_mul(SCALAR_7 - c_factor)
-        .ok_or(StrategyError::ArithmeticError)?
-        / SCALAR_7;
+    Ok(repay_underlying)
+}
 
-    if layer_size == 0 {
-        return Ok((repay_underlying, 1));
+/// Stroops added to `compute_partial_unwind`'s repay so that Blend's rounding
+/// cannot leave the settled HF below `target_hf`.
+///
+/// Each leg can cost the position up to `rate / SCALAR_12 + 1` stroops on its
+/// side — one token of burn rounding plus the floor on the value — which the
+/// `+ 2` below covers for any rate: collateral (`slip_b`) for the withdraw, debt
+/// (`slip_d`) for the repay. Every extra stroop repaid moves `B·cl − target·D` by
+/// `target − cl`, so buying both back takes
+/// `(slip_b·cl + slip_d·target) / (target − cl)` stroops, plus one for the
+/// division's floor.
+pub fn unwind_rounding_margin(
+    b_rate: i128,
+    d_rate: i128,
+    cl: i128,
+    target_hf: i128,
+) -> Result<i128, StrategyError> {
+    let denom = target_hf
+        .checked_sub(cl)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    if denom <= 0 {
+        return Err(StrategyError::ArithmeticError);
     }
 
-    let loops = ((repay_underlying + layer_size - 1) / layer_size) as u32;
-    Ok((repay_underlying, loops.clamp(1, 20)))
+    let slip_b = b_rate / SCALAR_12 + 2;
+    let slip_d = d_rate / SCALAR_12 + 2;
+    let margin = slip_b
+        .checked_mul(cl)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_add(
+            slip_d
+                .checked_mul(target_hf)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?
+        / denom;
+
+    Ok(margin + 1)
 }
 
 /// Compute the underlying amount to borrow (and immediately re-supply) to bring

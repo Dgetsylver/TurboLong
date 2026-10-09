@@ -266,9 +266,10 @@ pub fn withdraw(
 ///
 /// `reserves` is the pre-withdraw snapshot (with refreshed rates). `shares_to_burn`
 /// is the amount burned from the share token; `b_removed`/`d_removed` are the
-/// measured pool deltas. Position totals use `saturating_sub` so a full close
-/// that clears a stroop more than was tracked (e.g. the `i64::MAX` dust sweep)
-/// floors at zero instead of reverting.
+/// measured pool deltas. Position totals use `saturating_sub` as a floor: the
+/// measured removal should never exceed the share it was computed from, but if
+/// it ever did — the pool can hold more than the tracked totals, which only
+/// reconcile downward — the total floors at zero instead of reverting.
 ///
 /// Returns the persisted, post-withdraw reserves.
 pub fn commit_withdraw(
