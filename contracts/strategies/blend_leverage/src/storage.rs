@@ -34,6 +34,8 @@ pub enum DataKey {
     MinHarvestRate,
     /// The in-flight `harvest_claim` awaiting settlement by `harvest_reinvest`.
     PendingHarvest,
+    /// Harvest profit still being released into the share price.
+    LockedProfit,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -282,6 +284,33 @@ pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
         e.storage().instance().remove(&DataKey::PendingHarvest);
     }
     pending
+}
+
+// ── Locked harvest profit (audit finding 7) ──────────────────────────────────
+
+/// Harvest profit held out of the share price: `amount` at ledger `from`,
+/// released linearly to nothing at ledger `until` (see `PROFIT_UNLOCK_LEDGERS`).
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LockedProfit {
+    /// Underlying still locked at ledger `from`.
+    pub amount: i128,
+    /// Ledger the schedule was last set.
+    pub from: u32,
+    /// Ledger by which all of `amount` is released.
+    pub until: u32,
+}
+
+pub fn set_locked_profit(e: &Env, locked: &LockedProfit) {
+    e.storage().instance().set(&DataKey::LockedProfit, locked);
+}
+
+/// The release schedule, or an empty one when no harvest has locked anything.
+pub fn get_locked_profit(e: &Env) -> LockedProfit {
+    e.storage()
+        .instance()
+        .get(&DataKey::LockedProfit)
+        .unwrap_or_default()
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

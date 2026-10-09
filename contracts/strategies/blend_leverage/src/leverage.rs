@@ -1,5 +1,5 @@
 use crate::constants::{MAX_LOOPS, MAX_SAFE_UTILIZATION, SCALAR_12, SCALAR_7};
-use crate::storage::{Config, LeverageReserves};
+use crate::storage::{Config, LeverageReserves, LockedProfit};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};
@@ -94,15 +94,26 @@ pub fn compute_equity(reserves: &LeverageReserves) -> Result<i128, StrategyError
         .ok_or(StrategyError::UnderflowOverflow)
 }
 
-/// Convert shares to underlying equity amount.
+/// The equity shares are priced at: `compute_equity` less the harvest profit
+/// still `locked` (see `locked_profit`), never taken below zero.
+pub fn priced_equity(reserves: &LeverageReserves, locked: i128) -> Result<i128, StrategyError> {
+    let equity = compute_equity(reserves)?;
+    equity
+        .checked_sub(locked.clamp(0, equity.max(0)))
+        .ok_or(StrategyError::UnderflowOverflow)
+}
+
+/// Convert shares to underlying equity amount, net of the `locked` harvest
+/// profit.
 pub fn shares_to_underlying(
     shares: i128,
     reserves: &LeverageReserves,
+    locked: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 {
         return Ok(0);
     }
-    let total_equity = compute_equity(reserves)?;
+    let total_equity = priced_equity(reserves, locked)?;
     if total_equity <= 0 {
         return Ok(0);
     }
@@ -111,22 +122,90 @@ pub fn shares_to_underlying(
         .ok_or(StrategyError::ArithmeticError)
 }
 
-/// Convert underlying amount to shares.
+/// Convert underlying amount to shares, net of the `locked` harvest profit.
 pub fn underlying_to_shares(
     amount: i128,
     reserves: &LeverageReserves,
+    locked: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 || reserves.total_b_tokens == 0 {
         // First deposit: 1 share = 1 unit
         return Ok(amount);
     }
-    let total_equity = compute_equity(reserves)?;
+    let total_equity = priced_equity(reserves, locked)?;
     if total_equity <= 0 {
         return Ok(amount);
     }
     amount
         .fixed_mul_floor(reserves.total_shares, total_equity)
         .ok_or(StrategyError::ArithmeticError)
+}
+
+// ── Profit release (audit finding 7) ─────────────────────────────────────────
+//
+// A harvest's equity gain is locked and released into the share price linearly
+// over `PROFIT_UNLOCK_LEDGERS` rather than priced in at the harvest ledger (the
+// constant explains why). All harvests share one linear schedule: a new one
+// folds in and the combined amount releases until the gain-weighted average of
+// the two end dates, so each harvest keeps, on average, its own window.
+
+/// Profit still locked at ledger `now`. Rounds down: it unlocks a stroop early
+/// rather than late.
+pub fn locked_profit(lock: &LockedProfit, now: u32) -> Result<i128, StrategyError> {
+    if lock.amount <= 0 || now >= lock.until {
+        return Ok(0);
+    }
+    let span = lock.until.saturating_sub(lock.from).max(1);
+    let remaining = (lock.until - now).min(span);
+    lock.amount
+        .fixed_mul_floor(remaining as i128, span as i128)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
+/// Fold `gain` into `lock` at ledger `now`.
+///
+/// What is still locked keeps its end date and `gain` gets the full `window`;
+/// the sum releases linearly until the gain-weighted average of the two. A
+/// non-positive `gain` locks nothing and only re-bases the schedule onto `now`,
+/// which leaves it releasing exactly as before.
+pub fn lock_profit(
+    lock: &LockedProfit,
+    gain: i128,
+    now: u32,
+    window: u32,
+) -> Result<LockedProfit, StrategyError> {
+    let still_locked = locked_profit(lock, now)?;
+    let gain = gain.max(0);
+    let amount = still_locked
+        .checked_add(gain)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    if amount == 0 {
+        return Ok(LockedProfit::default());
+    }
+
+    // underlying × ledgers: many orders inside i128.
+    let weighted = still_locked
+        .checked_mul(lock.until.saturating_sub(now) as i128)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_add(
+            gain.checked_mul(window as i128)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    // A weighted average of the two durations, rounded up so a positive amount
+    // always has at least a ledger to release over.
+    let duration = weighted
+        .fixed_mul_ceil(1, amount)
+        .and_then(|d| u32::try_from(d).ok())
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    Ok(LockedProfit {
+        amount,
+        from: now,
+        until: now
+            .checked_add(duration)
+            .ok_or(StrategyError::UnderflowOverflow)?,
+    })
 }
 
 // ── Health factor ────────────────────────────────────────────────────────────

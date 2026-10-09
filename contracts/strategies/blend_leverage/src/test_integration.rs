@@ -535,7 +535,7 @@ fn test_deposit_withdraw_full_cycle() {
 
         assert!(vault_minted > 0, "Should have shares");
 
-        let balance = shares_to_underlying(vault_minted, &updated).unwrap();
+        let balance = shares_to_underlying(vault_minted, &updated, 0).unwrap();
         assert!(
             balance > deposit_amount * 95 / 100,
             "Balance {} should be close to deposit {}",
@@ -545,7 +545,7 @@ fn test_deposit_withdraw_full_cycle() {
 
         // === WITHDRAW === (user_shares read from the token in production)
         let (burned, b_remove, d_remove) =
-            reserves::withdraw(vault_minted, balance, &updated).unwrap();
+            reserves::withdraw(&e, vault_minted, balance, &updated).unwrap();
         assert_eq!(vault_minted - burned, 0, "All shares should be burned");
 
         // Verify b/d amounts are proportional
@@ -647,8 +647,8 @@ fn test_two_users_proportional() {
         let (alice_shares, _, after_alice) = reserves::deposit(&e, b1, d1, &init).unwrap();
         let (bob_shares, _, after_bob) = reserves::deposit(&e, b2, d2, &after_alice).unwrap();
 
-        let alice_val = shares_to_underlying(alice_shares, &after_bob).unwrap();
-        let bob_val = shares_to_underlying(bob_shares, &after_bob).unwrap();
+        let alice_val = shares_to_underlying(alice_shares, &after_bob, 0).unwrap();
+        let bob_val = shares_to_underlying(bob_shares, &after_bob, 0).unwrap();
 
         // Bob should have ~2x Alice's value
         let ratio_x100 = bob_val * 100 / alice_val;
@@ -2072,7 +2072,7 @@ fn test_unwind_pays_correct_equity_after_rates_accrue() {
         let equity = crate::leverage::compute_equity(&reserves).unwrap();
         let requested = equity / 4;
         let (_burned, b_rm, d_rm) =
-            reserves::withdraw(reserves.total_shares, requested, &reserves).unwrap();
+            reserves::withdraw(&e, reserves.total_shares, requested, &reserves).unwrap();
         (requested, b_rm, d_rm)
     });
 
@@ -4117,6 +4117,98 @@ fn test_trait_harvest_below_the_reward_threshold_needs_no_floor() {
     assert_eq!(router.last_amount_out_min(), 0, "no swap ran");
 }
 
+// ── Audit finding 7: harvest profit is released, not sniped ──────────────────
+
+// A deposit just before a harvest and a withdraw just after used to collect a
+// pro-rata share of emissions earned before the deposit, and `harvest_claim`
+// announces the amount minutes ahead. The harvest's profit now reaches the
+// share price over `PROFIT_UNLOCK_LEDGERS`: the round trip takes out what it
+// put in, and the holder who was there gets the harvest as it is released.
+#[test]
+fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = e.register(MockShareToken, ());
+    sclient.set_share_token(&share);
+    let keeper = sclient.get_keeper();
+    let mint = |to: &Address, amount: i128| {
+        StellarAssetClient::new(&e, &token)
+            .mock_all_auths()
+            .mint(to, &amount)
+    };
+
+    let honest = Address::generate(&e);
+    mint(&honest, 1_000_0000000);
+    sclient.deposit(&1_000_0000000, &honest);
+    let honest_before = sclient.balance(&honest);
+
+    // The attacker matches the vault just before the harvest lands.
+    let attacker = Address::generate(&e);
+    mint(&attacker, 1_000_0000000);
+    sclient.deposit(&1_000_0000000, &attacker);
+
+    // The harvest: 100 of Broker proceeds, levered in. Its equity is locked
+    // rather than priced in.
+    let proceeds = 100_0000000_i128;
+    mint(&strategy, proceeds);
+    sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+    let locked = sclient.locked_profit();
+    assert!(
+        (proceeds - locked).abs() <= 10,
+        "the harvest's equity is locked: {}",
+        locked
+    );
+
+    // Out again in the same ledger. Priced in at once, the harvest would have
+    // handed the attacker half of it; released gradually, nothing.
+    sclient.withdraw(&sclient.balance(&attacker), &attacker, &attacker);
+    let attacker_back = TokenClient::new(&e, &token).balance(&attacker);
+    assert!(
+        attacker_back <= 1_000_0000000,
+        "a round trip around the harvest must not profit: got back {}",
+        attacker_back
+    );
+
+    // The honest holder gets all of it as it is released — the attacker's
+    // half included, since the attacker left it behind.
+    let honest_gain = |ledgers: u32| {
+        e.ledger().with_mut(|li| li.sequence_number += ledgers);
+        sclient.balance(&honest) - honest_before
+    };
+    let tolerance = locked / 1_000;
+    assert!(honest_gain(0).abs() <= 10, "no jump at the harvest");
+    let half = honest_gain(crate::constants::PROFIT_UNLOCK_LEDGERS / 2);
+    assert!(
+        (half - locked / 2).abs() <= tolerance,
+        "half released after half a window: {} of {}",
+        half,
+        locked
+    );
+    let all = honest_gain(crate::constants::PROFIT_UNLOCK_LEDGERS / 2);
+    assert!(
+        (all - locked).abs() <= tolerance,
+        "all released after the window: {} of {}",
+        all,
+        locked
+    );
+    assert_eq!(sclient.locked_profit(), 0);
+
+    // And it is real: the honest holder can take it out.
+    sclient.withdraw(&sclient.balance(&honest), &honest, &honest);
+    let honest_back = TokenClient::new(&e, &token).balance(&honest);
+    assert!(
+        (honest_back - (honest_before + locked)).abs() <= tolerance,
+        "the honest holder withdraws deposit + harvest: {}",
+        honest_back
+    );
+}
+
 // ── Audit M-2: stored reserves must reconcile with the real pool position ─────
 //
 // Finding ① below fixed the paths where the *strategy itself* moved the position.
@@ -4928,7 +5020,8 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
             l_factor,
         )
         .unwrap();
-        let underlying = shares_to_underlying(user_shares, &r).unwrap();
+        let underlying =
+            shares_to_underlying(user_shares, &r, reserves::locked_profit(&e).unwrap()).unwrap();
         (equity, hf, underlying)
     });
 

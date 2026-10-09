@@ -1,12 +1,13 @@
 //! Unit tests for leverage math, equity calculation, share accounting, and safety checks.
 
-use crate::constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12, SCALAR_7};
+use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
     compute_equity, compute_health_factor, compute_loop_pairs, compute_partial_unwind,
     compute_releverage, compute_totals, design_health_factor, effective_c_factor, harvest_floor,
-    prorate_floor, shares_to_underlying, underlying_to_shares, unwind_rounding_margin,
+    lock_profit, locked_profit, priced_equity, prorate_floor, shares_to_underlying,
+    underlying_to_shares, unwind_rounding_margin,
 };
-use crate::storage::LeverageReserves;
+use crate::storage::{LeverageReserves, LockedProfit};
 use soroban_fixed_point_math::FixedPoint;
 
 /// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
@@ -206,11 +207,11 @@ fn test_shares_to_underlying_simple() {
         d_rate: SCALAR_12,
     };
     // Total equity = 1000. Full shares = full equity.
-    let value = shares_to_underlying(1_000_0000000, &reserves).unwrap();
+    let value = shares_to_underlying(1_000_0000000, &reserves, 0).unwrap();
     assert_eq!(value, 1_000_0000000);
 
     // Half shares = half equity
-    let half = shares_to_underlying(500_0000000, &reserves).unwrap();
+    let half = shares_to_underlying(500_0000000, &reserves, 0).unwrap();
     assert_eq!(half, 500_0000000);
 }
 
@@ -223,7 +224,7 @@ fn test_shares_to_underlying_zero_shares() {
         b_rate: SCALAR_12,
         d_rate: SCALAR_12,
     };
-    assert_eq!(shares_to_underlying(0, &reserves).unwrap(), 0);
+    assert_eq!(shares_to_underlying(0, &reserves, 0).unwrap(), 0);
 }
 
 #[test]
@@ -237,7 +238,7 @@ fn test_underlying_to_shares_first_deposit() {
     };
     // First deposit: 1 share = 1 unit
     assert_eq!(
-        underlying_to_shares(1_000_0000000, &reserves).unwrap(),
+        underlying_to_shares(1_000_0000000, &reserves, 0).unwrap(),
         1_000_0000000
     );
 }
@@ -252,7 +253,7 @@ fn test_underlying_to_shares_proportional() {
         d_rate: SCALAR_12,
     };
     // Equity = 1000. Depositing 500 should get 500 shares.
-    let shares = underlying_to_shares(500_0000000, &reserves).unwrap();
+    let shares = underlying_to_shares(500_0000000, &reserves, 0).unwrap();
     assert_eq!(shares, 500_0000000);
 }
 
@@ -269,8 +270,8 @@ fn test_shares_roundtrip() {
     assert!(equity > 0);
 
     // Convert equity -> shares -> equity, should be close to original
-    let shares = underlying_to_shares(equity, &reserves).unwrap();
-    let recovered = shares_to_underlying(shares, &reserves).unwrap();
+    let shares = underlying_to_shares(equity, &reserves, 0).unwrap();
+    let recovered = shares_to_underlying(shares, &reserves, 0).unwrap();
     // Allow 1 stroop rounding
     assert!(
         (recovered - equity).abs() <= 1,
@@ -635,7 +636,10 @@ extern crate std;
 
 use crate::reserves;
 use crate::storage;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 fn make_reserves(b: i128, d: i128, shares: i128) -> LeverageReserves {
     LeverageReserves {
@@ -721,7 +725,7 @@ fn test_withdraw_full() {
 
         // Withdraw all equity (1000)
         let (burned, b_remove, d_remove) =
-            reserves::withdraw(user_shares, 1_000_0000000, &reserves_state).unwrap();
+            reserves::withdraw(e, user_shares, 1_000_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 0);
         assert_eq!(b_remove, 8_000_0000000);
@@ -745,7 +749,7 @@ fn test_withdraw_partial() {
 
         // Withdraw half equity (500)
         let (burned, b_remove, d_remove) =
-            reserves::withdraw(user_shares, 500_0000000, &reserves_state).unwrap();
+            reserves::withdraw(e, user_shares, 500_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 500_0000000);
         assert_eq!(b_remove, 4_000_0000000); // half of 8000
@@ -766,7 +770,7 @@ fn test_withdraw_insufficient_balance() {
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // Try to withdraw more than the user's shares cover
-        let result = reserves::withdraw(user_shares, 600_0000000, &reserves_state);
+        let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -780,7 +784,7 @@ fn test_withdraw_refused_when_underwater() {
         let reserves_state = make_reserves(900_0000000, 1_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
 
-        let result = reserves::withdraw(1_000_0000000, 1_0000000, &reserves_state);
+        let result = reserves::withdraw(e, 1_000_0000000, 1_0000000, &reserves_state);
         assert!(matches!(
             result,
             Err(crate::StrategyError::InsufficientBalance)
@@ -796,7 +800,7 @@ fn test_harvest_increases_share_value() {
     // Start: 8000 b-tokens, 7000 d-tokens, 1000 shares, equity = 1000
     let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
 
-    let pre_value = shares_to_underlying(1_000_0000000, &reserves_state).unwrap();
+    let pre_value = shares_to_underlying(1_000_0000000, &reserves_state, 0).unwrap();
 
     // Harvest adds 500 b-tokens and 400 d-tokens (net +100 equity from BLND compound)
     let mut updated = reserves_state.clone();
@@ -804,7 +808,7 @@ fn test_harvest_increases_share_value() {
     updated.total_d_tokens += 400_0000000;
     // total_shares stays the same — that's the point of harvest
 
-    let post_value = shares_to_underlying(1_000_0000000, &updated).unwrap();
+    let post_value = shares_to_underlying(1_000_0000000, &updated, 0).unwrap();
 
     assert!(
         post_value > pre_value,
@@ -813,6 +817,201 @@ fn test_harvest_increases_share_value() {
         post_value
     );
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
+}
+
+// ── Profit release (audit finding 7) ─────────────────────────────────────────
+
+const W: u32 = PROFIT_UNLOCK_LEDGERS;
+
+#[test]
+fn test_locked_profit_releases_linearly() {
+    let lock = LockedProfit {
+        amount: 1_000_0000000,
+        from: 100,
+        until: 100 + W,
+    };
+    assert_eq!(
+        locked_profit(&lock, 100).unwrap(),
+        1_000_0000000,
+        "all locked at first"
+    );
+    assert_eq!(locked_profit(&lock, 100 + W / 4).unwrap(), 750_0000000);
+    assert_eq!(locked_profit(&lock, 100 + W / 2).unwrap(), 500_0000000);
+    assert_eq!(
+        locked_profit(&lock, 100 + W).unwrap(),
+        0,
+        "all released at the end"
+    );
+    assert_eq!(locked_profit(&lock, 100 + 2 * W).unwrap(), 0);
+    assert_eq!(locked_profit(&LockedProfit::default(), 100).unwrap(), 0);
+}
+
+#[test]
+fn test_lock_profit_gives_a_fresh_gain_the_full_window() {
+    assert_eq!(
+        lock_profit(&LockedProfit::default(), 100_0000000, 500, W).unwrap(),
+        LockedProfit {
+            amount: 100_0000000,
+            from: 500,
+            until: 500 + W,
+        }
+    );
+
+    // A harvest that adds no equity locks nothing.
+    for gain in [0, -5] {
+        assert_eq!(
+            lock_profit(&LockedProfit::default(), gain, 500, W).unwrap(),
+            LockedProfit::default()
+        );
+    }
+}
+
+#[test]
+fn test_lock_profit_without_gain_keeps_the_schedule() {
+    let lock = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
+    let rebased = lock_profit(&lock, 0, W / 4, W).unwrap();
+
+    assert_eq!(rebased.until, lock.until, "same end date");
+    for now in [W / 4, W / 2, 3 * W / 4, W] {
+        assert_eq!(
+            locked_profit(&rebased, now).unwrap(),
+            locked_profit(&lock, now).unwrap(),
+            "same release at ledger {}",
+            now
+        );
+    }
+}
+
+#[test]
+fn test_lock_profit_stacks_to_the_gain_weighted_end() {
+    // Half of a first harvest is still locked when an equal second one lands:
+    // 50 with half a window to go and 100 with a whole one release together
+    // until (50 × W/2 + 100 × W) / 150 = 5W/6 from now.
+    let first = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
+    let both = lock_profit(&first, 100_0000000, W / 2, W).unwrap();
+
+    assert_eq!(
+        both,
+        LockedProfit {
+            amount: 150_0000000,
+            from: W / 2,
+            until: W / 2 + 5 * W / 6,
+        }
+    );
+}
+
+#[test]
+fn test_hourly_harvests_keep_about_half_a_window_locked() {
+    // A week of hourly harvests of `g`. The release settles on the harvest rate,
+    // and what is locked just after a harvest on g × (W + h) / 2h — 12.5 harvests
+    // for a one-day window — instead of growing without bound. Nothing is created
+    // or lost: everything harvested is either released or still locked.
+    let g = 10_0000000_i128;
+    let h = 720_u32; // one hour
+    let mut lock = LockedProfit::default();
+    let mut now = 0_u32;
+    let (mut harvested, mut released) = (0_i128, 0_i128);
+
+    for _ in 0..7 * 24 {
+        let before = locked_profit(&lock, now).unwrap();
+        lock = lock_profit(&lock, g, now, W).unwrap();
+        harvested += g;
+        assert_eq!(locked_profit(&lock, now).unwrap(), before + g);
+
+        now += h;
+        released += before + g - locked_profit(&lock, now).unwrap();
+    }
+
+    assert_eq!(harvested, released + locked_profit(&lock, now).unwrap());
+    assert!(
+        (lock.amount - g * 25 / 2).abs() <= g / 10,
+        "locked just after a harvest settles on 12.5 harvests: {}",
+        lock.amount
+    );
+    let last_hour = lock.amount - locked_profit(&lock, lock.from + h).unwrap();
+    assert!(
+        (last_hour - g).abs() <= g / 100,
+        "an hour releases one harvest's worth: {}",
+        last_hour
+    );
+}
+
+#[test]
+fn test_priced_equity_nets_out_locked_profit() {
+    let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000); // equity 1000
+
+    assert_eq!(priced_equity(&r, 0).unwrap(), 1_000_0000000);
+    assert_eq!(priced_equity(&r, 100_0000000).unwrap(), 900_0000000);
+    // While 100 of the 1000 is locked, shares are priced at 900.
+    assert_eq!(
+        shares_to_underlying(1_000_0000000, &r, 100_0000000).unwrap(),
+        900_0000000
+    );
+    assert_eq!(
+        underlying_to_shares(900_0000000, &r, 100_0000000).unwrap(),
+        1_000_0000000
+    );
+    // More locked than there is equity (only after a loss) prices at zero.
+    assert_eq!(priced_equity(&r, 5_000_0000000).unwrap(), 0);
+}
+
+#[test]
+fn test_harvest_locks_the_equity_it_adds() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
+        storage::set_strategy_reserves(e, r.clone());
+
+        // +500 b / +400 d: the harvest adds 100 of equity, all of it locked.
+        let updated = reserves::harvest(e, 500_0000000, 400_0000000, &r).unwrap();
+        let value = |e: &Env| {
+            shares_to_underlying(1_000_0000000, &updated, reserves::locked_profit(e).unwrap())
+                .unwrap()
+        };
+        assert_eq!(reserves::locked_profit(e).unwrap(), 100_0000000);
+        assert_eq!(value(e), 1_000_0000000, "no jump at the harvest");
+
+        e.ledger().with_mut(|li| li.sequence_number += W / 2);
+        assert_eq!(value(e), 1_050_0000000, "half released after half a window");
+
+        e.ledger().with_mut(|li| li.sequence_number += W / 2);
+        assert_eq!(value(e), 1_100_0000000, "all released after the window");
+
+        // A re-leverage moves the ratio, not the equity: nothing to lock.
+        reserves::releverage(e, 100_0000000, 100_0000000, &updated).unwrap();
+        assert_eq!(reserves::locked_profit(e).unwrap(), 0);
+    });
+}
+
+#[test]
+fn test_withdraw_leaves_the_locked_profit_behind() {
+    // Equity 1100, of which a harvest's 100 was locked this ledger: shares are
+    // priced at 1000. Withdrawing 500 burns half the shares and takes out 500 —
+    // not the 550 half the position holds. The leaver's 50 of the locked profit
+    // stays for the holders it is still being released to.
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let r = make_reserves(8_800_0000000, 7_700_0000000, 1_000_0000000);
+        let now = e.ledger().sequence();
+        storage::set_locked_profit(
+            e,
+            &LockedProfit {
+                amount: 100_0000000,
+                from: now,
+                until: now + W,
+            },
+        );
+
+        let (burned, b, d) = reserves::withdraw(e, 1_000_0000000, 500_0000000, &r).unwrap();
+
+        assert_eq!(burned, 500_0000000, "half the shares");
+        assert_eq!((b, d), (4_000_0000000, 3_500_0000000));
+        assert_eq!(
+            b - d,
+            500_0000000,
+            "500 of equity, at the position's leverage"
+        );
+    });
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
@@ -871,7 +1070,7 @@ fn test_multi_user_proportional() {
         assert_eq!(total_equity, 3_000_0000000);
 
         // Alice's value should be ~1000
-        let alice_value = shares_to_underlying(alice_shares, &after_bob).unwrap();
+        let alice_value = shares_to_underlying(alice_shares, &after_bob, 0).unwrap();
         // Allow for lockup adjustment
         let expected =
             1_000_0000000 - (FIRST_DEPOSIT_LOCKUP * 1_000_0000000 / after_bob.total_shares);
@@ -1108,7 +1307,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         )
         .unwrap();
         let user_underlying_before =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves).unwrap();
+            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves, 0).unwrap();
 
         // An upgrade does not touch persistent storage; re-read it as v2 would.
         let reserves_after = storage::get_strategy_reserves(e);
@@ -1123,7 +1322,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         )
         .unwrap();
         let user_underlying_after =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after).unwrap();
+            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after, 0).unwrap();
 
         // Parity within 1e-7 — here exactly equal.
         assert_eq!(equity_before, equity_after, "equity parity");

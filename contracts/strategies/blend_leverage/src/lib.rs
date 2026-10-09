@@ -223,7 +223,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         }
 
         let user_shares = token.balance(&from);
-        let underlying_balance = shares_to_underlying(user_shares, &updated_reserves)?;
+        let underlying_balance =
+            shares_to_underlying(user_shares, &updated_reserves, reserves::locked_profit(&e)?)?;
 
         event::emit_deposit(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
@@ -234,7 +235,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///
     /// Callable only by the keeper. Claims from both supply and borrow emission
     /// sides, swaps BLND → underlying via Soroswap, then re-leverages proceeds.
-    /// No new shares are minted — this increases per-share equity.
+    /// No new shares are minted: the proceeds raise per-share equity gradually,
+    /// released over `PROFIT_UNLOCK_LEDGERS` (see `reserves::harvest`).
     ///
     /// Refused while a split harvest is awaiting settlement: this path would
     /// swap the pending claim's BLND and lever the proceeds in the same call,
@@ -323,7 +325,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
                 String::from_str(&e, STRATEGY_NAME),
                 harvested_blnd,
                 keeper,
-                shares_to_underlying(SCALAR_12, &updated_reserves)?,
+                shares_to_underlying(SCALAR_12, &updated_reserves, reserves::locked_profit(&e)?)?,
             );
 
             // Emit custom event for realized underlying
@@ -361,7 +363,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // Calculate shares to burn + the intended proportional b/d tokens to
         // unwind. This does NOT persist the position (see `commit_withdraw`).
         let (shares_to_burn, b_to_remove, d_to_remove) =
-            reserves::withdraw(user_shares, amount, &reserves)?;
+            reserves::withdraw(&e, user_shares, amount, &reserves)?;
 
         // Burn the caller's shares (minter burn — from already authorized above).
         token.burn_by_minter(&from, &shares_to_burn);
@@ -380,7 +382,11 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let remaining_shares = user_shares
             .checked_sub(shares_to_burn)
             .ok_or(StrategyError::UnderflowOverflow)?;
-        let underlying_balance = shares_to_underlying(remaining_shares, &updated_reserves)?;
+        let underlying_balance = shares_to_underlying(
+            remaining_shares,
+            &updated_reserves,
+            reserves::locked_profit(&e)?,
+        )?;
 
         event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
@@ -401,7 +407,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
-        shares_to_underlying(user_shares, &reserves)
+        shares_to_underlying(user_shares, &reserves, reserves::locked_profit(&e)?)
     }
 }
 
@@ -860,6 +866,9 @@ impl BlendLeverageStrategy {
 
     /// Get current strategy position details.
     /// Returns (total_equity, total_shares, b_tokens, d_tokens, b_rate, d_rate).
+    ///
+    /// `total_equity` is the whole position's, harvest profit not yet released
+    /// included; shares are priced at `total_equity − locked_profit()`.
     pub fn position(e: Env) -> Result<(i128, i128, i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
@@ -873,6 +882,13 @@ impl BlendLeverageStrategy {
             reserves.b_rate,
             reserves.d_rate,
         ))
+    }
+
+    /// Harvest profit still being released into the share price, in
+    /// underlying (see `PROFIT_UNLOCK_LEDGERS`).
+    pub fn locked_profit(e: Env) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        reserves::locked_profit(&e)
     }
 
     /// Current contract version (1 at deploy, bumped on each upgrade).
@@ -1215,7 +1231,7 @@ impl BlendLeverageStrategy {
                 String::from_str(&e, STRATEGY_NAME),
                 realized,
                 keeper.clone(),
-                shares_to_underlying(SCALAR_12, &updated)?,
+                shares_to_underlying(SCALAR_12, &updated, reserves::locked_profit(&e)?)?,
             );
         }
 

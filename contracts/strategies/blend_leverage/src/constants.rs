@@ -16,6 +16,22 @@ pub const MAX_LOOPS: u32 = 20;
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
+/// Ledgers over which each harvest's profit is released into the share price
+/// (~1 day at ~5s/ledger).
+///
+/// A harvest levers BLND emissions into the position in one step. Priced in at
+/// once, all of it would go to whoever holds shares at that ledger: a deposit
+/// just before a harvest and a withdraw just after would collect emissions
+/// earned before the deposit, and `harvest_claim` announces the amount minutes
+/// ahead. Released linearly instead, a position collects only what is released
+/// while it is in, the same as holding.
+///
+/// The cost falls on exits: a holder who leaves forgoes the part of recent
+/// harvests not yet released — about half a window of yield with hourly
+/// harvests — which stays with the holders it is still being released to. A
+/// longer window also spreads a delayed harvest's backlog more thinly.
+pub const PROFIT_UNLOCK_LEDGERS: u32 = 17_280;
+
 /// Minimum ledgers between keeper re-leverages (~1 day at ~5s/ledger).
 ///
 /// Only this direction is rate-limited: deleveraging is an emergency and must
