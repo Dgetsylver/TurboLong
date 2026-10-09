@@ -64,36 +64,31 @@ const BLND = "CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF";   // te
 const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD"; // Soroswap testnet router
 
 // Per-asset config. Strategy `c_factor` sits below the pool's live c_factor
-// (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. Loops/min_hf/
-// orange_hf mirror the mainnet readiness table where the asset matches.
+// (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. target_hf/
+// min_hf/orange_hf mirror the mainnet readiness table where the asset matches.
 const REWARD_THRESHOLD = 10_000_000n; // 1 BLND @ 7dp (low, so harvest triggers easily on testnet)
 const MIN_HARVEST_RATE = 1_000n;      // 0.0001 underlying per BLND — nominal, testnet only
 interface AssetCfg {
   symbol: string;
   asset: string;
   cFactor: bigint;   // 1e7
-  targetLoops: number;
+  targetHf: bigint;  // 1e7
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
 }
-// USDC and CETES mirror the mainnet `orange_hf` change (1.15 → 1.10): their
-// design HF — where a fresh deposit at `target_loops` lands — sits below 1.15
-// once the pool's `l_factor` is folded in, so at 1.15 every deposit would open
-// inside the rebalance band. See the derivation in deploy_strategy_mainnet.ts.
-// TESOURO (testnet-only stand-in) and XLM are left alone: their margin depends
-// on the testnet pool's `l_factor`, which this script does not read. Unlike the
-// mainnet script there is no preflight here to check it — run the mainnet
-// script's `preflight()` reasoning by hand before trusting a testnet rehearsal
-// of these two.
+// Same target HFs as mainnet, so a testnet rehearsal runs the same safety
+// margins; the leverage they make differs with each pool's `l_factor`. The
+// constructor refuses a target less than 0.02 above `orange_hf`, so no deposit
+// can open inside the rebalance band.
 //
 // The already-deployed testnet vaults in deployed-vaults.testnet.json predate
-// this change and still carry orange_hf 1.15; `orange_hf` is constructor-only,
-// so they keep it until redeployed.
+// `target_hf` and cannot be upgraded in place to this version (their stored
+// config has `target_loops`); redeploy them.
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_000_000n },
-  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n },
-  { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
-  { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetHf: 11_300_000n, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetHf: 11_200_000n, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetHf: 12_200_000n, minHf: 11_000_000n, orangeHf: 12_000_000n },
+  { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetHf: 11_700_000n, minHf: 10_500_000n, orangeHf: 11_500_000n },
 ];
 
 const STRATEGY_WASM = path.resolve(here, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
@@ -178,7 +173,7 @@ async function main() {
   // configuration that was ACTUALLY deployed (human floats, not 1e7 ints).
   const out: Record<
     string,
-    { strategy: string; token: string; cFactor: number; targetLoops: number; minHf: number; orangeHf: number }
+    { strategy: string; token: string; cFactor: number; targetHf: number; minHf: number; orangeHf: number }
   > = {};
 
   for (const a of ASSETS) {
@@ -190,7 +185,7 @@ async function main() {
       nativeToScVal(REWARD_THRESHOLD, { type: "i128" }),   // [3] reward_threshold
       addr(KEEPER),                                        // [4] keeper
       nativeToScVal(a.cFactor, { type: "i128" }),          // [5] c_factor
-      nativeToScVal(a.targetLoops, { type: "u32" }),       // [6] target_loops
+      nativeToScVal(a.targetHf, { type: "i128" }),         // [6] target_hf
       nativeToScVal(a.minHf, { type: "i128" }),            // [7] min_hf
       nativeToScVal(a.orangeHf, { type: "i128" }),         // [8] orange_hf
       addr(ADMIN),                                         // [9] admin
@@ -229,7 +224,7 @@ async function main() {
       strategy,
       token,
       cFactor: Number(a.cFactor) / 1e7,
-      targetLoops: a.targetLoops,
+      targetHf: Number(a.targetHf) / 1e7,
       minHf: Number(a.minHf) / 1e7,
       orangeHf: Number(a.orangeHf) / 1e7,
     };

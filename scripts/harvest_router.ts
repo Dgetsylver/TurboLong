@@ -51,7 +51,7 @@
  *   KEEPER_INGEST_KEY       bearer token for POST /swap-routes
  *   KEEPER_SECRET           S... keeper key (only for --execute)
  *   VAULTS_JSON             JSON array of {symbol, strategyId, underlyingClassic, underlyingSoroban}
- *   QUOTE_AMOUNT_BLND       nominal BLND amount (stroops) to quote in dry-run (default 100e7)
+ *   QUOTE_AMOUNT_BLND       nominal BLND amount (stroops) to quote in dry-run (default 1000e7)
  *   HARVEST_MIN_BLND        min claimed BLND (stroops) to bother swapping (default 1e7 = 1 BLND)
  *   STELLAR_BROKER_PARTNER_KEY  Broker partner key for the trading session
  *   BROKER_TRADE_TIMEOUT_S  max seconds to wait for a Broker trade (default 180)
@@ -95,7 +95,9 @@ const KEEPER_SECRET = process.env.KEEPER_SECRET;
 const EXECUTE = process.argv.includes("--execute");
 const LOOP = process.argv.includes("--loop");
 const INTERVAL_S = Number(process.env.INTERVAL_S ?? "3600");
-const QUOTE_AMOUNT_BLND = BigInt(process.env.QUOTE_AMOUNT_BLND ?? "1000000000"); // 100 BLND @ 7dp
+// 1000 BLND @ 7dp: the Broker refuses quotes under $1 equivalent (~165 BLND at
+// $0.006), so anything smaller makes every dry-run look Soroswap-only.
+const QUOTE_AMOUNT_BLND = BigInt(process.env.QUOTE_AMOUNT_BLND ?? "10000000000");
 const HARVEST_MIN_BLND = BigInt(process.env.HARVEST_MIN_BLND ?? "10000000"); // 1 BLND @ 7dp
 const BROKER_PARTNER_KEY = process.env.STELLAR_BROKER_PARTNER_KEY;
 const BROKER_TRADE_TIMEOUT_S = Number(process.env.BROKER_TRADE_TIMEOUT_S ?? "180");
@@ -112,16 +114,20 @@ interface Vault {
   strategyId: string;            // the blend_leverage vault contract (post-D1)
   underlyingClassic: string | null; // Broker classic ID, or null if no classic issuer
   underlyingSoroban: string;     // Soroban (SAC) contract address
+  swapVia?: string | null;       // on-chain Soroswap intermediate (the strategy's swap_via);
+                                 // read from the contract in live mode
 }
 
-// Defaults cover the Broker-quotable underlyings; CETES/USTRY have no classic
-// Broker issuer → Soroswap-only (broker_quote logged as null). Override via
-// VAULTS_JSON with the real strategy IDs once the mainnet vaults are deployed.
+// Defaults cover every underlying the mainnet vaults use. All four are classic
+// assets, so the Broker can route them. On Soroswap, CETES and USTRY have no
+// direct BLND pair and XLM's is thin, so their on-chain route goes through USDC
+// (the contract's `swap_via`). Override via VAULTS_JSON with the real strategy
+// IDs once the mainnet vaults are deployed.
 const DEFAULT_VAULTS: Vault[] = [
   { symbol: "USDC", strategyId: "QUOTE_ONLY", underlyingClassic: "USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN", underlyingSoroban: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" },
-  { symbol: "XLM", strategyId: "QUOTE_ONLY", underlyingClassic: "XLM", underlyingSoroban: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA" },
-  { symbol: "CETES", strategyId: "QUOTE_ONLY", underlyingClassic: null, underlyingSoroban: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV" },
-  { symbol: "USTRY", strategyId: "QUOTE_ONLY", underlyingClassic: null, underlyingSoroban: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR" },
+  { symbol: "XLM", strategyId: "QUOTE_ONLY", underlyingClassic: "XLM", underlyingSoroban: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" },
+  { symbol: "CETES", strategyId: "QUOTE_ONLY", underlyingClassic: "CETES-GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC", underlyingSoroban: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" },
+  { symbol: "USTRY", strategyId: "QUOTE_ONLY", underlyingClassic: "USTRY-GCRYUGD5NVARGXT56XEZI5CIFCQETYHAPQQTHO2O3IQZTHDH4LATMYWC", underlyingSoroban: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" },
 ];
 
 const VAULTS: Vault[] = process.env.VAULTS_JSON ? JSON.parse(process.env.VAULTS_JSON) : DEFAULT_VAULTS;
@@ -200,6 +206,13 @@ const bool = (v: boolean) => nativeToScVal(v, { type: "bool" });
 // ── Quotes ───────────────────────────────────────────────────────────────────
 
 /** Soroswap router_get_amounts_out(amount_in, path) → final output (stroops). */
+/** The on-chain route, as the contract swaps it: BLND → (swapVia) → underlying. */
+function soroswapPath(v: Vault): string[] {
+  return v.swapVia
+    ? [BLND_SOROBAN, v.swapVia, v.underlyingSoroban]
+    : [BLND_SOROBAN, v.underlyingSoroban];
+}
+
 async function soroswapQuote(amountIn: bigint, path: string[]): Promise<bigint | null> {
   try {
     const router = new Contract(SOROSWAP_ROUTER);
@@ -470,7 +483,7 @@ function baseRow(v: Vault, amountIn: bigint, d: Decision): Record<string, unknow
 async function quoteBoth(v: Vault, amountIn: bigint): Promise<Decision | null> {
   const [broker, soroswap] = await Promise.all([
     v.underlyingClassic ? brokerQuote(BLND_CLASSIC, v.underlyingClassic, amountIn) : Promise.resolve(null),
-    soroswapQuote(amountIn, [BLND_SOROBAN, v.underlyingSoroban]),
+    soroswapQuote(amountIn, soroswapPath(v)),
   ]);
   return decide(broker, soroswap);
 }
@@ -485,6 +498,13 @@ async function processVault(v: Vault): Promise<void> {
 
   // ── Live execution ─────────────────────────────────────────────────────────
   const kp = keeper!;
+
+  // Quote the route the contract actually swaps through.
+  try {
+    v.swapVia = ((await simCall(v.strategyId, "swap_via")) as string | null) ?? null;
+  } catch {
+    v.swapVia = null; // a contract predating swap_via swaps on the direct pair
+  }
 
   // The Broker path needs the keeper to be the strategy's swap account (it
   // pulls the approved BLND). If it isn't, quotes still log but only the
@@ -590,7 +610,7 @@ async function processVault(v: Vault): Promise<void> {
   // 4. Fallback: reinvest any unsold BLND via the on-chain Soroswap path.
   if (out.unsoldBlnd > 0n) {
     console.warn(`[${v.symbol}] broker left ${out.unsoldBlnd} BLND unsold (${out.error ?? "partial fill"}); falling back to Soroswap`);
-    const fbQuote = await soroswapQuote(out.unsoldBlnd, [BLND_SOROBAN, v.underlyingSoroban]);
+    const fbQuote = await soroswapQuote(out.unsoldBlnd, soroswapPath(v));
     if (fbQuote == null) {
       await logRoute({ ...base, amount_in: out.unsoldBlnd.toString(), chosen: "soroswap", reason: "fallback_unavailable", status: "failed", tx_hash: null });
       console.error(`[${v.symbol}] fallback Soroswap quote unavailable; BLND stays in the strategy for the next pass`);

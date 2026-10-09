@@ -24,8 +24,6 @@ pub enum DataKey {
     /// The SEP-41 vault-share token contract — the canonical per-user share
     /// ledger. The strategy is its minter (mints on deposit, burns on withdraw).
     ShareToken,
-    /// Ledger sequence of the last keeper rebalance (for rate-limiting).
-    LastRebalance,
     /// Ledger sequence of the last keeper re-leverage (for rate-limiting).
     LastReleverage,
     /// Keeper-controlled account allowed to pull claimed BLND for an off-chain
@@ -36,6 +34,11 @@ pub enum DataKey {
     MinHarvestRate,
     /// The in-flight `harvest_claim` awaiting settlement by `harvest_reinvest`.
     PendingHarvest,
+    /// Harvest profit still being released into the share price.
+    LockedProfit,
+    /// Optional intermediate token of the on-chain Soroswap harvest route
+    /// (BLND → via → underlying), admin-set.
+    SwapVia,
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -59,8 +62,11 @@ pub struct Config {
     pub reward_threshold: i128,
     /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95)
     pub c_factor: i128,
-    /// Target number of supply+borrow loops
-    pub target_loops: u32,
+    /// Health factor a deposit is levered to (1e7 scaled, e.g. 11_300_000 =
+    /// 1.13), in Blend's terms: the pool's live `l_factor` is part of it. It is
+    /// the vault's leverage, `B/E = target_hf / (target_hf − c_factor × l_factor)`.
+    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (asserted at construction).
+    pub target_hf: i128,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
     /// Orange-zone threshold: HF below this triggers partial unwind (1e7 scaled).
@@ -96,18 +102,15 @@ pub struct LeverageReserves {
     pub d_rate: i128,
 }
 
+/// Global, so instance storage like the rest of the contract's state: it lives
+/// as long as the instance, whose TTL nearly every call extends.
 pub fn set_strategy_reserves(e: &Env, reserves: LeverageReserves) {
-    e.storage().persistent().set(&DataKey::Reserves, &reserves);
-    e.storage().persistent().extend_ttl(
-        &DataKey::Reserves,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
+    e.storage().instance().set(&DataKey::Reserves, &reserves);
 }
 
 pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
     e.storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Reserves)
         .unwrap_or_default()
 }
@@ -139,18 +142,14 @@ pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
 
 // ── Keeper ───────────────────────────────────────────────────────────────────
 
+/// Instance storage, like the reserves above.
 pub fn set_keeper(e: &Env, keeper: &Address) {
-    e.storage().persistent().set(&DataKey::Keeper, keeper);
-    e.storage().persistent().extend_ttl(
-        &DataKey::Keeper,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
+    e.storage().instance().set(&DataKey::Keeper, keeper);
 }
 
 pub fn get_keeper(e: &Env) -> Address {
     e.storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
 }
@@ -187,19 +186,6 @@ pub fn has_share_token(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::ShareToken)
 }
 
-// ── Keeper rebalance rate-limit ──────────────────────────────────────────────
-
-pub fn set_last_rebalance(e: &Env, ledger: u32) {
-    e.storage().instance().set(&DataKey::LastRebalance, &ledger);
-}
-
-/// `None` when no keeper rebalance has ever been recorded. An explicit Option
-/// (instead of a `0` sentinel) so a rebalance recorded at any ledger sequence
-/// — including 0 in test environments — correctly arms the cooldown.
-pub fn get_last_rebalance(e: &Env) -> Option<u32> {
-    e.storage().instance().get(&DataKey::LastRebalance)
-}
-
 // ── Keeper re-leverage rate-limit ────────────────────────────────────────────
 
 pub fn set_last_releverage(e: &Env, ledger: u32) {
@@ -208,8 +194,9 @@ pub fn set_last_releverage(e: &Env, ledger: u32) {
         .set(&DataKey::LastReleverage, &ledger);
 }
 
-/// `None` when no re-leverage has ever been recorded — same explicit-Option
-/// reasoning as `get_last_rebalance`.
+/// `None` when no re-leverage has ever been recorded. An explicit Option
+/// (instead of a `0` sentinel) so a re-leverage recorded at any ledger sequence
+/// — including 0 in test environments — correctly arms the cooldown.
 pub fn get_last_releverage(e: &Env) -> Option<u32> {
     e.storage().instance().get(&DataKey::LastReleverage)
 }
@@ -229,6 +216,20 @@ pub fn get_swap_account(e: &Env) -> Address {
 
 pub fn has_swap_account(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::SwapAccount)
+}
+
+// ── Soroswap harvest route ───────────────────────────────────────────────────
+
+pub fn set_swap_via(e: &Env, via: &Option<Address>) {
+    match via {
+        Some(via) => e.storage().instance().set(&DataKey::SwapVia, via),
+        None => e.storage().instance().remove(&DataKey::SwapVia),
+    }
+}
+
+/// `None` swaps BLND straight to the underlying.
+pub fn get_swap_via(e: &Env) -> Option<Address> {
+    e.storage().instance().get(&DataKey::SwapVia)
 }
 
 // ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
@@ -296,6 +297,33 @@ pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
         e.storage().instance().remove(&DataKey::PendingHarvest);
     }
     pending
+}
+
+// ── Locked harvest profit (audit finding 7) ──────────────────────────────────
+
+/// Harvest profit held out of the share price: `amount` at ledger `from`,
+/// released linearly to nothing at ledger `until` (see `PROFIT_UNLOCK_LEDGERS`).
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LockedProfit {
+    /// Underlying still locked at ledger `from`.
+    pub amount: i128,
+    /// Ledger the schedule was last set.
+    pub from: u32,
+    /// Ledger by which all of `amount` is released.
+    pub until: u32,
+}
+
+pub fn set_locked_profit(e: &Env, locked: &LockedProfit) {
+    e.storage().instance().set(&DataKey::LockedProfit, locked);
+}
+
+/// The release schedule, or an empty one when no harvest has locked anything.
+pub fn get_locked_profit(e: &Env) -> LockedProfit {
+    e.storage()
+        .instance()
+        .get(&DataKey::LockedProfit)
+        .unwrap_or_default()
 }
 
 // ── Instance TTL ─────────────────────────────────────────────────────────────

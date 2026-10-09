@@ -1,12 +1,13 @@
 //! Unit tests for leverage math, equity calculation, share accounting, and safety checks.
 
-use crate::constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12, SCALAR_7};
+use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
-    compute_equity, compute_health_factor, compute_loop_pairs, compute_partial_unwind,
-    compute_releverage, compute_totals, design_health_factor, effective_c_factor, harvest_floor,
-    prorate_floor, shares_to_underlying, underlying_to_shares, unwind_rounding_margin,
+    compute_equity, compute_health_factor, compute_lever_in, compute_partial_unwind,
+    compute_releverage, effective_c_factor, harvest_floor, lock_profit, locked_profit,
+    priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
+    unwind_rounding_margin,
 };
-use crate::storage::LeverageReserves;
+use crate::storage::{LeverageReserves, LockedProfit};
 use soroban_fixed_point_math::FixedPoint;
 
 /// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
@@ -15,113 +16,75 @@ use soroban_fixed_point_math::FixedPoint;
 /// exercise the markup pass an explicit `l_factor < 1.0`.
 const L_NONE: i128 = SCALAR_7;
 
-// ── compute_loop_pairs ───────────────────────────────────────────────────────
+/// The HF most tests lever to: what 3 loops at c = 0.90 used to build.
+const TARGET_HF: i128 = 12_690_000;
+
+// ── compute_lever_in ─────────────────────────────────────────────────────────
 
 #[test]
-fn test_loop_pairs_basic_3_loops() {
-    // c_factor = 0.95 (9_500_000 in 1e7), initial = 1000_0000000 (1000 USDC in 7 dec)
-    let initial = 1_000_0000000_i128;
-    let c_factor = 9_500_000_i128;
-    let (supplies, borrows, count) = compute_loop_pairs(initial, c_factor, 3);
-
-    assert_eq!(count, 4); // 3 loops + 1 final supply
-
-    // Loop 0: supply 1000, borrow 1000*0.95 = 950
-    assert_eq!(supplies[0], 1_000_0000000);
-    assert_eq!(borrows[0], 950_0000000);
-
-    // Loop 1: supply 950, borrow 950*0.95 = 902.5
-    assert_eq!(supplies[1], 950_0000000);
-    assert_eq!(borrows[1], 902_5000000);
-
-    // Loop 2: supply 902.5, borrow 902.5*0.95 = 857.375
-    assert_eq!(supplies[2], 902_5000000);
-    assert_eq!(borrows[2], 857_3750000);
-
-    // Final: supply 857.375, borrow 0
-    assert_eq!(supplies[3], 857_3750000);
-    assert_eq!(borrows[3], 0);
-}
-
-#[test]
-fn test_loop_pairs_zero_loops() {
-    let (supplies, borrows, count) = compute_loop_pairs(1_000_0000000, 9_500_000, 0);
-    assert_eq!(count, 1);
-    assert_eq!(supplies[0], 1_000_0000000);
-    assert_eq!(borrows[0], 0);
-}
-
-#[test]
-fn test_loop_pairs_one_loop() {
-    let initial = 100_0000000_i128;
-    let c_factor = 9_500_000_i128;
-    let (supplies, borrows, count) = compute_loop_pairs(initial, c_factor, 1);
-    assert_eq!(count, 2);
-    assert_eq!(supplies[0], 100_0000000);
-    assert_eq!(borrows[0], 95_0000000);
-    assert_eq!(supplies[1], 95_0000000);
-    assert_eq!(borrows[1], 0);
-}
-
-#[test]
-fn test_loop_pairs_capped_at_20() {
-    let (_, _, count) = compute_loop_pairs(1_000_0000000, 9_500_000, 25);
-    assert_eq!(count, 21); // capped at 20 loops + 1 final = 21
-}
-
-// ── compute_totals ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_totals_match_loop_pairs() {
-    let initial = 1_000_0000000_i128;
-    let c = 9_500_000_i128;
-    let n = 8;
-
-    let (total_supply, total_borrow) = compute_totals(initial, c, n).unwrap();
-
-    // Verify against manual sum of loop pairs
-    let (supplies, borrows, count) = compute_loop_pairs(initial, c, n);
-    let mut sum_s = 0i128;
-    let mut sum_b = 0i128;
-    for i in 0..count as usize {
-        sum_s += supplies[i];
-        sum_b += borrows[i];
+fn test_lever_in_nets_to_the_deposit() {
+    // Whatever the target, supply − borrow is exactly the deposit: the pool nets
+    // the two legs to it, and it is all the strategy approves.
+    for target in [11_200_000_i128, TARGET_HF, 20_000_000] {
+        for deposit in [1_i128, 3_3333333, 1_000_0000000, 1_000_000_0000000] {
+            let (supply, borrow) = compute_lever_in(deposit, 9_000_000, 9_500_000, target).unwrap();
+            assert_eq!(supply - borrow, deposit);
+        }
     }
-    assert_eq!(total_supply, sum_s);
-    assert_eq!(total_borrow, sum_b);
 }
 
 #[test]
-fn test_totals_leverage_ratio() {
-    // With c=0.95 and 8 loops, leverage ≈ (1 - 0.95^9) / (1 - 0.95) ≈ 8.3
-    let initial = 1_000_0000000_i128;
-    let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, 8).unwrap();
-
-    let leverage_x100 = total_supply * 100 / initial;
-    // Leverage should be between 7 and 9
-    assert!(
-        leverage_x100 > 700 && leverage_x100 < 900,
-        "Leverage {}.{} out of expected range",
-        leverage_x100 / 100,
-        leverage_x100 % 100
-    );
-
-    // Borrow should be supply - initial (equity)
-    assert_eq!(total_supply - total_borrow, initial);
+fn test_lever_in_lands_on_target_hf() {
+    // Across collateral factors and liability markups, the position it builds
+    // sits on the target HF (the borrow rounds toward a higher HF).
+    for (c, l) in [
+        (9_000_000_i128, SCALAR_7),
+        (9_000_000, 9_500_000),
+        (7_500_000, 8_000_000),
+        (7_000_000, 7_500_000),
+    ] {
+        for target in [11_200_000_i128, 11_700_000, TARGET_HF, 15_000_000] {
+            let (supply, borrow) = compute_lever_in(1_000_0000000, c, l, target).unwrap();
+            let hf = compute_health_factor(supply, borrow, SCALAR_12, SCALAR_12, c, l).unwrap();
+            assert!(
+                hf >= target && hf - target <= 1,
+                "c={} l={} target={}: landed at {}",
+                c,
+                l,
+                target,
+                hf
+            );
+        }
+    }
 }
 
 #[test]
-fn test_totals_net_equals_initial() {
-    // For any number of loops, total_supply - total_borrow = initial deposit
-    for n in 0..15 {
-        let initial = 1_000_0000000_i128;
-        let (total_supply, total_borrow) = compute_totals(initial, 9_500_000, n).unwrap();
-        assert_eq!(
-            total_supply - total_borrow,
-            initial,
-            "Net supply != initial at {} loops",
-            n
-        );
+fn test_lever_in_leverage_is_what_the_target_hf_says() {
+    // At HF h the collateral/equity ratio is h / (h − c·l): USDC's 1.13 at
+    // c = 0.90, l = 0.95 is 1.13 / 0.275 = 4.109×. A lower target levers further.
+    let deposit = 1_000_0000000_i128;
+    let (supply, _) = compute_lever_in(deposit, 9_000_000, 9_500_000, 11_300_000).unwrap();
+    assert_eq!(supply * 1000 / deposit, 4109);
+
+    let (further, _) = compute_lever_in(deposit, 9_000_000, 9_500_000, 11_200_000).unwrap();
+    assert!(further > supply, "a lower target levers further");
+}
+
+#[test]
+fn test_lever_in_follows_the_live_l_factor() {
+    // The target is in Blend's terms, so when the pool marks liabilities up
+    // further (a lower l_factor) the deposit borrows less and keeps its HF,
+    // rather than landing deeper in risk.
+    let (_, plain) = compute_lever_in(1_000_0000000, 9_000_000, SCALAR_7, 11_300_000).unwrap();
+    let (_, marked) = compute_lever_in(1_000_0000000, 9_000_000, 9_000_000, 11_300_000).unwrap();
+    assert!(marked < plain, "{} vs {}", marked, plain);
+}
+
+#[test]
+fn test_lever_in_rejects_an_unreachable_target() {
+    // No leverage brings HF down to c·l (0.855 here) or below.
+    for target in [8_550_000_i128, 8_000_000] {
+        assert!(compute_lever_in(1_000_0000000, 9_000_000, 9_500_000, target).is_err());
     }
 }
 
@@ -206,11 +169,11 @@ fn test_shares_to_underlying_simple() {
         d_rate: SCALAR_12,
     };
     // Total equity = 1000. Full shares = full equity.
-    let value = shares_to_underlying(1_000_0000000, &reserves).unwrap();
+    let value = shares_to_underlying(1_000_0000000, &reserves, 0).unwrap();
     assert_eq!(value, 1_000_0000000);
 
     // Half shares = half equity
-    let half = shares_to_underlying(500_0000000, &reserves).unwrap();
+    let half = shares_to_underlying(500_0000000, &reserves, 0).unwrap();
     assert_eq!(half, 500_0000000);
 }
 
@@ -223,7 +186,7 @@ fn test_shares_to_underlying_zero_shares() {
         b_rate: SCALAR_12,
         d_rate: SCALAR_12,
     };
-    assert_eq!(shares_to_underlying(0, &reserves).unwrap(), 0);
+    assert_eq!(shares_to_underlying(0, &reserves, 0).unwrap(), 0);
 }
 
 #[test]
@@ -237,7 +200,7 @@ fn test_underlying_to_shares_first_deposit() {
     };
     // First deposit: 1 share = 1 unit
     assert_eq!(
-        underlying_to_shares(1_000_0000000, &reserves).unwrap(),
+        underlying_to_shares(1_000_0000000, &reserves, 0).unwrap(),
         1_000_0000000
     );
 }
@@ -252,7 +215,7 @@ fn test_underlying_to_shares_proportional() {
         d_rate: SCALAR_12,
     };
     // Equity = 1000. Depositing 500 should get 500 shares.
-    let shares = underlying_to_shares(500_0000000, &reserves).unwrap();
+    let shares = underlying_to_shares(500_0000000, &reserves, 0).unwrap();
     assert_eq!(shares, 500_0000000);
 }
 
@@ -269,8 +232,8 @@ fn test_shares_roundtrip() {
     assert!(equity > 0);
 
     // Convert equity -> shares -> equity, should be close to original
-    let shares = underlying_to_shares(equity, &reserves).unwrap();
-    let recovered = shares_to_underlying(shares, &reserves).unwrap();
+    let shares = underlying_to_shares(equity, &reserves, 0).unwrap();
+    let recovered = shares_to_underlying(shares, &reserves, 0).unwrap();
     // Allow 1 stroop rounding
     assert!(
         (recovered - equity).abs() <= 1,
@@ -515,8 +478,8 @@ fn test_partial_unwind_single_loop_position() {
 }
 
 #[test]
-fn test_partial_unwind_max_loops_position() {
-    // 20-loop position (max): very high leverage, HF just below orange zone
+fn test_partial_unwind_highly_levered_position() {
+    // 20× leverage, HF far below the orange zone:
     // b=20000, d=19000, c=0.95 → HF = 20000*0.95/19000 ≈ 1.0
     let repay = compute_partial_unwind(
         20_000_0000000,
@@ -596,46 +559,16 @@ fn test_partial_unwind_minimal_repay_is_exact() {
     }
 }
 
-// ── Leverage table validation (cross-reference with simulate.rs) ─────────────
-
-#[test]
-fn test_leverage_table_matches_simulator() {
-    // From simulate.rs: leverage(n, c) = (1 - c^(n+1)) / (1 - c)
-    // Our compute_totals should produce the same leverage ratio.
-    let initial = 1_000_0000000_i128;
-    let c = 9_500_000_i128;
-
-    for n in 0..=13 {
-        let (total_supply, _) = compute_totals(initial, c, n).unwrap();
-        let our_lev_x1000 = total_supply * 1000 / initial;
-
-        // Compute expected via float formula
-        let c_f = 0.95_f64;
-        let expected_lev = (1.0 - c_f.powi(n as i32 + 1)) / (1.0 - c_f);
-        let expected_x1000 = (expected_lev * 1000.0).round() as i128;
-
-        // Allow 1‰ tolerance for integer rounding
-        let diff = (our_lev_x1000 - expected_x1000).abs();
-        assert!(
-            diff <= 1,
-            "Loop {}: our={}.{:03}x, expected={}.{:03}x (diff={})",
-            n,
-            our_lev_x1000 / 1000,
-            our_lev_x1000 % 1000,
-            expected_x1000 / 1000,
-            expected_x1000 % 1000,
-            diff
-        );
-    }
-}
-
 // ── Deposit/withdraw accounting (with Soroban Env for storage) ───────────────
 
 extern crate std;
 
 use crate::reserves;
 use crate::storage;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 fn make_reserves(b: i128, d: i128, shares: i128) -> LeverageReserves {
     LeverageReserves {
@@ -721,7 +654,7 @@ fn test_withdraw_full() {
 
         // Withdraw all equity (1000)
         let (burned, b_remove, d_remove) =
-            reserves::withdraw(user_shares, 1_000_0000000, &reserves_state).unwrap();
+            reserves::withdraw(e, user_shares, 1_000_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 0);
         assert_eq!(b_remove, 8_000_0000000);
@@ -745,7 +678,7 @@ fn test_withdraw_partial() {
 
         // Withdraw half equity (500)
         let (burned, b_remove, d_remove) =
-            reserves::withdraw(user_shares, 500_0000000, &reserves_state).unwrap();
+            reserves::withdraw(e, user_shares, 500_0000000, &reserves_state).unwrap();
 
         assert_eq!(user_shares - burned, 500_0000000);
         assert_eq!(b_remove, 4_000_0000000); // half of 8000
@@ -766,7 +699,7 @@ fn test_withdraw_insufficient_balance() {
         storage::set_strategy_reserves(e, reserves_state.clone());
 
         // Try to withdraw more than the user's shares cover
-        let result = reserves::withdraw(user_shares, 600_0000000, &reserves_state);
+        let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
         assert!(result.is_err());
     });
 }
@@ -780,7 +713,7 @@ fn test_withdraw_refused_when_underwater() {
         let reserves_state = make_reserves(900_0000000, 1_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves_state.clone());
 
-        let result = reserves::withdraw(1_000_0000000, 1_0000000, &reserves_state);
+        let result = reserves::withdraw(e, 1_000_0000000, 1_0000000, &reserves_state);
         assert!(matches!(
             result,
             Err(crate::StrategyError::InsufficientBalance)
@@ -796,7 +729,7 @@ fn test_harvest_increases_share_value() {
     // Start: 8000 b-tokens, 7000 d-tokens, 1000 shares, equity = 1000
     let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
 
-    let pre_value = shares_to_underlying(1_000_0000000, &reserves_state).unwrap();
+    let pre_value = shares_to_underlying(1_000_0000000, &reserves_state, 0).unwrap();
 
     // Harvest adds 500 b-tokens and 400 d-tokens (net +100 equity from BLND compound)
     let mut updated = reserves_state.clone();
@@ -804,7 +737,7 @@ fn test_harvest_increases_share_value() {
     updated.total_d_tokens += 400_0000000;
     // total_shares stays the same — that's the point of harvest
 
-    let post_value = shares_to_underlying(1_000_0000000, &updated).unwrap();
+    let post_value = shares_to_underlying(1_000_0000000, &updated, 0).unwrap();
 
     assert!(
         post_value > pre_value,
@@ -813,6 +746,201 @@ fn test_harvest_increases_share_value() {
         post_value
     );
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
+}
+
+// ── Profit release (audit finding 7) ─────────────────────────────────────────
+
+const W: u32 = PROFIT_UNLOCK_LEDGERS;
+
+#[test]
+fn test_locked_profit_releases_linearly() {
+    let lock = LockedProfit {
+        amount: 1_000_0000000,
+        from: 100,
+        until: 100 + W,
+    };
+    assert_eq!(
+        locked_profit(&lock, 100).unwrap(),
+        1_000_0000000,
+        "all locked at first"
+    );
+    assert_eq!(locked_profit(&lock, 100 + W / 4).unwrap(), 750_0000000);
+    assert_eq!(locked_profit(&lock, 100 + W / 2).unwrap(), 500_0000000);
+    assert_eq!(
+        locked_profit(&lock, 100 + W).unwrap(),
+        0,
+        "all released at the end"
+    );
+    assert_eq!(locked_profit(&lock, 100 + 2 * W).unwrap(), 0);
+    assert_eq!(locked_profit(&LockedProfit::default(), 100).unwrap(), 0);
+}
+
+#[test]
+fn test_lock_profit_gives_a_fresh_gain_the_full_window() {
+    assert_eq!(
+        lock_profit(&LockedProfit::default(), 100_0000000, 500, W).unwrap(),
+        LockedProfit {
+            amount: 100_0000000,
+            from: 500,
+            until: 500 + W,
+        }
+    );
+
+    // A harvest that adds no equity locks nothing.
+    for gain in [0, -5] {
+        assert_eq!(
+            lock_profit(&LockedProfit::default(), gain, 500, W).unwrap(),
+            LockedProfit::default()
+        );
+    }
+}
+
+#[test]
+fn test_lock_profit_without_gain_keeps_the_schedule() {
+    let lock = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
+    let rebased = lock_profit(&lock, 0, W / 4, W).unwrap();
+
+    assert_eq!(rebased.until, lock.until, "same end date");
+    for now in [W / 4, W / 2, 3 * W / 4, W] {
+        assert_eq!(
+            locked_profit(&rebased, now).unwrap(),
+            locked_profit(&lock, now).unwrap(),
+            "same release at ledger {}",
+            now
+        );
+    }
+}
+
+#[test]
+fn test_lock_profit_stacks_to_the_gain_weighted_end() {
+    // Half of a first harvest is still locked when an equal second one lands:
+    // 50 with half a window to go and 100 with a whole one release together
+    // until (50 × W/2 + 100 × W) / 150 = 5W/6 from now.
+    let first = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
+    let both = lock_profit(&first, 100_0000000, W / 2, W).unwrap();
+
+    assert_eq!(
+        both,
+        LockedProfit {
+            amount: 150_0000000,
+            from: W / 2,
+            until: W / 2 + 5 * W / 6,
+        }
+    );
+}
+
+#[test]
+fn test_hourly_harvests_keep_about_half_a_window_locked() {
+    // A week of hourly harvests of `g`. The release settles on the harvest rate,
+    // and what is locked just after a harvest on g × (W + h) / 2h — 12.5 harvests
+    // for a one-day window — instead of growing without bound. Nothing is created
+    // or lost: everything harvested is either released or still locked.
+    let g = 10_0000000_i128;
+    let h = 720_u32; // one hour
+    let mut lock = LockedProfit::default();
+    let mut now = 0_u32;
+    let (mut harvested, mut released) = (0_i128, 0_i128);
+
+    for _ in 0..7 * 24 {
+        let before = locked_profit(&lock, now).unwrap();
+        lock = lock_profit(&lock, g, now, W).unwrap();
+        harvested += g;
+        assert_eq!(locked_profit(&lock, now).unwrap(), before + g);
+
+        now += h;
+        released += before + g - locked_profit(&lock, now).unwrap();
+    }
+
+    assert_eq!(harvested, released + locked_profit(&lock, now).unwrap());
+    assert!(
+        (lock.amount - g * 25 / 2).abs() <= g / 10,
+        "locked just after a harvest settles on 12.5 harvests: {}",
+        lock.amount
+    );
+    let last_hour = lock.amount - locked_profit(&lock, lock.from + h).unwrap();
+    assert!(
+        (last_hour - g).abs() <= g / 100,
+        "an hour releases one harvest's worth: {}",
+        last_hour
+    );
+}
+
+#[test]
+fn test_priced_equity_nets_out_locked_profit() {
+    let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000); // equity 1000
+
+    assert_eq!(priced_equity(&r, 0).unwrap(), 1_000_0000000);
+    assert_eq!(priced_equity(&r, 100_0000000).unwrap(), 900_0000000);
+    // While 100 of the 1000 is locked, shares are priced at 900.
+    assert_eq!(
+        shares_to_underlying(1_000_0000000, &r, 100_0000000).unwrap(),
+        900_0000000
+    );
+    assert_eq!(
+        underlying_to_shares(900_0000000, &r, 100_0000000).unwrap(),
+        1_000_0000000
+    );
+    // More locked than there is equity (only after a loss) prices at zero.
+    assert_eq!(priced_equity(&r, 5_000_0000000).unwrap(), 0);
+}
+
+#[test]
+fn test_harvest_locks_the_equity_it_adds() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
+        storage::set_strategy_reserves(e, r.clone());
+
+        // +500 b / +400 d: the harvest adds 100 of equity, all of it locked.
+        let updated = reserves::harvest(e, 500_0000000, 400_0000000, &r).unwrap();
+        let value = |e: &Env| {
+            shares_to_underlying(1_000_0000000, &updated, reserves::locked_profit(e).unwrap())
+                .unwrap()
+        };
+        assert_eq!(reserves::locked_profit(e).unwrap(), 100_0000000);
+        assert_eq!(value(e), 1_000_0000000, "no jump at the harvest");
+
+        e.ledger().with_mut(|li| li.sequence_number += W / 2);
+        assert_eq!(value(e), 1_050_0000000, "half released after half a window");
+
+        e.ledger().with_mut(|li| li.sequence_number += W / 2);
+        assert_eq!(value(e), 1_100_0000000, "all released after the window");
+
+        // A re-leverage moves the ratio, not the equity: nothing to lock.
+        reserves::releverage(e, 100_0000000, 100_0000000, &updated).unwrap();
+        assert_eq!(reserves::locked_profit(e).unwrap(), 0);
+    });
+}
+
+#[test]
+fn test_withdraw_leaves_the_locked_profit_behind() {
+    // Equity 1100, of which a harvest's 100 was locked this ledger: shares are
+    // priced at 1000. Withdrawing 500 burns half the shares and takes out 500 —
+    // not the 550 half the position holds. The leaver's 50 of the locked profit
+    // stays for the holders it is still being released to.
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let r = make_reserves(8_800_0000000, 7_700_0000000, 1_000_0000000);
+        let now = e.ledger().sequence();
+        storage::set_locked_profit(
+            e,
+            &LockedProfit {
+                amount: 100_0000000,
+                from: now,
+                until: now + W,
+            },
+        );
+
+        let (burned, b, d) = reserves::withdraw(e, 1_000_0000000, 500_0000000, &r).unwrap();
+
+        assert_eq!(burned, 500_0000000, "half the shares");
+        assert_eq!((b, d), (4_000_0000000, 3_500_0000000));
+        assert_eq!(
+            b - d,
+            500_0000000,
+            "500 of equity, at the position's leverage"
+        );
+    });
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
@@ -871,7 +999,7 @@ fn test_multi_user_proportional() {
         assert_eq!(total_equity, 3_000_0000000);
 
         // Alice's value should be ~1000
-        let alice_value = shares_to_underlying(alice_shares, &after_bob).unwrap();
+        let alice_value = shares_to_underlying(alice_shares, &after_bob, 0).unwrap();
         // Allow for lockup adjustment
         let expected =
             1_000_0000000 - (FIRST_DEPOSIT_LOCKUP * 1_000_0000000 / after_bob.total_shares);
@@ -885,27 +1013,11 @@ fn test_multi_user_proportional() {
     });
 }
 
-// ── Safety: utilization check ────────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Error(Contract, #422)")]
-fn test_safety_rejects_high_utilization() {
-    use crate::leverage::check_pool_utilization;
-
-    let e = Env::default();
-
-    // Pool at 96% utilization → should panic (above 95% limit)
-    check_pool_utilization(
-        &e,
-        1_000_0000000, // pool supply
-        960_0000000,   // pool borrow (96%)
-    )
-    .unwrap();
-}
+// ── Safety: HF check ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_safety_allows_healthy_pool() {
-    use crate::leverage::{check_min_health_factor, check_pool_utilization};
+    use crate::leverage::check_min_health_factor;
     use crate::storage::Config;
 
     let e = Env::default();
@@ -919,16 +1031,11 @@ fn test_safety_allows_healthy_pool() {
         claim_ids: soroban_sdk::Vec::new(&e),
         reward_threshold: 1,
         c_factor: 9_500_000,
-        target_loops: 8,
+        target_hf: 11_700_000,
         min_hf: 10_500_000,
         orange_hf: 11_500_000,
     };
 
-    // Pool at 50% utilization, healthy HF
-    assert!(
-        check_pool_utilization(&e, 1_000_0000000, 500_0000000).is_ok(),
-        "Should allow at 50% utilization"
-    );
     assert!(
         check_min_health_factor(
             &e,
@@ -969,7 +1076,7 @@ fn test_safety_rejects_position_blend_would_liquidate() {
         claim_ids: soroban_sdk::Vec::new(&e),
         reward_threshold: 1,
         c_factor: 7_000_000,
-        target_loops: 3,
+        target_hf: 11_700_000,
         min_hf: 11_000_000,
         orange_hf: 11_500_000,
     };
@@ -1080,7 +1187,7 @@ fn test_version_defaults_to_one_then_bumps() {
     });
 }
 
-/// An in-place WASM upgrade preserves all persistent storage, so a user's
+/// An in-place WASM upgrade preserves all contract storage, so a user's
 /// underlying balance and the strategy HF computed from the stored position
 /// must be identical before and after. This asserts that parity invariant on
 /// a seeded fixture: the same stored reserves yield byte-identical equity, HF,
@@ -1108,9 +1215,9 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         )
         .unwrap();
         let user_underlying_before =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves).unwrap();
+            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves, 0).unwrap();
 
-        // An upgrade does not touch persistent storage; re-read it as v2 would.
+        // An upgrade does not touch contract storage; re-read it as v2 would.
         let reserves_after = storage::get_strategy_reserves(e);
         let equity_after = compute_equity(&reserves_after).unwrap();
         let hf_after = compute_health_factor(
@@ -1123,7 +1230,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         )
         .unwrap();
         let user_underlying_after =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after).unwrap();
+            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after, 0).unwrap();
 
         // Parity within 1e-7 — here exactly equal.
         assert_eq!(equity_before, equity_after, "equity parity");
@@ -1352,10 +1459,10 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
             (1_026_768_977_055, 1_093_572_700_000),
             (1_500_000_000_000, 1_900_000_000_000),
         ] {
-            for loops in [3_u32, 5, 8, 12] {
+            for build_hf in [11_400_000_i128, 11_000_000, 10_700_000, 10_300_000] {
                 for deposit in [1_000_000_i128, 3_3333333, 1_000_0000000, 1_000_000_0000000] {
                     // The position a deposit at these rates builds, in tokens.
-                    let (supply, borrow) = compute_totals(deposit, c, loops).unwrap();
+                    let (supply, borrow) = compute_lever_in(deposit, c, l, build_hf).unwrap();
                     let b = supply.fixed_div_floor(b_rate, SCALAR_12).unwrap();
                     let d = borrow.fixed_div_ceil(d_rate, SCALAR_12).unwrap();
                     let hf0 = compute_health_factor(b, d, b_rate, d_rate, c, l).unwrap();
@@ -1368,12 +1475,12 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
                     let hf = compute_health_factor(b2, d2, b_rate, d_rate, c, l).unwrap();
                     assert!(
                         hf >= target,
-                        "short of target: c={} l={} rates=({}, {}) loops={} deposit={}: {} < {}",
+                        "short of target: c={} l={} rates=({}, {}) built at {} deposit={}: {} < {}",
                         c,
                         l,
                         b_rate,
                         d_rate,
-                        loops,
+                        build_hf,
                         deposit,
                         hf,
                         target
@@ -1382,12 +1489,12 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
                     // only registers on positions of a few units.
                     assert!(
                         hf - target <= 100,
-                        "overshot: c={} l={} rates=({}, {}) loops={} deposit={}: {}",
+                        "overshot: c={} l={} rates=({}, {}) built at {} deposit={}: {}",
                         c,
                         l,
                         b_rate,
                         d_rate,
-                        loops,
+                        build_hf,
                         deposit,
                         hf
                     );
@@ -1418,66 +1525,7 @@ fn test_partial_unwind_rounding_margin_is_a_few_dozen_stroops() {
     assert!(unwind_rounding_margin(SCALAR_12, SCALAR_12, cl, cl).is_err());
 }
 
-// ── design_health_factor / compute_releverage (audit M-3) ────────────────────
-
-/// The design HF must *be* the configured leverage, not merely correlate with
-/// it: at `HF = h` a position's collateral/equity ratio is pinned to
-/// `h / (h − cl)`, and that has to match the `B/E` the deposit loop actually
-/// builds for the same `target_loops`. This is the identity that lets
-/// `releverage` cap leverage at `target_loops` by capping an HF.
-#[test]
-fn test_design_hf_is_the_leverage_the_deposit_loop_builds() {
-    let notional = 1_000_000_000_000_i128; // matches DESIGN_NOTIONAL
-    for c in [5_000_000_i128, 7_000_000, 9_000_000] {
-        for l in [SCALAR_7, 9_500_000_i128] {
-            let cl = c * l / SCALAR_7;
-            for loops in 1..=10u32 {
-                let (b, d) = compute_totals(notional, c, loops).unwrap();
-                let equity = b - d;
-
-                let h = design_health_factor(c, loops, l).unwrap();
-
-                let lev_built = b * SCALAR_7 / equity; // B/E from the loop itself
-                let lev_from_hf = h * SCALAR_7 / (h - cl); // B/E implied by the HF
-
-                let diff = (lev_built - lev_from_hf).abs();
-                assert!(
-                    diff <= 100, // ≤ 1e-5× leverage, i.e. fixed-point dust
-                    "c={} l={} loops={}: leverage from loop {} vs from HF {}",
-                    c,
-                    l,
-                    loops,
-                    lev_built,
-                    lev_from_hf
-                );
-            }
-        }
-    }
-}
-
-/// Design HF falls as loops rise (more leverage = thinner margin), and the
-/// pool's liability markup drags it down proportionally.
-#[test]
-fn test_design_hf_decreases_with_loops_and_carries_l_factor() {
-    let c = 9_000_000_i128;
-    let mut prev = i128::MAX;
-    for loops in 1..=8u32 {
-        let h = design_health_factor(c, loops, SCALAR_7).unwrap();
-        assert!(h < prev, "design HF must fall as loops rise at {}", loops);
-        prev = h;
-    }
-
-    // l_factor scales the whole ratio: HF = B·c·l/D.
-    let plain = design_health_factor(c, 4, SCALAR_7).unwrap();
-    let marked = design_health_factor(c, 4, 9_500_000).unwrap();
-    let expected = plain * 9_500_000 / SCALAR_7;
-    assert!(
-        (marked - expected).abs() <= 2,
-        "l_factor markup: {} vs {}",
-        marked,
-        expected
-    );
-}
+// ── compute_releverage (audit M-3) ───────────────────────────────────────────
 
 /// The core property: borrowing `x` and supplying it back lands the position on
 /// the requested HF — at or just above it, never below — and leaves equity
@@ -1494,7 +1542,7 @@ fn test_releverage_lands_on_target_without_moving_equity() {
     ];
 
     for (b, d, l) in cases {
-        let target = design_health_factor(c, 3, l).unwrap();
+        let target = TARGET_HF;
         let hf0 = compute_health_factor(b, d, SCALAR_12, SCALAR_12, c, l).unwrap();
         assert!(hf0 > target, "fixture must have slack: hf={}", hf0);
 
@@ -1628,7 +1676,7 @@ fn test_releverage_with_accrued_rates_is_sane() {
     let d_rate = SCALAR_12 * 105 / 100;
     let b = 10_000_0000000_i128;
     let d = 6_000_0000000_i128;
-    let target = design_health_factor(c, 3, L_NONE).unwrap();
+    let target = TARGET_HF;
 
     let x = compute_releverage(b, d, b_rate, d_rate, c, L_NONE, target).unwrap();
     assert!(x > 0, "positive borrow: {}", x);

@@ -21,6 +21,7 @@ import {
   buildVaultRebalanceXdr,
   formatUsd,
   formatHf,
+  targetLeverage,
   type VaultConfig,
   type VaultStats,
 } from "../defindex";
@@ -357,15 +358,15 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
   const collateral = ready && stats ? `${fmt(stats.collateralValue)} ${sym}` : "—";
   const debt = ready && stats ? `${fmt(stats.debtValue)} ${sym}` : "—";
   const equity = ready && stats ? `${fmt(stats.totalEquity)} ${sym}` : "—";
-  // Realized leverage, not the configured loop count. The two diverge: a
-  // rebalance unwinds loops to protect the position and only the keeper's
-  // `releverage` puts them back, so `targetLoops` is where the vault aims, not
-  // where it is. `stats.leverage` is collateral ÷ equity measured from the live
+  // Realized leverage next to the configured one. The two diverge: a
+  // rebalance unwinds leverage to protect the position and only the keeper's
+  // `releverage` puts it back, so `targetHf` is where the vault aims, not where
+  // it is. `stats.leverage` is collateral ÷ equity measured from the live
   // position — the same figure the net APY above is computed from.
-  const targetLoopLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  const configuredLeverage = targetLeverage(vault, stats?.lFactor ?? 1);
   const leverage =
     ready && stats
-      ? `${stats.leverage.toFixed(2)}× / ${targetLoopLeverage.toFixed(2)}×`
+      ? `${stats.leverage.toFixed(2)}× / ${configuredLeverage.toFixed(2)}×`
       : "—";
 
   const stats4 = el("div", { class: "vault-stats4" }, [
@@ -475,11 +476,11 @@ function yourPositionCard(
   const depField = depInput.querySelector("input") as HTMLInputElement;
 
   // ── Projected HF preview (before → after) for the entered deposit amount ──
-  // The loop levers every deposit at the same ratio, so the marginal HF is the
-  // deterministic target c·S/(S−1); the aggregate "after" HF blends it with the
-  // current position. Computed entirely client-side from cFactor + targetLoops
-  // and the position's underlying collateral/debt — no extra on-chain call.
-  const targetLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  // Every deposit is levered to `targetHf`, so the marginal HF is that target;
+  // the aggregate "after" HF blends it with the current position. Computed
+  // entirely client-side from cFactor + targetHf + the live l_factor and the
+  // position's underlying collateral/debt — no extra on-chain call.
+  const depositLeverage = targetLeverage(vault, stats?.lFactor ?? 1);
   const depPreview = el("div", { class: "vault-row vault-dep-preview", style: "display:none" }, []);
   function updateDepPreview() {
     const amount = Number.parseFloat(depField.value);
@@ -490,8 +491,8 @@ function yourPositionCard(
     const cBefore = stats?.collateralValue ?? 0;
     const dBefore = stats?.debtValue ?? 0;
     const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
-    const cAfter = cBefore + amount * targetLeverage;
-    const dAfter = dBefore + amount * (targetLeverage - 1);
+    const cAfter = cBefore + amount * depositLeverage;
+    const dAfter = dBefore + amount * (depositLeverage - 1);
     // Same formula the contract uses: the debt side carries the pool's
     // liability factor (HF = B × c_factor × l_factor / D). Without it the
     // "after" figure would sit optimistically above the "before" one, which is
@@ -512,7 +513,7 @@ function yourPositionCard(
         el("span", { class: fb.cls }, [fb.text]),
         " → ",
         el("span", { class: fa.cls }, [fa.text]),
-        el("span", { class: "vault-dep-preview__lev" }, [`  (~${targetLeverage.toFixed(2)}×)`]),
+        el("span", { class: "vault-dep-preview__lev" }, [`  (~${depositLeverage.toFixed(2)}×)`]),
       ]),
     );
     depPreview.style.display = "";

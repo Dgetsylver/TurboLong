@@ -84,30 +84,36 @@ const ROUTER = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH"; // So
 // below checks it — plus prints each reserve's live `l_factor` — before any
 // funds-bearing contract is deployed.
 //
-// `orange_hf` must sit BELOW the design HF (where a fresh deposit at
-// `target_loops` actually lands) by at least the contract's 0.02 re-leverage
-// buffer — `preflight()` fails the deploy otherwise. USDC and CETES were at 1.15
-// against design HFs of 1.1312 and 1.1233, which would have put every deposit
-// inside the rebalance band; both moved to 1.10. That is the deliberate trade:
-// the rebalance trigger sits 0.10 above liquidation instead of 0.15, in exchange
-// for keeping 4.10× and 2.73× rather than dropping a loop. It is a defensible
-// trade *because these are same-asset loops* — collateral and debt are the same
-// token, so the margin only absorbs interest-rate drift (~the borrow/supply
-// spread), never an oracle divergence between the two legs.
+// `target_hf` is the health factor a deposit is levered to, in Blend's terms
+// (the pool's live `l_factor` included), so it *is* the vault's leverage:
+// `B/E = target_hf / (target_hf − c_factor × l_factor)`. The contract refuses a
+// target below `orange_hf + 0.02` (its re-leverage buffer) — a deposit opening
+// inside the rebalance band would be unwound by the first `rebalance()` — and
+// `preflight()` checks the same thing before anything is deployed.
+//
+// The Etherfuse pool's l_factors equal its c_factors (USDC 0.95, USTRY 0.90,
+// CETES 0.80, XLM 0.75). USTRY, CETES and XLM therefore sit at the lowest target
+// their bands allow, `orange_hf + 0.02`; USDC keeps the 4.1× it was sized for.
+// USDC and CETES run orange_hf at 1.10 rather than 1.15: the rebalance trigger
+// sits 0.10 above liquidation, a defensible trade *because these are same-asset
+// loops* — collateral and debt are the same token, so the margin only absorbs
+// interest-rate drift (~the borrow/supply spread), never an oracle divergence
+// between the two legs.
 const REWARD_THRESHOLD = 1_000_000_000n; // 100 BLND @ 7dp
 interface AssetCfg {
   symbol: string;
   asset: string;
   cFactor: bigint;   // 1e7
-  targetLoops: number;
+  targetHf: bigint;  // 1e7
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
+  swapVia?: string;  // intermediate of the on-chain Soroswap harvest route (set_swap_via)
 }
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",  asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_000_000n }, // design HF 1.1312 @ l=0.95
-  { symbol: "USTRY", asset: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", cFactor: 8_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_000_000n }, // design HF 1.1233 @ l=0.95
-  { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
+  { symbol: "USDC",  asset: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75", cFactor: 9_000_000n, targetHf: 11_300_000n, minHf: 10_500_000n, orangeHf: 11_000_000n }, // 4.11× @ l=0.95
+  { symbol: "USTRY", asset: "CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR", cFactor: 8_500_000n, targetHf: 11_700_000n, minHf: 10_500_000n, orangeHf: 11_500_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 2.89× @ l=0.90
+  { symbol: "CETES", asset: "CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV", cFactor: 7_500_000n, targetHf: 11_200_000n, minHf: 10_500_000n, orangeHf: 11_000_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 2.15× @ l=0.80
+  { symbol: "XLM",   asset: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA", cFactor: 7_000_000n, targetHf: 12_200_000n, minHf: 11_000_000n, orangeHf: 12_000_000n, swapVia: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75" }, // 1.76× @ l=0.75
 ];
 
 /**
@@ -221,38 +227,19 @@ async function invoke(contractId: string, method: string, args: xdr.ScVal[], lab
  *   - strategy c_factor <= pool c_factor  (makes the reported HF conservative)
  *   - the deposit floor `min_hf` clears 1.0 in Blend's own terms, i.e. a
  *     position opened exactly at min_hf survives `B × pool_c × l >= D`.
- *   - the *design* HF — where a position freshly levered to `target_loops`
- *     actually sits — clears `orange_hf`. See `designHf` for why this is not
- *     optional.
+ *   - `target_hf` clears `orange_hf` by the contract's re-leverage buffer
+ *     (0.02) — the constructor refuses it otherwise, because every deposit
+ *     would open inside the rebalance band and be unwound by the first
+ *     `rebalance()`, which anyone may call.
  */
 
 /**
- * The health factor a position freshly levered to `targetLoops` sits at.
- * Mirrors the contract's `design_health_factor` (`leverage.rs`) exactly: same
- * loop, same unit rates, same `HF = B × c × l / D`.
- *
- * This is the number that decides whether the three risk knobs are coherent
- * with each other, and it is easy to get wrong by hand because it moves with
- * the pool's live `l_factor`. If it sits at or below `orange_hf`, every fresh
- * deposit opens *inside* the rebalance band and the first `rebalance()` — which
- * anyone may call — immediately unwinds the leverage the deposit just built.
- * And if it does not clear `orange_hf` by the contract's re-leverage buffer
- * (0.02), `releverage` will refuse to restore design leverage, because doing so
- * would hand the position straight back to the rebalancer.
+ * The collateral/equity ratio a deposit levered to `targetHf` builds at the
+ * pool's live `l_factor`: `h / (h − c × l)`, all 1e7-scaled.
  */
-function designHf(cFactor: bigint, targetLoops: number, lFactor: bigint): bigint {
-  const S7 = 10_000_000n;
-  let balance = 1_000_000_000_000n; // reference notional, matches the contract
-  let supply = 0n;
-  let borrow = 0n;
-  for (let i = 0; i <= targetLoops; i++) {
-    supply += balance;
-    if (i < targetLoops) {
-      balance = (balance * cFactor) / S7;
-      borrow += balance;
-    }
-  }
-  return borrow === 0n ? 0n : (supply * cFactor * lFactor) / (S7 * borrow);
+function leverageAt(targetHf: bigint, cFactor: bigint, lFactor: bigint): number {
+  const cl = (cFactor * lFactor) / 10_000_000n;
+  return targetHf > cl ? Number(targetHf) / Number(targetHf - cl) : Number.POSITIVE_INFINITY;
 }
 
 /** Contract-side `RELEVERAGE_HF_BUFFER` (constants.rs), 1e7-scaled. */
@@ -299,22 +286,15 @@ async function preflight(): Promise<void> {
       );
     }
 
-    // Where a fresh, fully-levered deposit actually lands.
-    const design = designHf(a.cFactor, a.targetLoops, lFactor);
+    // Where a fresh deposit lands, and the leverage that is at the live l_factor.
     console.log(
-      `        target_loops=${a.targetLoops} → design HF=${(Number(design) / 1e7).toFixed(4)}` +
+      `        target_hf=${Number(a.targetHf) / 1e7} → ${leverageAt(a.targetHf, a.cFactor, lFactor).toFixed(3)}×` +
         ` vs orange_hf=${Number(a.orangeHf) / 1e7}`,
     );
-    if (design <= a.orangeHf) {
+    if (a.targetHf < a.orangeHf + RELEVERAGE_HF_BUFFER) {
       failures.push(
-        `${a.symbol}: design HF ${(Number(design) / 1e7).toFixed(4)} is at or below orange_hf ` +
-          `${Number(a.orangeHf) / 1e7} — every deposit would open inside the rebalance band and be ` +
-          `unwound by the first rebalance() call. Lower orange_hf below the design HF, or reduce target_loops.`,
-      );
-    } else if (design < a.orangeHf + RELEVERAGE_HF_BUFFER) {
-      console.warn(
-        `        ! ${a.symbol}: design HF clears orange_hf by less than the 0.02 re-leverage buffer — ` +
-          `releverage() will stop short of target_loops rather than risk a rebalance ping-pong.`,
+        `${a.symbol}: target_hf ${Number(a.targetHf) / 1e7} is less than 0.02 above orange_hf ` +
+          `${Number(a.orangeHf) / 1e7} — the constructor will reject it. Raise target_hf or lower orange_hf.`,
       );
     }
   }
@@ -325,7 +305,7 @@ async function preflight(): Promise<void> {
     process.exit(1);
   }
   console.log("  ✓ all assets clear Blend's liquidation threshold at min_hf");
-  console.log("  ✓ all assets open above their rebalance band at target_loops");
+  console.log("  ✓ all assets open clear of their rebalance band at target_hf");
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -345,7 +325,7 @@ async function main() {
   // configuration that was ACTUALLY deployed (human floats, not 1e7 ints).
   const out: Record<
     string,
-    { strategy: string; token: string; cFactor: number; targetLoops: number; minHf: number; orangeHf: number }
+    { strategy: string; token: string; cFactor: number; targetHf: number; minHf: number; orangeHf: number }
   > = {};
 
   for (const a of ASSETS) {
@@ -357,7 +337,7 @@ async function main() {
       nativeToScVal(REWARD_THRESHOLD, { type: "i128" }),   // [3] reward_threshold
       addr(KEEPER!),                                       // [4] keeper
       nativeToScVal(a.cFactor, { type: "i128" }),          // [5] c_factor
-      nativeToScVal(a.targetLoops, { type: "u32" }),       // [6] target_loops
+      nativeToScVal(a.targetHf, { type: "i128" }),         // [6] target_hf
       nativeToScVal(a.minHf, { type: "i128" }),            // [7] min_hf
       nativeToScVal(a.orangeHf, { type: "i128" }),         // [8] orange_hf
       addr(ADMIN),                                         // [9] admin
@@ -398,11 +378,17 @@ async function main() {
       console.warn(`  ⚠ ${a.symbol}: MIN_HARVEST_RATE_${a.symbol} unset — Broker harvest path left CLOSED, trait harvest needs an explicit amount_out_min`);
     }
 
+    // No BLND pair on Soroswap (USTRY, CETES) or a thin one (XLM): route the
+    // on-chain harvest swap through USDC.
+    if (a.swapVia) {
+      await invoke(strategy, "set_swap_via", [addr(a.swapVia)], `${a.symbol} set_swap_via`);
+    }
+
     out[a.symbol] = {
       strategy,
       token,
       cFactor: Number(a.cFactor) / 1e7,
-      targetLoops: a.targetLoops,
+      targetHf: Number(a.targetHf) / 1e7,
       minHf: Number(a.minHf) / 1e7,
       orangeHf: Number(a.orangeHf) / 1e7,
     };

@@ -8,9 +8,9 @@ use crate::{
         REQUEST_TYPE_BORROW, REQUEST_TYPE_REPAY, REQUEST_TYPE_SUPPLY_COLLATERAL,
         REQUEST_TYPE_WITHDRAW_COLLATERAL, SCALAR_12,
     },
-    leverage::compute_totals,
+    leverage::{compute_lever_in, harvest_floor},
     soroswap::internal_swap_exact_tokens_for_tokens,
-    storage::Config,
+    storage::{self, Config},
 };
 
 // ── Position changes ─────────────────────────────────────────────────────────
@@ -43,26 +43,32 @@ use crate::{
 // holds (e.g. Broker proceeds awaiting `harvest_reinvest`).
 
 /// Lever `initial_amount` of the underlying into the position as one
-/// `[supply_collateral S, borrow D]` submit, `(S, D)` being the totals of the
-/// `target_loops`-deep loop (`compute_totals`).
+/// `[supply_collateral S, borrow D]` submit, sized by `compute_lever_in` to land
+/// on `config.target_hf` at the pool's live `l_factor`.
 ///
-/// One pair builds the position the loop would. Netting means only
-/// `S − D = initial_amount` leaves the strategy, and the single borrow is checked
-/// against the whole supply — the final state, which the loop only reached on its
-/// last step — so it is never harder on the pool than the loop was.
+/// Netting means only `S − D = initial_amount` leaves the strategy, and the
+/// borrow is checked against the whole supply.
+///
+/// With `unlevered_fallback` (harvest proceeds), a submit Blend refuses — the
+/// pool on ice, the reserve over its `max_util` — is retried as a plain supply
+/// of `initial_amount`, so the proceeds earn in the pool instead of sitting idle
+/// in the strategy; `releverage` restores the ratio later. A deposit asked for
+/// leverage, so it passes `false` and fails instead.
 ///
 /// Returns (b_token_delta, d_token_delta) — the position deltas.
-pub fn submit_leverage_loop(
+pub fn submit_lever_in(
     e: &Env,
     initial_amount: i128,
     config: &Config,
+    unlevered_fallback: bool,
 ) -> Result<(i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
     let (pre_b, pre_d) = get_strategy_positions(e, config);
 
+    let (_, l_factor) = get_pool_risk_factors(e, config);
     let (total_supply, total_borrow) =
-        compute_totals(initial_amount, config.c_factor, config.target_loops)?;
+        compute_lever_in(initial_amount, config.c_factor, l_factor, config.target_hf)?;
 
     // Supply first, so the borrow is checked against the final state. A dust
     // amount whose borrow floors to zero is supplied without one.
@@ -83,14 +89,31 @@ pub fn submit_leverage_loop(
     }
 
     // The pool nets the two legs and pulls only `S − D = initial_amount`, so that
-    // is all it may pull. The allowance expires next ledger.
+    // is all it may pull. A SAC allowance is live while `live_until >= ledger`, so
+    // expiring at this ledger covers the submit below and nothing after it.
     TokenClient::new(e, &config.asset).approve(
         &strategy,
         &config.pool,
         &initial_amount,
-        &(e.ledger().sequence() + 1),
+        &e.ledger().sequence(),
     );
-    pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
+    if !unlevered_fallback {
+        pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
+    } else if pool_client
+        .try_submit_with_allowance(&strategy, &strategy, &strategy, &requests)
+        .is_err()
+    {
+        // Blend rolled the refused submit back: supply the proceeds unlevered.
+        let supply = vec![
+            e,
+            Request {
+                address: config.asset.clone(),
+                amount: initial_amount,
+                request_type: REQUEST_TYPE_SUPPLY_COLLATERAL,
+            },
+        ];
+        pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &supply);
+    }
 
     let (new_b, new_d) = get_strategy_positions(e, config);
     let b_delta = new_b
@@ -309,12 +332,22 @@ pub fn claim(e: &Env, config: &Config) -> i128 {
 
 // ── Harvest: claim + swap + re-leverage ──────────────────────────────────────
 
-/// Claim BLND, swap to underlying via Soroswap, and re-leverage the proceeds.
+/// The on-chain Soroswap leg both harvest routes share (trait `harvest`, and
+/// `harvest_reinvest` with `via_soroswap`): swap the strategy's whole BLND
+/// balance to the underlying — through `swap_via` when the admin set one — and
+/// lever the proceeds in.
+///
+/// **The swap always runs with a floor** (audits M-5, finding 1): the stricter
+/// of the caller's `keeper_min` and the admin's `min_harvest_rate` priced over
+/// the BLND being swapped, so a keeper cannot undercut the admin on either
+/// route, and a swap with neither is refused rather than executed unprotected.
+/// Below `reward_threshold` there is nothing to swap and the call is a no-op.
+///
 /// Returns (b_tokens_delta, d_tokens_delta, realized_underlying).
 pub fn perform_reinvest(
     e: &Env,
     config: &Config,
-    amount_out_min: i128,
+    keeper_min: i128,
 ) -> Result<(i128, i128, i128), StrategyError> {
     let blnd_balance =
         TokenClient::new(e, &config.blend_token).balance(&e.current_contract_address());
@@ -323,7 +356,20 @@ pub fn perform_reinvest(
         return Ok((0, 0, 0));
     }
 
-    let swap_path = vec![e, config.blend_token.clone(), config.asset.clone()];
+    let admin_floor = match storage::get_min_harvest_rate(e) {
+        Some(rate) => harvest_floor(blnd_balance, rate)?,
+        None => 0,
+    };
+    let amount_out_min = keeper_min.max(admin_floor);
+    if amount_out_min <= 0 {
+        return Err(StrategyError::OnlyPositiveAmountAllowed);
+    }
+
+    let mut swap_path = vec![e, config.blend_token.clone()];
+    if let Some(via) = storage::get_swap_via(e) {
+        swap_path.push_back(via);
+    }
+    swap_path.push_back(config.asset.clone());
 
     let deadline = e
         .ledger()
@@ -343,7 +389,7 @@ pub fn perform_reinvest(
     )?;
 
     let amount_out: i128 = swapped_amounts
-        .get(1)
+        .last()
         .ok_or(StrategyError::InternalSwapError)?;
 
     if amount_out <= 0 {
@@ -351,7 +397,7 @@ pub fn perform_reinvest(
     }
 
     // Re-leverage the swapped proceeds
-    let (b_delta, d_delta) = submit_leverage_loop(e, amount_out, config)?;
+    let (b_delta, d_delta) = submit_lever_in(e, amount_out, config, true)?;
 
     Ok((b_delta, d_delta, amount_out))
 }
@@ -372,7 +418,7 @@ pub fn reinvest_underlying(
     if held < amount {
         return Err(StrategyError::InsufficientBalance);
     }
-    submit_leverage_loop(e, amount, config)
+    submit_lever_in(e, amount, config, true)
 }
 
 // ── Pool state queries ───────────────────────────────────────────────────────
@@ -412,27 +458,6 @@ pub fn get_pool_risk_factors(e: &Env, config: &Config) -> (i128, i128) {
         reserve.config.c_factor as i128,
         reserve.config.l_factor as i128,
     )
-}
-
-/// Fetch current pool supply and borrow in underlying units.
-pub fn get_pool_utilization(e: &Env, config: &Config) -> (i128, i128) {
-    let pool_client = BlendPoolClient::new(e, &config.pool);
-    let reserve = pool_client.get_reserve(&config.asset);
-
-    let supply_underlying = reserve
-        .data
-        .b_supply
-        .checked_mul(reserve.data.b_rate)
-        .unwrap_or(0)
-        / SCALAR_12;
-    let borrow_underlying = reserve
-        .data
-        .d_supply
-        .checked_mul(reserve.data.d_rate)
-        .unwrap_or(0)
-        / SCALAR_12;
-
-    (supply_underlying, borrow_underlying)
 }
 
 /// Get current strategy positions (b_tokens, d_tokens) from the pool.

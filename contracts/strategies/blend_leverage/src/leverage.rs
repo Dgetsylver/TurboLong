@@ -1,77 +1,42 @@
-use crate::constants::{MAX_LOOPS, MAX_SAFE_UTILIZATION, SCALAR_12, SCALAR_7};
-use crate::storage::{Config, LeverageReserves};
+use crate::constants::{SCALAR_12, SCALAR_7};
+use crate::storage::{Config, LeverageReserves, LockedProfit};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};
 
-// ── Leverage loop computation ────────────────────────────────────────────────
-//
-// A deposit is levered to the position the n-loop geometric series builds:
-// n (supply, borrow) pairs + 1 final supply-only, identical to
-// `compute_requests()` in src/bin/execute_loop.rs.
-//
-// Loop 0:   supply initial,        borrow initial × c
-// Loop 1:   supply initial × c,    borrow initial × c²
-// …
-// Loop n-1: supply initial × c^(n-1), borrow initial × c^n
-// Final:    supply initial × c^n      (no borrow)
-//
-// Every supply after the first is the previous borrow, so the totals satisfy
-// `S = initial + D`. `compute_totals` sums the series and `submit_leverage_loop`
-// sends the two totals as one supply + one borrow.
+// ── Lever-in sizing ──────────────────────────────────────────────────────────
 
-/// Total `(supply, borrow)` of the `n_loops`-deep loop (capped at `MAX_LOOPS`),
-/// each layer floored as the loop floors it. `S − D = initial_amount` exactly.
-pub fn compute_totals(
+/// `(supply, borrow)` that lever `initial_amount` of equity to `target_hf`.
+///
+/// A position with equity `E` at health factor `h` has `B·cl / D = h` and
+/// `B − D = E` (`cl = c_factor × l_factor`, as in every HF here), so
+/// `D = E·cl / (h − cl)` and `B = E + D`: the leverage `B/E = h / (h − cl)` that
+/// `target_hf` stands for. The borrow rounds down, toward a higher HF; the
+/// pool's own rounding can still settle the HF a unit or so either side.
+/// `supply − borrow = initial_amount` exactly, which is what the pool nets the
+/// two legs to.
+pub fn compute_lever_in(
     initial_amount: i128,
     c_factor: i128,
-    n_loops: u32,
+    l_factor: i128,
+    target_hf: i128,
 ) -> Result<(i128, i128), StrategyError> {
-    let mut layer = initial_amount;
-    let mut total_borrow = 0i128;
-    for _ in 0..n_loops.min(MAX_LOOPS) {
-        layer = layer
-            .checked_mul(c_factor)
-            .ok_or(StrategyError::ArithmeticError)?
-            / SCALAR_7;
-        total_borrow = total_borrow
-            .checked_add(layer)
-            .ok_or(StrategyError::UnderflowOverflow)?;
-    }
-    let total_supply = initial_amount
-        .checked_add(total_borrow)
+    let cl = effective_c_factor(c_factor, l_factor)?;
+    let denom = target_hf
+        .checked_sub(cl)
         .ok_or(StrategyError::UnderflowOverflow)?;
-    Ok((total_supply, total_borrow))
-}
-
-/// The loop's individual `(supply, borrow)` steps, the last borrow 0, and the
-/// step count. Test-only: the reference `compute_totals` is checked against,
-/// and the request sequence of the stepped loop the integration tests compare
-/// the single submit with.
-#[cfg(test)]
-pub fn compute_loop_pairs(
-    initial_amount: i128,
-    c_factor: i128,
-    n_loops: u32,
-) -> (
-    [i128; MAX_LOOPS as usize + 1],
-    [i128; MAX_LOOPS as usize + 1],
-    u32,
-) {
-    let n = n_loops.min(MAX_LOOPS) as usize;
-    let mut supplies = [0i128; MAX_LOOPS as usize + 1];
-    let mut borrows = [0i128; MAX_LOOPS as usize + 1];
-
-    let mut balance = initial_amount;
-    for i in 0..=n {
-        supplies[i] = balance;
-        if i < n {
-            borrows[i] = balance * c_factor / SCALAR_7;
-        }
-        balance = borrows[i];
+    if denom <= 0 {
+        // No leverage reaches an HF at or below `cl`.
+        return Err(StrategyError::ArithmeticError);
     }
 
-    (supplies, borrows, n as u32 + 1)
+    let borrow = initial_amount
+        .fixed_mul_floor(cl, denom)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let supply = initial_amount
+        .checked_add(borrow)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    Ok((supply, borrow))
 }
 
 // ── Equity calculation ───────────────────────────────────────────────────────
@@ -94,15 +59,26 @@ pub fn compute_equity(reserves: &LeverageReserves) -> Result<i128, StrategyError
         .ok_or(StrategyError::UnderflowOverflow)
 }
 
-/// Convert shares to underlying equity amount.
+/// The equity shares are priced at: `compute_equity` less the harvest profit
+/// still `locked` (see `locked_profit`), never taken below zero.
+pub fn priced_equity(reserves: &LeverageReserves, locked: i128) -> Result<i128, StrategyError> {
+    let equity = compute_equity(reserves)?;
+    equity
+        .checked_sub(locked.clamp(0, equity.max(0)))
+        .ok_or(StrategyError::UnderflowOverflow)
+}
+
+/// Convert shares to underlying equity amount, net of the `locked` harvest
+/// profit.
 pub fn shares_to_underlying(
     shares: i128,
     reserves: &LeverageReserves,
+    locked: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 {
         return Ok(0);
     }
-    let total_equity = compute_equity(reserves)?;
+    let total_equity = priced_equity(reserves, locked)?;
     if total_equity <= 0 {
         return Ok(0);
     }
@@ -111,22 +87,90 @@ pub fn shares_to_underlying(
         .ok_or(StrategyError::ArithmeticError)
 }
 
-/// Convert underlying amount to shares.
+/// Convert underlying amount to shares, net of the `locked` harvest profit.
 pub fn underlying_to_shares(
     amount: i128,
     reserves: &LeverageReserves,
+    locked: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 || reserves.total_b_tokens == 0 {
         // First deposit: 1 share = 1 unit
         return Ok(amount);
     }
-    let total_equity = compute_equity(reserves)?;
+    let total_equity = priced_equity(reserves, locked)?;
     if total_equity <= 0 {
         return Ok(amount);
     }
     amount
         .fixed_mul_floor(reserves.total_shares, total_equity)
         .ok_or(StrategyError::ArithmeticError)
+}
+
+// ── Profit release (audit finding 7) ─────────────────────────────────────────
+//
+// A harvest's equity gain is locked and released into the share price linearly
+// over `PROFIT_UNLOCK_LEDGERS` rather than priced in at the harvest ledger (the
+// constant explains why). All harvests share one linear schedule: a new one
+// folds in and the combined amount releases until the gain-weighted average of
+// the two end dates, so each harvest keeps, on average, its own window.
+
+/// Profit still locked at ledger `now`. Rounds down: it unlocks a stroop early
+/// rather than late.
+pub fn locked_profit(lock: &LockedProfit, now: u32) -> Result<i128, StrategyError> {
+    if lock.amount <= 0 || now >= lock.until {
+        return Ok(0);
+    }
+    let span = lock.until.saturating_sub(lock.from).max(1);
+    let remaining = (lock.until - now).min(span);
+    lock.amount
+        .fixed_mul_floor(remaining as i128, span as i128)
+        .ok_or(StrategyError::ArithmeticError)
+}
+
+/// Fold `gain` into `lock` at ledger `now`.
+///
+/// What is still locked keeps its end date and `gain` gets the full `window`;
+/// the sum releases linearly until the gain-weighted average of the two. A
+/// non-positive `gain` locks nothing and only re-bases the schedule onto `now`,
+/// which leaves it releasing exactly as before.
+pub fn lock_profit(
+    lock: &LockedProfit,
+    gain: i128,
+    now: u32,
+    window: u32,
+) -> Result<LockedProfit, StrategyError> {
+    let still_locked = locked_profit(lock, now)?;
+    let gain = gain.max(0);
+    let amount = still_locked
+        .checked_add(gain)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    if amount == 0 {
+        return Ok(LockedProfit::default());
+    }
+
+    // underlying × ledgers: many orders inside i128.
+    let weighted = still_locked
+        .checked_mul(lock.until.saturating_sub(now) as i128)
+        .ok_or(StrategyError::ArithmeticError)?
+        .checked_add(
+            gain.checked_mul(window as i128)
+                .ok_or(StrategyError::ArithmeticError)?,
+        )
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    // A weighted average of the two durations, rounded up so a positive amount
+    // always has at least a ledger to release over.
+    let duration = weighted
+        .fixed_mul_ceil(1, amount)
+        .and_then(|d| u32::try_from(d).ok())
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    Ok(LockedProfit {
+        amount,
+        from: now,
+        until: now
+            .checked_add(duration)
+            .ok_or(StrategyError::UnderflowOverflow)?,
+    })
 }
 
 // ── Health factor ────────────────────────────────────────────────────────────
@@ -197,64 +241,7 @@ pub fn compute_health_factor(
         .ok_or(StrategyError::DivisionByZero)
 }
 
-/// Reference notional for the design-leverage derivation below. Large enough
-/// that per-layer truncation is immaterial across the full 20-loop range (the
-/// smallest layer at c = 0.5 is still ~9.5e5 stroops), small enough that
-/// `B × c_factor × l_factor` stays many orders inside i128.
-const DESIGN_NOTIONAL: i128 = 1_000_000_000_000; // 1e12
-
-/// The health factor a position freshly levered to `target_loops` sits at — the
-/// vault's *design* leverage expressed as an HF.
-///
-/// Derived by running the same `compute_totals` the deposit path runs, so the
-/// two cannot drift: whatever leverage `deposit` actually builds is the leverage
-/// this returns an HF for.
-///
-/// HF and leverage are the same statement about a position. At `HF = h` the
-/// ratio `B/D` is pinned to `h / cl`, hence `B/E = h / (h − cl)` — so capping
-/// `releverage`'s target HF at this value is exactly capping the position's
-/// leverage at `target_loops`, with no separate ratio check to keep in sync.
-/// Both sides carry the same live `l_factor`, so the resulting leverage ratio
-/// matches the design regardless of what the pool's liability markup is.
-pub fn design_health_factor(
-    c_factor: i128,
-    target_loops: u32,
-    l_factor: i128,
-) -> Result<i128, StrategyError> {
-    let (supply, borrow) = compute_totals(DESIGN_NOTIONAL, c_factor, target_loops)?;
-    // `compute_totals` returns underlying amounts, so feeding them in at unit
-    // rates (SCALAR_12 = 1.0) treats them as their own token quantities.
-    compute_health_factor(supply, borrow, SCALAR_12, SCALAR_12, c_factor, l_factor)
-}
-
 // ── Safety checks ────────────────────────────────────────────────────────────
-
-/// Refuse when the pool's utilization is above `MAX_SAFE_UTILIZATION`.
-///
-/// `deposit` runs this on the current figures before its Blend submit (no new
-/// borrow demand on an already-strained pool), and `deposit` and `releverage`
-/// run it on the settled figures after theirs (the submit itself must not have
-/// pushed the pool past the cap). Reading the settled pool replaces projecting
-/// the submit's effect onto it. The harvest paths, which lever in only swapped
-/// rewards, are not gated.
-pub fn check_pool_utilization(
-    e: &Env,
-    pool_supply_underlying: i128,
-    pool_borrow_underlying: i128,
-) -> Result<(), StrategyError> {
-    if pool_supply_underlying > 0 {
-        let util = pool_borrow_underlying
-            .checked_mul(SCALAR_7)
-            .ok_or(StrategyError::ArithmeticError)?
-            .checked_div(pool_supply_underlying)
-            .ok_or(StrategyError::DivisionByZero)?;
-
-        if util > MAX_SAFE_UTILIZATION {
-            panic_with_error!(e, StrategyError::ExternalError);
-        }
-    }
-    Ok(())
-}
 
 /// Refuse a position whose health factor is below `config.min_hf`.
 ///

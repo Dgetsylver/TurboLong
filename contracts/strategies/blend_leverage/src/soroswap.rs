@@ -30,29 +30,31 @@ pub fn internal_swap_exact_tokens_for_tokens(
         deadline.into_val(e),
     ];
 
-    // Get pair address for authorization
+    // The router pulls the input into the path's first pair, whatever the
+    // path's length.
+    let (token_in, next) = match (path.get(0), path.get(1)) {
+        (Some(token_in), Some(next)) => (token_in, next),
+        _ => panic_with_error!(e, StrategyError::InvalidArgument),
+    };
     let pair_address = e
         .try_invoke_contract::<Address, InvokeError>(
             &config.router,
             &Symbol::new(e, "router_pair_for"),
-            path.clone().into_val(e),
+            vec![e, token_in.to_val(), next.to_val()],
         )
         .unwrap_or_else(|_| {
             panic_with_error!(e, StrategyError::SoroswapPairError);
         })
         .unwrap();
 
-    // Authorize the transfer of input tokens to the pair
+    // The router, not the strategy, calls `transfer(strategy → pair)`: a call
+    // one level below the strategy's own, which — unlike a direct call — needs
+    // the strategy's explicit authorization.
     e.authorize_as_current_contract(vec![
         e,
         InvokerContractAuthEntry::Contract(SubContractInvocation {
             context: ContractContext {
-                contract: match path.get(0) {
-                    Some(address) => address.clone(),
-                    None => {
-                        panic_with_error!(e, StrategyError::InvalidArgument);
-                    }
-                },
+                contract: token_in,
                 fn_name: Symbol::new(e, "transfer"),
                 args: (e.current_contract_address(), pair_address, *amount_in).into_val(e),
             },

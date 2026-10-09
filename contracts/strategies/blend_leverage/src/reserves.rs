@@ -1,7 +1,7 @@
 use crate::{
     blend_pool,
-    constants::{FIRST_DEPOSIT_LOCKUP, SCALAR_12},
-    leverage::{compute_equity, underlying_to_shares},
+    constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12},
+    leverage::{self, compute_equity, priced_equity, underlying_to_shares},
     storage::{self, Config, LeverageReserves},
 };
 
@@ -93,6 +93,11 @@ pub fn sync(e: &Env, config: &Config) -> (i128, i128) {
     (b_correction, d_correction)
 }
 
+/// Harvest profit still locked out of the share price at the current ledger.
+pub fn locked_profit(e: &Env) -> Result<i128, StrategyError> {
+    leverage::locked_profit(&storage::get_locked_profit(e), e.ledger().sequence())
+}
+
 // ── Deposit accounting ───────────────────────────────────────────────────────
 
 /// Account for a deposit into the leveraged position.
@@ -140,7 +145,7 @@ pub fn deposit(
     }
 
     // Convert equity to shares
-    let new_shares = underlying_to_shares(equity_added, &reserves)?;
+    let new_shares = underlying_to_shares(equity_added, &reserves, locked_profit(e)?)?;
     if new_shares <= 0 {
         panic_with_error!(e, StrategyError::InvalidSharesMinted);
     }
@@ -186,6 +191,11 @@ pub fn deposit(
 /// Size a withdrawal of `amount` of equity: the shares to burn and the b/d
 /// tokens that carry them out.
 ///
+/// Shares are priced net of the harvest profit still locked, and the slice of
+/// the position they take is scaled to match, so it carries out `amount` and
+/// leaves the withdrawer's part of the locked profit to the holders it is still
+/// being released to. With nothing locked the scale is exactly 1.
+///
 /// Every quantity rounds against the withdrawer — the shares burned round up,
 /// the collateral they take rounds down and the debt they repay rounds up — so
 /// the holders who stay never inherit a sliver of the leaver's debt.
@@ -201,6 +211,7 @@ pub fn deposit(
 /// removed, so stored reserves stay in lock-step with the actual pool position
 /// (Finding ①).
 pub fn withdraw(
+    e: &Env,
     user_shares: i128,
     amount: i128, // underlying amount requested
     reserves: &LeverageReserves,
@@ -210,25 +221,29 @@ pub fn withdraw(
     }
 
     let total_equity = compute_equity(reserves)?;
-    if total_equity <= 0 {
+    let priced = priced_equity(reserves, locked_profit(e)?)?;
+    if priced <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
 
     // Calculate the share proportion for the requested amount
     let shares_to_burn = amount
-        .fixed_mul_ceil(reserves.total_shares, total_equity)
+        .fixed_mul_ceil(reserves.total_shares, priced)
         .ok_or(StrategyError::ArithmeticError)?;
 
     if shares_to_burn > user_shares {
         return Err(StrategyError::InsufficientBalance);
     }
 
-    // Calculate proportional b/d tokens to remove
+    // The shares' pro-rata b/d tokens, scaled by `priced / total_equity`
+    // (`priced > 0` implies `total_equity >= priced > 0`).
     let b_tokens_to_remove = shares_to_burn
         .fixed_mul_floor(reserves.total_b_tokens, reserves.total_shares)
+        .and_then(|b| b.fixed_mul_floor(priced, total_equity))
         .ok_or(StrategyError::ArithmeticError)?;
     let d_tokens_to_remove = shares_to_burn
         .fixed_mul_ceil(reserves.total_d_tokens, reserves.total_shares)
+        .and_then(|d| d.fixed_mul_ceil(priced, total_equity))
         .ok_or(StrategyError::ArithmeticError)?;
 
     Ok((shares_to_burn, b_tokens_to_remove, d_tokens_to_remove))
@@ -270,14 +285,56 @@ pub fn commit_withdraw(
 // ── Harvest accounting ───────────────────────────────────────────────────────
 
 /// Account for harvested rewards that have been re-leveraged.
-/// The b/d token deltas increase total tokens without minting new shares,
-/// effectively increasing the per-share equity (yield).
+/// The b/d token deltas increase total tokens without minting new shares, and
+/// the equity they add is locked: it reaches the share price gradually, over
+/// `PROFIT_UNLOCK_LEDGERS`, rather than at this ledger.
 ///
 /// `reserves` is the **pre-reinvest** snapshot, exactly as `deposit` takes one.
 /// It cannot re-read the position itself: by the time this is called the pool
 /// has already settled the reinvest, so a fresh read would already include
 /// `b_tokens_delta` and adding it again would double-count.
 pub fn harvest(
+    e: &Env,
+    b_tokens_delta: i128,
+    d_tokens_delta: i128,
+    reserves: &LeverageReserves,
+) -> Result<LeverageReserves, StrategyError> {
+    let updated = grow(e, b_tokens_delta, d_tokens_delta, reserves)?;
+
+    let gain = compute_equity(&updated)?
+        .checked_sub(compute_equity(reserves)?)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    let lock = leverage::lock_profit(
+        &storage::get_locked_profit(e),
+        gain,
+        e.ledger().sequence(),
+        PROFIT_UNLOCK_LEDGERS,
+    )?;
+    storage::set_locked_profit(e, &lock);
+
+    Ok(updated)
+}
+
+/// Account for a re-leverage: b and d tokens both increase, shares unchanged.
+///
+/// The tracked position grows by the measured pool deltas exactly as in
+/// `harvest`, from the same pre-submit snapshot for the same reason. The
+/// economics are what differ: `harvest` brings in *new* equity (swapped BLND)
+/// and locks it for gradual release, while `releverage` borrows against
+/// collateral the vault already owns, leaving equity — and therefore every
+/// holder's share price — exactly where it was, and moving only the leverage
+/// ratio. There is nothing to lock.
+pub fn releverage(
+    e: &Env,
+    b_tokens_delta: i128,
+    d_tokens_delta: i128,
+    reserves: &LeverageReserves,
+) -> Result<LeverageReserves, StrategyError> {
+    grow(e, b_tokens_delta, d_tokens_delta, reserves)
+}
+
+/// Add measured pool deltas to the tracked position and persist it.
+fn grow(
     e: &Env,
     b_tokens_delta: i128,
     d_tokens_delta: i128,
@@ -296,25 +353,6 @@ pub fn harvest(
 
     storage::set_strategy_reserves(e, reserves.clone());
     Ok(reserves)
-}
-
-/// Account for a re-leverage: b and d tokens both increase, shares unchanged.
-///
-/// Mechanically identical to `harvest` — the tracked position grows by the
-/// measured pool deltas with no shares minted — and takes the same pre-submit
-/// snapshot for the same reason. The economics are what differ, and the
-/// distinction is worth keeping visible at the call site: `harvest` brings in
-/// *new* equity (swapped BLND) and so raises the share price, while `releverage`
-/// borrows against collateral the vault already owns, leaving equity — and
-/// therefore every holder's share price — exactly where it was, and moving only
-/// the leverage ratio.
-pub fn releverage(
-    e: &Env,
-    b_tokens_delta: i128,
-    d_tokens_delta: i128,
-    reserves: &LeverageReserves,
-) -> Result<LeverageReserves, StrategyError> {
-    harvest(e, b_tokens_delta, d_tokens_delta, reserves)
 }
 
 /// Account for deleveraging: b and d tokens decrease without changing shares.
