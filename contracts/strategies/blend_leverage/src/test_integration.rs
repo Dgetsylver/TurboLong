@@ -295,6 +295,15 @@ fn compute_loop_pairs(
     (supplies, borrows, n as u32 + 1)
 }
 
+/// The pool's `(supply, borrow)` for the strategy's reserve, in underlying.
+fn get_pool_utilization(e: &Env, config: &storage::Config) -> (i128, i128) {
+    let reserve = pool::Client::new(e, &config.pool).get_reserve(&config.asset);
+    (
+        reserve.data.b_supply * reserve.data.b_rate / SCALAR_12,
+        reserve.data.d_supply * reserve.data.d_rate / SCALAR_12,
+    )
+}
+
 /// Overwrite the stored `target_hf`, bypassing the constructor's band check.
 fn set_target_hf(e: &Env, strategy: &Address, target_hf: i128) {
     e.as_contract(strategy, || {
@@ -778,7 +787,7 @@ fn test_pool_utilization_query() {
     // Read-only query doesn't need contract context
     let strategy = e.register(TestStrategyContract, ());
     e.as_contract(&strategy, || {
-        let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+        let (supply, borrow) = get_pool_utilization(&e, &config);
         assert!(supply > 0, "Pool should have supply: {}", supply);
         assert_eq!(borrow, 0, "No borrows initially");
     });
@@ -1854,9 +1863,9 @@ fn test_releverage_rejects_non_keeper() {
     );
 }
 
-// T2.3 spec edge case: "locked reserves". When pool utilization exceeds
-// MAX_SAFE_UTILIZATION (0.95) the deposit path is deliberately locked
-// (#[Error #422]) — but liquidation protection must NOT be: the keeper's
+// T2.3 spec edge case: "locked reserves". When pool utilization exceeds the
+// reserve's own `max_util`, Blend refuses a deposit's borrow — but liquidation
+// protection must NOT be locked: the keeper's
 // rebalance still unwinds and restores HF. Deleveraging (repay == withdraw)
 // reduces utilization, so it is safe at any utilization; this test pins that
 // property on the real pool with genuinely accrued rates.
@@ -1895,7 +1904,7 @@ fn test_rebalance_keeper_works_while_deposits_locked_by_high_utilization() {
     // Whale borrows near its collateral cap. Utilization cannot exceed the
     // pool's per-account collateral factor by borrowing alone, so interest
     // accrual does the rest: debt compounds faster than supply (backstop take
-    // rate), dragging utilization past MAX_SAFE_UTILIZATION. Accrue in 30-day
+    // rate), dragging utilization past the reserve's max_util. Accrue in 30-day
     // steps (poking the reserve each step so rates materialise) until the
     // threshold is crossed — adaptive because the 3-slope IR model + reactive
     // ir_mod make a fixed jump unreliable.
@@ -1914,6 +1923,7 @@ fn test_rebalance_keeper_works_while_deposits_locked_by_high_utilization() {
     );
     let poker = Address::generate(&e);
     token_admin.mock_all_auths().mint(&poker, &100_0000000);
+    let max_util = pool_client.get_reserve(&token).config.max_util as i128;
     let mut util = 0_i128;
     for _ in 0..48 {
         e.ledger().with_mut(|li| {
@@ -1934,24 +1944,24 @@ fn test_rebalance_keeper_works_while_deposits_locked_by_high_utilization() {
             ],
         );
         let (pool_supply, pool_borrow) =
-            e.as_contract(&strategy, || blend_pool::get_pool_utilization(&e, &config));
+            e.as_contract(&strategy, || get_pool_utilization(&e, &config));
         util = pool_borrow * SCALAR_7 / pool_supply;
-        if util > crate::constants::MAX_SAFE_UTILIZATION {
+        if util > max_util {
             break;
         }
     }
 
     // Precondition: reserves are "locked" for depositors.
     assert!(
-        util > crate::constants::MAX_SAFE_UTILIZATION,
-        "fixture must exceed MAX_SAFE_UTILIZATION: util={}",
+        util > max_util,
+        "fixture must exceed the reserve's max_util: util={}",
         util
     );
     let depositor = Address::generate(&e);
     token_admin.mock_all_auths().mint(&depositor, &100_0000000);
     assert!(
         sclient.try_deposit(&100_0000000, &depositor).is_err(),
-        "deposits must be locked above MAX_SAFE_UTILIZATION"
+        "Blend must refuse a deposit's borrow above the reserve's max_util"
     );
 
     // The keeper's protection path must still work.
@@ -2906,7 +2916,7 @@ fn test_rebalance_works_near_full_utilization() {
             },
         ],
     );
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     pool_client.submit(
         &borrower,
         &borrower,
@@ -2920,7 +2930,7 @@ fn test_rebalance_works_near_full_utilization() {
             },
         ],
     );
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     pool_client.submit(
         &lender,
         &lender,
@@ -2938,7 +2948,7 @@ fn test_rebalance_works_near_full_utilization() {
     // Preconditions: deep in the orange zone, and less free liquidity than one
     // of the old layers (debt × (1 − c_factor)) — the first withdraw of the
     // layered unwind would have reverted here.
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     let (_, _, _, orange_hf) = sclient.config();
     let before_hf = sclient.health_factor();
     let (_, _, _, d_tokens, _, d_rate) = sclient.position();
@@ -3082,10 +3092,10 @@ fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     assert_eq!((b_tokens, d_tokens), (0, 0), "no position is left behind");
 }
 
-// `releverage` adds borrow demand exactly as a deposit does, so the settled pool
-// is held to the same `MAX_SAFE_UTILIZATION`. A pool just inside the cap, which
-// the re-leverage's own borrow would tip over it, must revert the whole call —
-// and a reverted call must not arm the cooldown.
+// `releverage` adds borrow demand exactly as a deposit does, so Blend holds it to
+// the reserve's own `max_util`. A pool just inside the cap, which the
+// re-leverage's own borrow would tip over it, must revert the whole call — and a
+// reverted call must not arm the cooldown.
 #[test]
 fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
     let e = Env::default();
@@ -3102,8 +3112,12 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
     // Slack to re-lever: the keeper deleverages well clear of the band.
     sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
 
-    // A borrower takes the pool to 94.9% — inside the cap now, past it once the
-    // re-leverage borrows.
+    // A borrower takes the pool to just under the reserve's max_util (99% here)
+    // — inside the cap now, past it once the re-leverage borrows.
+    let max_util = pool::Client::new(&e, &pool_addr)
+        .get_reserve(&token)
+        .config
+        .max_util as i128;
     let borrower = Address::generate(&e);
     StellarAssetClient::new(&e, &collateral).mint(&borrower, &1_000_000_0000000);
     let pool_client = pool::Client::new(&e, &pool_addr);
@@ -3120,7 +3134,7 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
             },
         ],
     );
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     pool_client.submit(
         &borrower,
         &borrower,
@@ -3129,21 +3143,22 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
             &e,
             pool::Request {
                 address: token.clone(),
-                amount: supply * 949 / 1000 - borrow,
+                amount: supply * (max_util - 1_000) / SCALAR_7 - borrow,
                 request_type: REQUEST_TYPE_BORROW,
             },
         ],
     );
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     assert!(
-        borrow * SCALAR_7 / supply <= crate::constants::MAX_SAFE_UTILIZATION,
+        borrow * SCALAR_7 / supply <= max_util,
         "fixture must start inside the cap"
     );
 
     let hf = sclient.health_factor();
+    // Blend's InvalidUtilRate.
     match sclient.try_releverage(&keeper) {
-        Err(Ok(StrategyError::ExternalError)) => {}
-        other => std::panic!("expected ExternalError (#422), got {:?}", other),
+        Err(Err(soroban_sdk::InvokeError::Contract(1207))) => {}
+        other => std::panic!("expected Blend's InvalidUtilRate (#1207), got {:?}", other),
     }
     assert_eq!(sclient.health_factor(), hf, "position untouched");
     assert_eq!(
@@ -3238,7 +3253,7 @@ fn borrow_until_free(e: &Env, config: &storage::Config, collateral: &Address, fr
             },
         ],
     );
-    let (supply, borrow) = blend_pool::get_pool_utilization(e, config);
+    let (supply, borrow) = get_pool_utilization(e, config);
     pool_client.submit(
         &borrower,
         &borrower,
@@ -3273,9 +3288,9 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
     let share = e.register(MockShareToken, ());
     sclient.set_share_token(&share);
 
-    // 94.5% utilized — inside the deposit cap, 5,500 left to borrow …
+    // 94.5% utilized, 5,500 left to borrow …
     borrow_until_free(&e, &config, &collateral, 5_500_0000000);
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
 
     // … against a deposit whose borrow is ~24,390.
     let deposit = 10_000_0000000_i128;
@@ -3294,7 +3309,7 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
     StellarAssetClient::new(&e, &token).mint(&user, &deposit);
     sclient.deposit(&deposit, &user);
 
-    let (supply2, borrow2) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply2, borrow2) = get_pool_utilization(&e, &config);
     assert!(
         borrow2 * supply < borrow * supply2,
         "a levered deposit lowers utilization"
@@ -3330,7 +3345,7 @@ fn test_withdraw_needs_only_its_equity_in_free_liquidity() {
     let balance = sclient.balance(&user);
     let (_, _, b_tokens, _, b_rate, _) = sclient.position();
     let collateral_value = b_tokens * b_rate / SCALAR_12;
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
+    let (supply, borrow) = get_pool_utilization(&e, &config);
     let free = supply - borrow;
     assert!(
         balance < free && free < collateral_value,
@@ -3353,7 +3368,8 @@ fn test_withdraw_needs_only_its_equity_in_free_liquidity() {
 }
 
 // And for re-leverage: supplying first lets it borrow more than the pool has
-// free, so long as the settled utilization stays within the cap. The old
+// free, so long as the settled utilization stays within the reserve's
+// `max_util`. The old
 // borrow-first order reverted here (InvalidUtilRate) before the supply landed.
 #[test]
 fn test_releverage_larger_than_the_free_liquidity() {
@@ -3377,9 +3393,13 @@ fn test_releverage_larger_than_the_free_liquidity() {
         .unwrap();
 
     // Leave less free than that, but enough for the settled utilization to stay
-    // within the cap: free ∈ [5% of (supply + x), x).
-    let (supply, _) = blend_pool::get_pool_utilization(&e, &config);
-    let lo = (supply + x) / 20 + 1;
+    // within the reserve's max_util: free ∈ [(1 − max_util) of (supply + x), x).
+    let max_util = pool::Client::new(&e, &pool_addr)
+        .get_reserve(&token)
+        .config
+        .max_util as i128;
+    let (supply, _) = get_pool_utilization(&e, &config);
+    let lo = (supply + x) * (SCALAR_7 - max_util) / SCALAR_7 + 1;
     assert!(
         lo < x,
         "fixture: the window must be non-empty: {} vs {}",
@@ -3397,8 +3417,8 @@ fn test_releverage_larger_than_the_free_liquidity() {
         borrowed,
         free
     );
-    let (supply2, borrow2) = blend_pool::get_pool_utilization(&e, &config);
-    assert!(borrow2 * SCALAR_7 / supply2 <= crate::constants::MAX_SAFE_UTILIZATION);
+    let (supply2, borrow2) = get_pool_utilization(&e, &config);
+    assert!(borrow2 * SCALAR_7 / supply2 <= max_util);
 }
 
 // A share that rounds to no equity is refused rather than unwound: `withdraw`
@@ -3440,84 +3460,6 @@ fn test_unwind_of_a_share_with_no_equity_is_refused() {
             d
         );
     }
-}
-
-// The pre-submit utilization check stays: a deposit is refused while the pool
-// is above MAX_SAFE_UTILIZATION — even one large enough that the settled pool
-// would come back under the cap, which the after-submit check alone would let
-// through.
-#[test]
-fn test_deposit_refused_while_the_pool_is_above_the_cap() {
-    let e = Env::default();
-    e.mock_all_auths();
-    e.cost_estimate().budget().reset_unlimited();
-    let (pool_addr, token, collateral, blnd) = setup_blend_env_with_collateral_reserve(&e);
-    let config = make_config(&e, &pool_addr, &token, &blnd);
-    lend(&e, &pool_addr, &token, 100_000_0000000);
-
-    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
-    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
-
-    // 95.5% utilized: above the cap.
-    borrow_until_free(&e, &config, &collateral, 4_500_0000000);
-    let (supply, borrow) = blend_pool::get_pool_utilization(&e, &config);
-    assert!(borrow * SCALAR_7 / supply > crate::constants::MAX_SAFE_UTILIZATION);
-
-    // A deposit this large would itself bring utilization back to ~80%.
-    let deposit = 50_000_0000000_i128;
-    let (_, l_factor) = blend_pool::get_pool_risk_factors(&e, &config);
-    let (add_supply, add_borrow) =
-        crate::leverage::compute_lever_in(deposit, config.c_factor, l_factor, config.target_hf)
-            .unwrap();
-    assert!(
-        (borrow + add_borrow) * SCALAR_7 / (supply + add_supply)
-            <= crate::constants::MAX_SAFE_UTILIZATION,
-        "fixture: the settled pool must be back under the cap"
-    );
-
-    let user = Address::generate(&e);
-    StellarAssetClient::new(&e, &token).mint(&user, &deposit);
-    match sclient.try_deposit(&deposit, &user) {
-        Err(Ok(StrategyError::ExternalError)) => {}
-        other => std::panic!("expected ExternalError (#422), got {:?}", other),
-    }
-}
-
-// The after-submit gate checks the settled pool's utilization, not only the
-// position's HF. A deposit can push the pool over the cap by itself only when its
-// own borrow/supply ratio is above 95% — a c_factor close to 1.0 — so the gate is
-// exercised directly: a healthy position in a pool left above the cap is refused.
-#[test]
-#[should_panic(expected = "Error(Contract, #422)")]
-fn test_settled_position_check_refuses_a_pool_above_the_cap() {
-    let e = Env::default();
-    e.mock_all_auths();
-    e.cost_estimate().budget().reset_unlimited();
-    let (pool_addr, token, collateral, blnd) = setup_blend_env_with_collateral_reserve(&e);
-    let config = make_config(&e, &pool_addr, &token, &blnd);
-    lend(&e, &pool_addr, &token, 100_000_0000000);
-
-    // A healthy 3-loop position (HF ≈ 1.27, well above min_hf) …
-    let strategy = e.register(TestStrategyContract, ());
-    StellarAssetClient::new(&e, &token).mint(&strategy, &1_000_0000000);
-    execute_leverage_loop_stepped(
-        &e,
-        &pool_addr,
-        &strategy,
-        &token,
-        1_000_0000000,
-        config.c_factor,
-        TEST_LOOPS,
-    );
-
-    // … in a pool left 96% utilized.
-    let (supply, _) = blend_pool::get_pool_utilization(&e, &config);
-    borrow_until_free(&e, &config, &collateral, supply * 4 / 100);
-
-    e.as_contract(&strategy, || crate::check_settled_position(&e, &config))
-        .unwrap();
 }
 
 // The keeper's own target is floored at the rebalance target, not at orange_hf:

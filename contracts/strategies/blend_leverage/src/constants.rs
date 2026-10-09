@@ -4,10 +4,6 @@ pub const SCALAR_7: i128 = 10_000_000;
 /// 1 with 12 decimal places — Blend b_rate / d_rate scalar
 pub const SCALAR_12: i128 = 1_000_000_000_000;
 
-/// Maximum pool utilization at which new deposits are allowed.
-/// Above this, d-tokens become illiquid — liquidators can't redeem them.
-pub const MAX_SAFE_UTILIZATION: i128 = 9_500_000; // 0.95 in 1e7
-
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 

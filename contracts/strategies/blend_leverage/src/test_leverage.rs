@@ -1013,27 +1013,11 @@ fn test_multi_user_proportional() {
     });
 }
 
-// ── Safety: utilization check ────────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Error(Contract, #422)")]
-fn test_safety_rejects_high_utilization() {
-    use crate::leverage::check_pool_utilization;
-
-    let e = Env::default();
-
-    // Pool at 96% utilization → should panic (above 95% limit)
-    check_pool_utilization(
-        &e,
-        1_000_0000000, // pool supply
-        960_0000000,   // pool borrow (96%)
-    )
-    .unwrap();
-}
+// ── Safety: HF check ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_safety_allows_healthy_pool() {
-    use crate::leverage::{check_min_health_factor, check_pool_utilization};
+    use crate::leverage::check_min_health_factor;
     use crate::storage::Config;
 
     let e = Env::default();
@@ -1052,11 +1036,6 @@ fn test_safety_allows_healthy_pool() {
         orange_hf: 11_500_000,
     };
 
-    // Pool at 50% utilization, healthy HF
-    assert!(
-        check_pool_utilization(&e, 1_000_0000000, 500_0000000).is_ok(),
-        "Should allow at 50% utilization"
-    );
     assert!(
         check_min_health_factor(
             &e,

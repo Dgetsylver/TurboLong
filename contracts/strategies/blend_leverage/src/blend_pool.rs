@@ -414,27 +414,6 @@ pub fn get_pool_risk_factors(e: &Env, config: &Config) -> (i128, i128) {
     )
 }
 
-/// Fetch current pool supply and borrow in underlying units.
-pub fn get_pool_utilization(e: &Env, config: &Config) -> (i128, i128) {
-    let pool_client = BlendPoolClient::new(e, &config.pool);
-    let reserve = pool_client.get_reserve(&config.asset);
-
-    let supply_underlying = reserve
-        .data
-        .b_supply
-        .checked_mul(reserve.data.b_rate)
-        .unwrap_or(0)
-        / SCALAR_12;
-    let borrow_underlying = reserve
-        .data
-        .d_supply
-        .checked_mul(reserve.data.d_rate)
-        .unwrap_or(0)
-        / SCALAR_12;
-
-    (supply_underlying, borrow_underlying)
-}
-
 /// Get current strategy positions (b_tokens, d_tokens) from the pool.
 pub fn get_strategy_positions(e: &Env, config: &Config) -> (i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);

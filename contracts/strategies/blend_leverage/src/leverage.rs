@@ -1,4 +1,4 @@
-use crate::constants::{MAX_SAFE_UTILIZATION, SCALAR_12, SCALAR_7};
+use crate::constants::{SCALAR_12, SCALAR_7};
 use crate::storage::{Config, LeverageReserves, LockedProfit};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
@@ -242,33 +242,6 @@ pub fn compute_health_factor(
 }
 
 // ── Safety checks ────────────────────────────────────────────────────────────
-
-/// Refuse when the pool's utilization is above `MAX_SAFE_UTILIZATION`.
-///
-/// `deposit` runs this on the current figures before its Blend submit (no new
-/// borrow demand on an already-strained pool), and `deposit` and `releverage`
-/// run it on the settled figures after theirs (the submit itself must not have
-/// pushed the pool past the cap). Reading the settled pool replaces projecting
-/// the submit's effect onto it. The harvest paths, which lever in only swapped
-/// rewards, are not gated.
-pub fn check_pool_utilization(
-    e: &Env,
-    pool_supply_underlying: i128,
-    pool_borrow_underlying: i128,
-) -> Result<(), StrategyError> {
-    if pool_supply_underlying > 0 {
-        let util = pool_borrow_underlying
-            .checked_mul(SCALAR_7)
-            .ok_or(StrategyError::ArithmeticError)?
-            .checked_div(pool_supply_underlying)
-            .ok_or(StrategyError::DivisionByZero)?;
-
-        if util > MAX_SAFE_UTILIZATION {
-            panic_with_error!(e, StrategyError::ExternalError);
-        }
-    }
-    Ok(())
-}
 
 /// Refuse a position whose health factor is below `config.min_hf`.
 ///

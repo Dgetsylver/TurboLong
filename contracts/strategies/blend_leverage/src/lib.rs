@@ -25,8 +25,8 @@ use admin_sep::{Administratable, AdministratableExtension, Upgradable};
 use constants::{RELEVERAGE_HF_BUFFER, SCALAR_12, SCALAR_7};
 pub use defindex_strategy_core::{event, DeFindexStrategyTrait, StrategyError};
 use leverage::{
-    check_min_health_factor, check_pool_utilization, compute_health_factor, compute_partial_unwind,
-    compute_releverage, shares_to_underlying,
+    check_min_health_factor, compute_health_factor, compute_partial_unwind, compute_releverage,
+    shares_to_underlying,
 };
 use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
@@ -176,13 +176,13 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// Deposit underlying asset, lever it in, mint shares.
     ///
     /// Flow:
-    /// 1. Refuse if pool utilization is already above `MAX_SAFE_UTILIZATION`
-    /// 2. Transfer `amount` from `from` to the strategy contract
-    /// 3. Lever it in: one SupplyCollateral + Borrow submit, sized to land on
-    ///    `target_hf` (`compute_lever_in`)
-    /// 4. Check what the pool settled: utilization, and HF >= `min_hf`
-    /// 5. Track b/d token deltas, mint proportional shares
-    /// 6. Return the depositor's underlying balance
+    /// 1. Transfer `amount` from `from` to the strategy contract
+    /// 2. Lever it in: one SupplyCollateral + Borrow submit, sized to land on
+    ///    `target_hf` (`compute_lever_in`). Blend refuses the borrow if it would
+    ///    settle the reserve above its own `max_util`.
+    /// 3. Check what the pool settled: HF >= `min_hf`
+    /// 4. Track b/d token deltas, mint proportional shares
+    /// 5. Return the depositor's underlying balance
     fn deposit(e: Env, amount: i128, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         check_positive_amount(amount)?;
@@ -190,10 +190,6 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
-
-        // Safety: no new borrow demand on a pool that is already strained.
-        let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(&e, &config);
-        check_pool_utilization(&e, pool_supply, pool_borrow)?;
 
         // Transfer the initial deposit from user to strategy contract
         let token_client = TokenClient::new(&e, &config.asset);
@@ -409,16 +405,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     }
 }
 
-/// Post-submit safety gate for `deposit`: the pool's settled utilization must be
-/// within `MAX_SAFE_UTILIZATION`, and the position's HF at or above `min_hf`.
+/// Post-submit safety gate for `deposit`: the position's HF must be at or above
+/// `min_hf`. (Utilization needs no check of ours: Blend refuses any borrow that
+/// would settle the reserve above its own `max_util`.)
 ///
 /// Reads the pool after the submit instead of projecting the submit onto it, so
 /// what is checked includes the pool's own rounding. A failure reverts the whole
 /// transaction, submit included.
 fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError> {
-    let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(e, config);
-    check_pool_utilization(e, pool_supply, pool_borrow)?;
-
     let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
     check_min_health_factor(e, b_tokens, d_tokens, b_rate, d_rate, l_factor, config)
@@ -672,9 +666,8 @@ impl BlendLeverageStrategy {
     ///   rebalance trigger and start a ping-pong; and it only fires when the
     ///   current HF clears the target by the same buffer, so the position has to
     ///   have real slack before anything happens;
-    /// - the pool's settled utilization is held to the same
-    ///   `MAX_SAFE_UTILIZATION` a deposit faces — re-leveraging adds borrow
-    ///   demand to the pool exactly as a deposit does;
+    /// - Blend refuses the borrow if it would settle the reserve above its own
+    ///   `max_util`, exactly as for a deposit;
     /// - the position is re-read after the submit and the whole transaction
     ///   reverts unless HF actually landed at or above `orange_hf` (stricter than
     ///   a deposit's `min_hf`).
@@ -745,15 +738,10 @@ impl BlendLeverageStrategy {
         let (b_delta, d_delta) = blend_pool::submit_releverage(&e, borrow_underlying, &config)?;
         reserves::releverage(&e, b_delta, d_delta, &pre)?;
 
-        // Verify against the settled state rather than a projection: the pool
+        // Verify against the settled position rather than a projection: the pool
         // rounds its own conversions, and this is the direction where being wrong
-        // costs the vault. Supplying and borrowing the same amount can only raise
-        // utilization, so a pool still within the cap afterwards was within it
-        // before. Utilization past the cap, or HF below the rebalance trigger,
-        // reverts the whole transaction.
-        let (pool_supply, pool_borrow) = blend_pool::get_pool_utilization(&e, &config);
-        check_pool_utilization(&e, pool_supply, pool_borrow)?;
-
+        // costs the vault. HF below the rebalance trigger reverts the whole
+        // transaction.
         let (b2, d2) = blend_pool::get_strategy_positions(&e, &config);
         let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?;
         if after_hf < config.orange_hf {
