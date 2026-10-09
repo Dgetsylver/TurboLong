@@ -82,12 +82,13 @@ pub fn submit_lever_in(
     }
 
     // The pool nets the two legs and pulls only `S − D = initial_amount`, so that
-    // is all it may pull. The allowance expires next ledger.
+    // is all it may pull. A SAC allowance is live while `live_until >= ledger`, so
+    // expiring at this ledger covers the submit below and nothing after it.
     TokenClient::new(e, &config.asset).approve(
         &strategy,
         &config.pool,
         &initial_amount,
-        &(e.ledger().sequence() + 1),
+        &e.ledger().sequence(),
     );
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
