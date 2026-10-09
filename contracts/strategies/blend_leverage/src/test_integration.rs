@@ -5099,7 +5099,7 @@ fn test_transferred_shares_let_recipient_withdraw() {
 // which the test host rejects unless the target hash is a genuinely uploaded
 // WASM, so we upload a real Soroban WASM to satisfy the in-place swap. After the
 // swap the strategy's executable points at the new code, so post-upgrade state
-// is read host-side from the *preserved* persistent storage and recomputed with
+// is read host-side from the *preserved* contract storage and recomputed with
 // the same production functions the entrypoints use. Parity must hold within
 // 1e-7 (it is exact: an in-place WASM swap never touches storage).
 fn assert_within_1e7(before: i128, after: i128, label: &str) {
@@ -5194,7 +5194,7 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
     // ── Post-upgrade recomputation from PRESERVED storage (host-side) ──
     // The executable now points at the swapped WASM, so we recompute with the
     // same production functions the entrypoints call, over the untouched
-    // persistent storage and unchanged pool state.
+    // contract storage and unchanged pool state.
     let version_after = e.as_contract(&strategy, || storage::get_version(&e));
     let stored_after = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
     let (equity_after, hf_after, user_underlying_after) = e.as_contract(&strategy, || {

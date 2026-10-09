@@ -102,18 +102,15 @@ pub struct LeverageReserves {
     pub d_rate: i128,
 }
 
+/// Global, so instance storage like the rest of the contract's state: it lives
+/// as long as the instance, whose TTL nearly every call extends.
 pub fn set_strategy_reserves(e: &Env, reserves: LeverageReserves) {
-    e.storage().persistent().set(&DataKey::Reserves, &reserves);
-    e.storage().persistent().extend_ttl(
-        &DataKey::Reserves,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
+    e.storage().instance().set(&DataKey::Reserves, &reserves);
 }
 
 pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
     e.storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Reserves)
         .unwrap_or_default()
 }
@@ -145,18 +142,14 @@ pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
 
 // ── Keeper ───────────────────────────────────────────────────────────────────
 
+/// Instance storage, like the reserves above.
 pub fn set_keeper(e: &Env, keeper: &Address) {
-    e.storage().persistent().set(&DataKey::Keeper, keeper);
-    e.storage().persistent().extend_ttl(
-        &DataKey::Keeper,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
+    e.storage().instance().set(&DataKey::Keeper, keeper);
 }
 
 pub fn get_keeper(e: &Env) -> Address {
     e.storage()
-        .persistent()
+        .instance()
         .get(&DataKey::Keeper)
         .expect("Keeper not set")
 }

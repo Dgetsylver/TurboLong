@@ -1187,7 +1187,7 @@ fn test_version_defaults_to_one_then_bumps() {
     });
 }
 
-/// An in-place WASM upgrade preserves all persistent storage, so a user's
+/// An in-place WASM upgrade preserves all contract storage, so a user's
 /// underlying balance and the strategy HF computed from the stored position
 /// must be identical before and after. This asserts that parity invariant on
 /// a seeded fixture: the same stored reserves yield byte-identical equity, HF,
@@ -1217,7 +1217,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         let user_underlying_before =
             shares_to_underlying(storage::get_vault_shares(e, &user), &reserves, 0).unwrap();
 
-        // An upgrade does not touch persistent storage; re-read it as v2 would.
+        // An upgrade does not touch contract storage; re-read it as v2 would.
         let reserves_after = storage::get_strategy_reserves(e);
         let equity_after = compute_equity(&reserves_after).unwrap();
         let hf_after = compute_health_factor(
