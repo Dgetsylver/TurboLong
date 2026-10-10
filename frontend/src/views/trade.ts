@@ -37,6 +37,7 @@ import {
   fetchPositionEvents,
   aggregatePoolAccount,
   projectRates,
+  projectDownsideScenario,
   hfForLeverage,
   maxLeverageFor,
   buildApproveXdr,
@@ -1025,6 +1026,7 @@ export function tradeScreen(): HTMLElement {
     const netApy = agg.netApy;
     const effLev = agg.effLeverage;
     const cFactor = rs ? rs.cFactor : ts.asset.cFactor;
+    const downside = rs ? downsideCalculator(rs, accountHF, effLev) : null;
 
     // 3 hero metrics.
     const heroes = el("div", { class: "trade-heroes" }, [
@@ -1034,12 +1036,15 @@ export function tradeScreen(): HTMLElement {
         value: `${effLev.toFixed(1)}×`,
         tone: effLev > 7 ? "danger" : effLev > 4 ? "warning" : "default",
       }),
-      MetricHero({
-        label: "Net APY",
-        value: `${netApy >= 0 ? "+" : ""}${fmt(netApy, 1)}%`,
-        tone: netApy >= 0 ? "success" : "danger",
-        sub: "projected",
-      }),
+      el("div", { class: "trade-apy-stack" }, [
+        MetricHero({
+          label: "Net APY",
+          value: `${netApy >= 0 ? "+" : ""}${fmt(netApy, 1)}%`,
+          tone: netApy >= 0 ? "success" : "danger",
+          sub: "projected",
+        }),
+        downside,
+      ].filter(Boolean) as HTMLElement[]),
     ]);
 
     // Account Health.
@@ -1152,6 +1157,89 @@ export function tradeScreen(): HTMLElement {
     const actions = el("div", { class: "trade-actions" }, [closeBtn]);
 
     return el("div", {}, [heroes, hfWell, detailRows, timeline, blndRow, actions]);
+  }
+
+  function downsideCalculator(rs: ReserveStats, healthFactor: number, leverage: number): HTMLElement {
+    const currentUtilPct = rs.totalSupply > 0 ? (rs.totalBorrow / rs.totalSupply) * 100 : 0;
+    let targetPct = Math.min(99.99, Math.max(currentUtilPct + 1, 97));
+
+    const tableBody = el("tbody");
+    const input = Input({
+      value: targetPct.toFixed(1),
+      inputMode: "decimal",
+      suffix: "%",
+      title: "Future pool utilization",
+      onChange: (value) => {
+        const next = Number.parseFloat(value.replace(/[^\d.]/g, ""));
+        if (Number.isFinite(next)) targetPct = Math.min(99.99, Math.max(0, next));
+        renderRows();
+      },
+    });
+
+    const daysText = (days: number | null) =>
+      days === null
+        ? "N/A"
+        : !Number.isFinite(days)
+          ? "Never"
+          : days > 3650
+            ? ">10y"
+            : `${Math.max(0, Math.round(days))}d`;
+
+    const decayText = (decay: number) =>
+      decay <= 0 ? "No decay" : `${fmt(decay, 2)}%/yr`;
+
+    const row = (label: string, pct: number): HTMLElement => {
+      const s = projectDownsideScenario(rs, pct / 100, leverage, healthFactor);
+      return el("tr", {}, [
+        el("td", {}, [label]),
+        el("td", { class: "trade-mono" }, [`${fmt(s.utilization * 100, 1)}%`]),
+        el(
+          "td",
+          { class: `trade-mono ${s.netApy >= 0 ? "trade-tone-up" : "trade-tone-down"}` },
+          [`${s.netApy >= 0 ? "+" : ""}${fmt(s.netApy, 1)}%`],
+        ),
+        el("td", { class: `trade-mono ${s.hfDecayApr > 0 ? "trade-tone-warn" : "trade-tone-up"}` }, [
+          decayText(s.hfDecayApr),
+        ]),
+        el("td", { class: "trade-mono" }, [daysText(s.daysToLiquidation)]),
+      ]);
+    };
+
+    function renderRows(): void {
+      const severe = Math.min(99.99, Math.max(targetPct + 1, 99));
+      tableBody.replaceChildren(
+        row("Now", currentUtilPct),
+        row("Input", targetPct),
+        row("Stress", severe),
+      );
+    }
+
+    renderRows();
+
+    return el("div", { class: "trade-downside" }, [
+      el("div", { class: "trade-downside__head" }, [
+        el("span", { class: "trade-downside__title" }, [
+          "What if rates move against you?",
+          Tooltip({
+            text:
+              "Uses the live Blend rate projection with a future utilization scenario, then estimates HF decay and liquidation time at current leverage.",
+          }),
+        ]),
+        input,
+      ]),
+      el("table", { class: "trade-downside__table" }, [
+        el("thead", {}, [
+          el("tr", {}, [
+            el("th", {}, ["Case"]),
+            el("th", {}, ["Util"]),
+            el("th", {}, ["Net APY"]),
+            el("th", {}, ["HF decay"]),
+            el("th", {}, ["Liq"]),
+          ]),
+        ]),
+        tableBody,
+      ]),
+    ]);
   }
 
   // ── Close confirmation (inline, replaces position body) ───────────────────
