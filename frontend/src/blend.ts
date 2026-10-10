@@ -880,8 +880,8 @@ export interface PoolAccountSummary {
   rows: PoolAccountRow[];
 }
 
-// Mirror of main.ts `aprToApy` — kept local so the aggregator is self-contained.
-const aprToApyLocal = (apr: number) => (Math.exp(apr / 100) - 1) * 100;
+// Daily-compounded APR (%) → APY (%); kept local so aggregation is self-contained.
+const aprToApyLocal = (apr: number) => (Math.pow(1 + apr / 100 / 365, 365) - 1) * 100;
 
 export function aggregatePoolAccount(positions: AssetPosition[], reserves: ReserveStats[]): PoolAccountSummary {
   let equityUsd = 0;
