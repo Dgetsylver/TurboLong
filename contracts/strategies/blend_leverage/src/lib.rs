@@ -906,8 +906,13 @@ impl BlendLeverageStrategy {
 
     /// Set the keeper-controlled account allowed to pull claimed BLND for an
     /// off-chain swap (admin-gated).
+    ///
+    /// Revokes the outgoing account's allowance first, so a removed account
+    /// cannot pull a claim in flight. That claim stays pending: settle it through
+    /// `harvest_reinvest`, or let it expire and claim again for the new account.
     pub fn set_swap_account(e: Env, account: Address) -> Result<(), StrategyError> {
         Self::require_admin(&e);
+        Self::revoke_swap_allowance(&e, &storage::get_config(&e));
         storage::set_swap_account(&e, &account);
         extend_instance_ttl(&e);
         Ok(())

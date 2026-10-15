@@ -3977,6 +3977,50 @@ fn test_harvest_claim_records_floor_and_scopes_the_allowance() {
     };
 }
 
+// Rotating the swap account while a claim is in flight takes the pull away
+// from the outgoing account, which would otherwise keep it until the claim
+// expires. The BLND stays in the vault, and once the claim has expired the next
+// one approves the new account.
+#[test]
+fn test_rotating_the_swap_account_revokes_the_old_allowance() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, keeper, old_account) =
+        setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
+    let blnd_client = TokenClient::new(&e, &blnd);
+
+    let claimed = sclient.harvest_claim(&keeper);
+    assert_eq!(blnd_client.allowance(&strategy, &old_account), claimed);
+
+    let new_account = Address::generate(&e);
+    sclient.set_swap_account(&new_account);
+
+    assert_eq!(
+        blnd_client.allowance(&strategy, &old_account),
+        0,
+        "the outgoing account's pull is revoked"
+    );
+    assert!(
+        blnd_client
+            .try_transfer_from(&old_account, &strategy, &old_account, &claimed)
+            .is_err(),
+        "the outgoing account cannot take the BLND"
+    );
+    assert_eq!(blnd_client.balance(&strategy), claimed);
+    assert_eq!(blnd_client.allowance(&strategy, &new_account), 0);
+
+    e.ledger()
+        .with_mut(|li| li.sequence_number += crate::constants::HARVEST_APPROVAL_LEDGERS);
+    assert_eq!(sclient.harvest_claim(&keeper), claimed);
+    assert_eq!(
+        blnd_client.allowance(&strategy, &new_account),
+        claimed,
+        "the next claim approves the new account"
+    );
+}
+
 #[test]
 fn test_harvest_claim_rejected_while_a_claim_is_still_pullable() {
     let e = Env::default();
