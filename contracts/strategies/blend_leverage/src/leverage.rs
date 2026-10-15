@@ -87,19 +87,30 @@ pub fn shares_to_underlying(
         .ok_or(StrategyError::ArithmeticError)
 }
 
+/// Whether the vault has shares outstanding with no priced equity behind them:
+/// wiped out by a liquidation or bad debt, or left by a loss with no more equity
+/// than the harvest profit still locked. No fair share price exists, so it takes
+/// no new deposits and no harvests until one does.
+pub fn is_wiped_out(reserves: &LeverageReserves, locked: i128) -> Result<bool, StrategyError> {
+    Ok(reserves.total_shares > 0 && priced_equity(reserves, locked)? <= 0)
+}
+
 /// Convert underlying amount to shares, net of the `locked` harvest profit.
+///
+/// Refused with `InvalidSharesMinted` when shares are outstanding with no
+/// priced equity behind them (see `is_wiped_out`): there is no price to mint at.
 pub fn underlying_to_shares(
     amount: i128,
     reserves: &LeverageReserves,
     locked: i128,
 ) -> Result<i128, StrategyError> {
-    if reserves.total_shares == 0 || reserves.total_b_tokens == 0 {
+    if reserves.total_shares == 0 {
         // First deposit: 1 share = 1 unit
         return Ok(amount);
     }
     let total_equity = priced_equity(reserves, locked)?;
     if total_equity <= 0 {
-        return Ok(amount);
+        return Err(StrategyError::InvalidSharesMinted);
     }
     amount
         .fixed_mul_floor(reserves.total_shares, total_equity)

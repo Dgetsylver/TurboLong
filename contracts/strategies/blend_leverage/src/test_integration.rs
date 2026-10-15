@@ -4954,6 +4954,91 @@ fn find_reserves_sync_event(e: &Env, strategy: &Address) -> Option<(i128, i128, 
     None
 }
 
+/// Take the strategy's whole position out from under it — debt repaid,
+/// collateral withdrawn — as the strategy, so its own accounting never sees it,
+/// and hand the proceeds to a third party. The state a full liquidation or a
+/// bad-debt write-off leaves: shares outstanding, nothing behind them.
+fn wipe_out_position(e: &Env, pool_addr: &Address, strategy: &Address, token: &Address) {
+    let liquidator = Address::generate(e);
+    e.as_contract(strategy, || {
+        // Blend caps both legs at the position, and the pool nets them, so the
+        // strategy owes nothing and is paid the equity.
+        pool::Client::new(e, pool_addr).submit_with_allowance(
+            strategy,
+            strategy,
+            strategy,
+            &vec![
+                e,
+                pool::Request {
+                    address: token.clone(),
+                    amount: i64::MAX as i128,
+                    request_type: REQUEST_TYPE_REPAY,
+                },
+                pool::Request {
+                    address: token.clone(),
+                    amount: i64::MAX as i128,
+                    request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+                },
+            ],
+        );
+        let token_client = TokenClient::new(e, token);
+        token_client.transfer(strategy, &liquidator, &token_client.balance(strategy));
+    });
+}
+
+// A vault wiped out with shares outstanding has no share price. A deposit
+// used to be minted 1:1 against nothing and diluted into the old shares, and a
+// harvest would restart the vault at a dust price; both are refused.
+#[test]
+fn test_a_wiped_out_vault_takes_no_deposit_and_no_harvest() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.cost_estimate().budget().reset_unlimited();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, _router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    wipe_out_position(&e, &pool_addr, &strategy, &token);
+    let (equity, shares, b, d, _, _) = sclient.position();
+    assert!(
+        equity <= 0 && shares > 0 && b == 0 && d == 0,
+        "precondition: shares with nothing behind them: equity={} shares={} b={} d={}",
+        equity,
+        shares,
+        b,
+        d
+    );
+
+    let depositor = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&depositor, &1_000_0000000);
+    assert_eq!(
+        sclient.try_deposit(&1_000_0000000, &depositor),
+        Err(Ok(StrategyError::InvalidSharesMinted))
+    );
+    assert_eq!(
+        TokenClient::new(&e, &token).balance(&depositor),
+        1_000_0000000,
+        "the depositor keeps their funds"
+    );
+
+    // No harvest route restarts it: trait harvest, Broker and Soroswap reinvest.
+    assert_eq!(
+        sclient.try_harvest(&keeper, &None),
+        Err(Ok(StrategyError::InvalidSharesMinted))
+    );
+    StellarAssetClient::new(&e, &token).mint(&strategy, &10_0000000);
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &10_0000000, &false, &0),
+        Err(Ok(StrategyError::InvalidSharesMinted))
+    );
+    assert_eq!(
+        sclient.try_harvest_reinvest(&keeper, &1, &true, &0),
+        Err(Ok(StrategyError::InvalidSharesMinted))
+    );
+}
+
 // ── Withdraw must keep stored reserves in sync with the pool ─────────────────
 //
 // The strategy keeps TWO ledgers of the same position:

@@ -220,6 +220,41 @@ fn test_underlying_to_shares_proportional() {
 }
 
 #[test]
+fn test_underlying_to_shares_refuses_shares_with_nothing_behind_them() {
+    // Shares outstanding, position gone: what a full liquidation or a bad-debt
+    // write-off leaves. Minting 1:1 here would dilute the deposit into the old
+    // shares.
+    let wiped_out = LeverageReserves {
+        total_shares: 1_000_0000000,
+        total_b_tokens: 0,
+        total_d_tokens: 0,
+        b_rate: SCALAR_12,
+        d_rate: SCALAR_12,
+    };
+    let underwater = LeverageReserves {
+        total_b_tokens: 900_0000000,
+        total_d_tokens: 1_000_0000000,
+        ..wiped_out.clone()
+    };
+    // Equity left, but no more than the harvest profit still locked.
+    let all_locked = LeverageReserves {
+        total_b_tokens: 1_050_0000000,
+        total_d_tokens: 1_000_0000000,
+        ..wiped_out.clone()
+    };
+
+    for (reserves, locked) in [(wiped_out, 0), (underwater, 0), (all_locked, 50_0000000)] {
+        assert_eq!(
+            underlying_to_shares(500_0000000, &reserves, locked),
+            Err(crate::StrategyError::InvalidSharesMinted),
+            "{:?} with {} locked",
+            reserves,
+            locked
+        );
+    }
+}
+
+#[test]
 fn test_shares_roundtrip() {
     let reserves = LeverageReserves {
         total_shares: 3_000_0000000,

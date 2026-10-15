@@ -32,7 +32,7 @@ use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
     IntoVal, String, Symbol, Val, Vec,
 };
-use storage::{extend_instance_ttl, Config};
+use storage::{extend_instance_ttl, Config, LeverageReserves};
 
 /// Cross-contract client for the SEP-41 vault-share token (the per-user share
 /// ledger). The strategy is the token's minter, so `mint`/`burn_by_minter`
@@ -160,6 +160,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
 
         // Transfer the initial deposit from user to strategy contract
         let token_client = TokenClient::new(&e, &config.asset);
@@ -232,6 +233,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // Pre-reinvest snapshot: `reserves::harvest` adds the measured deltas to
         // this, so it must be read before the pool settles the reinvest.
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
 
         // Claim BLND from both supply and borrow sides
         let harvested_blnd = blend_pool::claim(&e, &config);
@@ -411,6 +413,17 @@ fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError>
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
     let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     check_min_health_factor(e, hf, config.min_hf)
+}
+
+/// Refuse new equity — a deposit or a harvest — into a vault whose shares have
+/// no priced equity behind them (`leverage::is_wiped_out`). A deposit would be
+/// minted shares against nothing and diluted into the old ones, and a harvest
+/// would restart the vault at a dust share price.
+fn check_not_wiped_out(e: &Env, reserves: &LeverageReserves) -> Result<(), StrategyError> {
+    if leverage::is_wiped_out(reserves, reserves::locked_profit(e)?)? {
+        return Err(StrategyError::InvalidSharesMinted);
+    }
+    Ok(())
 }
 
 /// Where a rebalance lands: `REBALANCE_HF_BUFFER` above the `orange_hf` trigger.
@@ -1191,6 +1204,7 @@ impl BlendLeverageStrategy {
         // Pre-reinvest snapshot — see the trait `harvest` for why it must be
         // taken before the pool settles.
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
 
         let (b_delta, d_delta, realized) = if via_soroswap {
             blend_pool::perform_reinvest(&e, &config, amount_out_min)?
