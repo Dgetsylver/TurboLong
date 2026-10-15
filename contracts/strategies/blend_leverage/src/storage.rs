@@ -183,10 +183,6 @@ pub fn get_share_token(e: &Env) -> Address {
         .expect("share token not set")
 }
 
-pub fn has_share_token(e: &Env) -> bool {
-    e.storage().instance().has(&DataKey::ShareToken)
-}
-
 // ── Keeper re-leverage rate-limit ────────────────────────────────────────────
 
 pub fn set_last_releverage(e: &Env, ledger: u32) {

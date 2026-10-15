@@ -19,7 +19,7 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
+    testutils::{Address as _, BytesN as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     token::{StellarAssetClient, TokenClient},
     vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
@@ -877,55 +877,6 @@ fn test_deleverage_step_by_step() {
 
 // ── Share-token wiring (D2 integration) ──────────────────────────────────────
 
-#[contracttype]
-enum MockKey {
-    Bal(Address),
-    Supply,
-}
-
-/// Minimal stand-in for the SEP-41 vault-share token, used to verify the
-/// strategy's cross-contract mint/burn/balance calls. The real token is tested
-/// in its own crate (contracts/tokens/vault_share).
-#[contract]
-pub struct MockShareToken;
-
-#[contractimpl]
-impl MockShareToken {
-    pub fn mint(e: Env, to: Address, amount: i128) {
-        let b: i128 = e
-            .storage()
-            .persistent()
-            .get(&MockKey::Bal(to.clone()))
-            .unwrap_or(0);
-        e.storage()
-            .persistent()
-            .set(&MockKey::Bal(to), &(b + amount));
-        let s: i128 = e.storage().instance().get(&MockKey::Supply).unwrap_or(0);
-        e.storage().instance().set(&MockKey::Supply, &(s + amount));
-    }
-
-    pub fn burn_by_minter(e: Env, from: Address, amount: i128) {
-        let b: i128 = e
-            .storage()
-            .persistent()
-            .get(&MockKey::Bal(from.clone()))
-            .unwrap_or(0);
-        e.storage()
-            .persistent()
-            .set(&MockKey::Bal(from), &(b - amount));
-        let s: i128 = e.storage().instance().get(&MockKey::Supply).unwrap_or(0);
-        e.storage().instance().set(&MockKey::Supply, &(s - amount));
-    }
-
-    pub fn balance(e: Env, id: Address) -> i128 {
-        e.storage().persistent().get(&MockKey::Bal(id)).unwrap_or(0)
-    }
-
-    pub fn total_supply(e: Env) -> i128 {
-        e.storage().instance().get(&MockKey::Supply).unwrap_or(0)
-    }
-}
-
 // ── Mock Soroswap router ─────────────────────────────────────────────────────
 
 #[contracttype]
@@ -997,6 +948,13 @@ impl MockSoroswapRouter {
     }
 }
 
+/// The share token's release wasm, which the strategy's constructor deploys.
+/// Build it before these tests:
+/// `(cd contracts/tokens/vault_share && cargo build --target wasm32v1-none --release)`.
+const SHARE_TOKEN_WASM: &[u8] = include_bytes!(
+    "../../../tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm"
+);
+
 /// Register the real strategy via its constructor against the Blend fixture.
 fn register_real_strategy(
     e: &Env,
@@ -1055,12 +1013,67 @@ fn register_real_strategy_with_target_and_router(
         10_500_000_i128.into_val(e), // min_hf 1.05
         11_500_000_i128.into_val(e), // orange_hf 1.15
         admin.into_val(e),
+        e.deployer()
+            .upload_contract_wasm(SHARE_TOKEN_WASM)
+            .into_val(e), // share token wasm
+        String::from_str(e, "BlendLeverage TEST Share").into_val(e),
+        String::from_str(e, "blvTEST").into_val(e),
     ];
     e.register(crate::BlendLeverageStrategy, (asset.clone(), init_args))
 }
 
+// The strategy deploys its own share token and is both its admin and its
+// minter, so neither can change after construction: the strategy has no
+// setter for its token, and no key outside it can call the token's
+// `set_minter` or `set_admin`.
 #[test]
-fn test_share_token_wiring_set_migrate_balance() {
+fn test_the_strategy_owns_its_share_token() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+
+    assert_eq!(share.minter(), strategy);
+    assert_eq!(share.admin(), strategy);
+    assert_eq!(share.decimals(), TokenClient::new(&e, &token).decimals());
+    assert_eq!(share.symbol(), String::from_str(&e, "blvTEST"));
+    assert_eq!(share.total_supply(), 0);
+
+    // Not even the strategy's admin key can change either: only the strategy's
+    // own authorization could, and it never gives it.
+    let admin = sclient.admin();
+    let outsider = Address::generate(&e);
+    let args: Vec<Val> = (outsider.clone(),).into_val(&e);
+    let as_admin = |fn_name: &'static str| MockAuthInvoke {
+        contract: &share.address,
+        fn_name,
+        args: args.clone(),
+        sub_invokes: &[],
+    };
+    let set_minter = as_admin("set_minter");
+    let set_admin = as_admin("set_admin");
+    assert!(share
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &set_minter,
+        }])
+        .try_set_minter(&outsider)
+        .is_err());
+    assert!(share
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &set_admin,
+        }])
+        .try_set_admin(&outsider)
+        .is_err());
+    assert_eq!(share.minter(), strategy);
+    assert_eq!(share.admin(), strategy);
+}
+
+#[test]
+fn test_migrate_position_moves_legacy_shares_onto_the_token() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
@@ -1068,13 +1081,7 @@ fn test_share_token_wiring_set_migrate_balance() {
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
-    let mock_token = e.register(MockShareToken, ());
-
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-
-    // set_share_token + getter.
-    sclient.set_share_token(&mock_token);
-    assert_eq!(sclient.share_token(), mock_token);
 
     // Open a REAL pool position for the strategy before seeding the legacy
     // accounting. The tracked totals are reconciled against the pool on every
@@ -1114,15 +1121,15 @@ fn test_share_token_wiring_set_migrate_balance() {
     assert_eq!(migrated, 500_0000000, "migrated legacy shares");
 
     // Token now holds the holder's shares; legacy entry zeroed.
-    let mock = MockShareTokenClient::new(&e, &mock_token);
-    assert_eq!(mock.balance(&holder), 500_0000000, "token credited");
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    assert_eq!(share.balance(&holder), 500_0000000, "token credited");
     e.as_contract(&strategy, || {
         assert_eq!(storage::get_vault_shares(&e, &holder), 0, "legacy zeroed");
     });
 
     // migrate is idempotent (no double-mint).
     assert_eq!(sclient.migrate_position(&holder), 0);
-    assert_eq!(mock.balance(&holder), 500_0000000);
+    assert_eq!(share.balance(&holder), 500_0000000);
 
     // balance() reads shares from the token and converts to underlying.
     let bal = sclient.balance(&holder);
@@ -1203,7 +1210,6 @@ fn test_set_risk_params_applies_to_the_next_deposit() {
     e.cost_estimate().budget().reset_unlimited();
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
 
     sclient.set_risk_params(&9_000_000, &11_800_000, &10_600_000, &11_600_000);
     assert_eq!(
@@ -1304,8 +1310,6 @@ fn open_stressed_strategy(
 ) -> Address {
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     let user = Address::generate(e);
     StellarAssetClient::new(e, token)
@@ -1512,8 +1516,6 @@ fn test_rebalance_keeper_already_at_floor_is_a_noop() {
     // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
@@ -1657,8 +1659,6 @@ fn test_partial_unwind_rejects_non_keeper_above_orange_zone() {
     // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
@@ -1686,8 +1686,6 @@ fn test_partial_unwind_rejects_non_keeper_above_orange_zone() {
 fn open_healthy_strategy(e: &Env, pool_addr: &Address, token: &Address, blnd: &Address) -> Address {
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     let user = Address::generate(e);
     StellarAssetClient::new(e, token)
@@ -1869,8 +1867,6 @@ fn test_releverage_to_the_lowest_target_stays_clear_of_the_rebalance_band() {
     let floor = orange_hf + crate::constants::RELEVERAGE_HF_BUFFER;
     let strategy = register_real_strategy_with_target(&e, &pool_addr, &token, &blnd, floor);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
@@ -3017,8 +3013,6 @@ fn test_withdraw_after_the_debt_is_fully_repaid() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
@@ -3065,7 +3059,6 @@ fn test_withdraw_after_an_outside_event_clears_the_debt() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
     let (alice, bob) = (Address::generate(&e), Address::generate(&e));
     for user in [&alice, &bob] {
         StellarAssetClient::new(&e, &token)
@@ -3161,8 +3154,6 @@ fn test_rebalance_works_near_full_utilization() {
     // A stressed position (HF ≈ 1.076) opened through the real deposit.
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token).mint(&user, &10_000_0000000);
     set_target_hf(&e, &strategy, STRESSED_HF);
@@ -3344,8 +3335,6 @@ fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     set_target_hf(&e, &strategy, 10_140_000);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
@@ -3557,8 +3546,6 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     // 94.5% utilized, 5,500 left to borrow …
     borrow_until_free(&e, &config, &collateral, 5_500_0000000);
@@ -3606,8 +3593,6 @@ fn test_withdraw_needs_only_its_equity_in_free_liquidity() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
@@ -3866,8 +3851,6 @@ fn setup_broker_harvest<'a>(
 ) {
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     let user = Address::generate(e);
     StellarAssetClient::new(e, token)
@@ -4310,7 +4293,6 @@ fn setup_trait_harvest<'a>(
         e, pool_addr, token, blnd, TARGET_HF, &router,
     );
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
 
     let user = Address::generate(e);
     StellarAssetClient::new(e, token)
@@ -4483,8 +4465,6 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
     let keeper = sclient.get_keeper();
     let mint = |to: &Address, amount: i128| {
         StellarAssetClient::new(&e, &token)
@@ -4588,7 +4568,6 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
         &e, &pool_addr, &token, &blnd, TARGET_HF, &router,
     );
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
     sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
     let keeper = sclient.get_keeper();
     let mint = |asset: &Address, to: &Address, amount: i128| {
@@ -4730,8 +4709,6 @@ fn open_position_for_seizure(
 ) -> (Address, Address) {
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     let user = Address::generate(e);
     StellarAssetClient::new(e, token)
@@ -5157,8 +5134,6 @@ fn test_real_withdraw_entrypoint_keeps_reserves_in_sync() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
     // Wire the share token (the strategy is its minter).
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
 
     // Fund a user and deposit through the REAL entrypoint (runs the real
     // submit_lever_in + reserves::deposit reconciliation).
@@ -5248,9 +5223,7 @@ fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let share = e.register(MockShareToken, ());
-    sclient.set_share_token(&share);
-    let shclient = MockShareTokenClient::new(&e, &share);
+    let shclient = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
 
     let user = Address::generate(&e);
     let token_admin = StellarAssetClient::new(&e, &token);
@@ -5340,9 +5313,8 @@ fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
 // ── D2: a transferred receipt token carries the underlying claim ──────────────
 //
 // The vault-share token is a standard SEP-41 — holding it *is* holding the
-// position. This drives the full chain through the REAL token contract (not the
-// MockShareToken): real SEP-41 `transfer` semantics + real strategy + real
-// Blend pool. Alice deposits, transfers her entire share balance to Bob, then
+// position. This drives the full chain through the REAL token contract: real
+// SEP-41 `transfer` semantics + real strategy + real Blend pool. Alice deposits, transfers her entire share balance to Bob, then
 // Bob — who never touched the strategy — withdraws and is paid the underlying,
 // while Alice is paid nothing. This is the integration guarantee the Aquarius
 // listing (T3) relies on: the strategy attributes equity by *current* token
@@ -5361,18 +5333,8 @@ fn test_transferred_shares_let_recipient_withdraw() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
-    // Wire the REAL SEP-41 share token, with the strategy as its sole minter.
-    let share = e.register(
-        vault_share_token::VaultShareToken,
-        (
-            Address::generate(&e), // admin
-            strategy.clone(),      // minter = the strategy
-            7u32,
-            String::from_str(&e, "BlendLeverage USDC Share"),
-            String::from_str(&e, "blvUSDC"),
-        ),
-    );
-    sclient.set_share_token(&share);
+    // The REAL SEP-41 share token the strategy deployed, as its sole minter.
+    let share = sclient.share_token();
     let shclient = vault_share_token::VaultShareTokenClient::new(&e, &share);
 
     // Alice deposits through the real entrypoint (mints her shares on the token).
@@ -5510,18 +5472,8 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
-    // Real SEP-41 share token, with the strategy as its sole minter.
-    let share = e.register(
-        vault_share_token::VaultShareToken,
-        (
-            Address::generate(&e), // admin
-            strategy.clone(),      // minter = the strategy
-            7u32,
-            String::from_str(&e, "BlendLeverage USDC Share"),
-            String::from_str(&e, "blvUSDC"),
-        ),
-    );
-    sclient.set_share_token(&share);
+    // The REAL SEP-41 share token the strategy deployed, as its sole minter.
+    let share = sclient.share_token();
     let shclient = vault_share_token::VaultShareTokenClient::new(&e, &share);
 
     // Real leveraged deposit -> live pool position.
@@ -5689,7 +5641,6 @@ fn test_health_factor_carries_pool_l_factor() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
 
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
@@ -5761,7 +5712,6 @@ fn test_health_factor_tracks_a_governance_l_factor_cut() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    sclient.set_share_token(&e.register(MockShareToken, ()));
 
     let user = Address::generate(&e);
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);

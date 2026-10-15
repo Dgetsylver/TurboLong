@@ -7,7 +7,7 @@ keep keys in a secrets manager (`op run`), never inlined or committed.
 Prerequisites you provide:
 - `KEEPER_PUBKEY` — funded mainnet account (XLM for fees) that runs harvest +
   rebalance + pulls BLND for Broker swaps.
-- `ADMIN_PUBKEY` — admin (controls upgrades + `set_share_token`/`set_swap_account`/
+- `ADMIN_PUBKEY` — admin (controls upgrades + `set_swap_account`/
   `set_min_harvest_rate`); ideally multisig/hardware.
 - `MIN_HARVEST_RATE_<SYMBOL>` — harvest floor, one per asset: minimum underlying
   stroops owed per 1e7 BLND stroops. It is the Broker path's settlement floor
@@ -59,7 +59,8 @@ op run -- env \
 ```
 
 Writes `deployed-vaults.mainnet.json` with `{strategy, token}` per asset. It also
-runs `set_share_token` + `set_swap_account` for each, plus
+runs `set_swap_account` for each (the share token comes from the strategy's
+constructor), plus
 `set_min_harvest_rate` for every asset with a `MIN_HARVEST_RATE_<SYMBOL>` set —
 watch the log for `⚠ <SYMBOL>: … Broker harvest path left CLOSED`, which means
 that vault harvests via Soroswap only — and only with a keeper-supplied

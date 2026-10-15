@@ -72,7 +72,15 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [6] target_hf: i128        — health factor deposits are levered to (1e7)
     ///   [7] min_hf: i128           — minimum health factor (1e7)
     ///   [8] orange_hf: i128        — orange-zone threshold; partial unwind triggered below this (1e7)
-    ///   [9] admin: Address         — authorized to upgrade the contract and set the share token
+    ///   [9] admin: Address         — authorized to upgrade the contract
+    ///   [10] share_token_wasm: BytesN<32> — uploaded `vault_share` wasm hash
+    ///   [11] share_name: String    — share token name
+    ///   [12] share_symbol: String  — share token symbol
+    ///
+    /// The strategy deploys its own share token, as both its admin and its
+    /// minter, so the token and its minter are fixed from construction: no
+    /// later call can repoint the strategy at another token, or let another
+    /// address mint its shares.
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -90,10 +98,20 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
         let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
+        let share_token_wasm: BytesN<32> = init_args
+            .get(10)
+            .expect("Missing: share_token_wasm")
+            .into_val(&e);
+        let share_name: String = init_args.get(11).expect("Missing: share_name").into_val(&e);
+        let share_symbol: String = init_args
+            .get(12)
+            .expect("Missing: share_symbol")
+            .into_val(&e);
 
         // The share math has i128 headroom for up to 7 decimals only.
+        let decimals = TokenClient::new(&e, &asset).decimals();
         assert!(
-            TokenClient::new(&e, &asset).decimals() <= MAX_ASSET_DECIMALS,
+            decimals <= MAX_ASSET_DECIMALS,
             "asset decimals must be <= 7"
         );
 
@@ -132,8 +150,26 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             orange_hf,
         };
 
+        // One share token per strategy, at an address derived from the
+        // strategy's own.
+        let strategy = e.current_contract_address();
+        let share_token = e
+            .deployer()
+            .with_current_contract(BytesN::from_array(&e, &[0; 32]))
+            .deploy_v2(
+                share_token_wasm,
+                (
+                    strategy.clone(),
+                    strategy,
+                    decimals,
+                    share_name,
+                    share_symbol,
+                ),
+            );
+
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_share_token(&e, &share_token);
         Self::set_admin(&e, &admin);
         storage::set_version(&e, 1);
     }
@@ -841,24 +877,10 @@ impl BlendLeverageStrategy {
         storage::get_version(&e)
     }
 
-    /// Set the SEP-41 vault-share token (admin-gated).
-    ///
-    /// The token must already be deployed with this strategy as its minter.
-    /// Required before the first deposit.
-    pub fn set_share_token(e: Env, token: Address) -> Result<(), StrategyError> {
-        Self::require_admin(&e);
-        storage::set_share_token(&e, &token);
-        extend_instance_ttl(&e);
-        Ok(())
-    }
-
-    /// The configured share token, or an error if not yet set.
+    /// The SEP-41 share token this strategy deployed at construction, and is
+    /// the admin and minter of.
     pub fn share_token(e: Env) -> Result<Address, StrategyError> {
-        if storage::has_share_token(&e) {
-            Ok(storage::get_share_token(&e))
-        } else {
-            Err(StrategyError::NotAuthorized)
-        }
+        Ok(storage::get_share_token(&e))
     }
 
     /// Migrate a legacy `VaultPos` holder onto the share token: mint their

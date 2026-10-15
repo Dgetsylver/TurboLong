@@ -7,8 +7,8 @@
 ## Ready ✅
 
 - **Deploy script:** `scripts/deploy_strategy_mainnet.ts` — installs both WASMs,
-  then per asset deploys the 10-arg `blend_leverage_strategy` + a `vault_share`
-  SEP-41 token, wires `set_share_token` + `set_swap_account(keeper)`, and writes
+  then per asset deploys the 13-arg `blend_leverage_strategy`, which deploys its
+  own `vault_share` SEP-41 token, wires `set_swap_account(keeper)`, and writes
   `deployed-vaults.mainnet.json`.
 - **WASMs built** at the exact paths the script reads:
   - `contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm`
@@ -38,7 +38,7 @@
    buffer: 2 WASM installs + 4×[deploy strategy + deploy token + 2 wirings]).
 2. **`KEEPER_PUBKEY`** — `G…` keeper account (runs harvest + `rebalance_keeper`,
    pulls BLND). **Required.**
-3. **`ADMIN_PUBKEY`** — `G…` admin (upgrade + `set_share_token`/`set_swap_account`).
+3. **`ADMIN_PUBKEY`** — `G…` admin (upgrade + `set_swap_account`).
    Defaults to the deployer; **recommend a multisig/hardware key**.
 4. **Risk-param sign-off** — approve (or adjust) the per-asset `c_factor` /
    `target_hf` / `min_hf` / `orange_hf` / `reward_threshold` table above.

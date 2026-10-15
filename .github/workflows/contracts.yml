@@ -39,6 +39,13 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --check
 
+      # The strategy deploys its share token from this wasm, and its tests load
+      # it, so it must exist before they compile.
+      - name: Build the share token wasm
+        if: matrix.crate == 'contracts/strategies/blend_leverage'
+        working-directory: contracts/tokens/vault_share
+        run: cargo build --target wasm32v1-none --release
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

@@ -101,12 +101,12 @@ token's **minter** (mints on deposit, burns on withdraw) and reads balances
 from it.
 
 ### Deploy sequence (fresh deploy — e.g. each mainnet vault)
-1. Deploy the strategy (`scripts/deploy_strategy.ts`); note its address `S`.
-2. Deploy the token with `minter = S`, `admin = <admin>`, `decimals = 7`,
-   `name/symbol` (e.g. `blvSHARE`).
-3. `S.set_share_token(<token>)` (admin-signed) — **required before the first
-   deposit**; `deposit` traps if the token isn't set.
-4. From here the token is canonical: `deposit` mints to the user (and the
+1. Upload the `vault_share` wasm, then deploy the strategy
+   (`scripts/deploy_strategy_mainnet.ts`) with that wasm hash and the share
+   token's name/symbol as constructor args [10]–[12]. The constructor deploys
+   the token with the strategy as both its admin and its minter;
+   `S.share_token()` returns its address. Neither can change afterwards.
+2. From here the token is canonical: `deposit` mints to the user (and the
    one-time inflation lockup to `S`'s own inert address, keeping
    `token.total_supply == total_shares`); `withdraw` burns; `balance` reads the
    token.
@@ -114,6 +114,11 @@ from it.
 Fresh deploys need no migration — there are no legacy `VaultPos` holders.
 
 ### Tokenizing an upgraded legacy deployment (e.g. the testnet vault)
+**No longer possible in place.** The share token is deployed by the
+constructor, which does not run on upgrade, and there is no `set_share_token`.
+A deployment that predates the token must be redeployed. The steps below are
+kept for reference only.
+
 If a deployment predates the token (shares in `VaultPos`):
 1. Upgrade the strategy WASM (above) and `set_share_token`.
 2. For each known holder, call `migrate_position(holder)` — permissionless,
