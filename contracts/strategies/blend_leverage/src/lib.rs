@@ -374,7 +374,9 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 /// B × pool_c_factor < D / l_factor, i.e. once B × pool_c_factor × l_factor / D
 /// drops below 1.0. With c_factor <= pool_c_factor the strategy's HF is a lower
 /// bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed in Blend's
-/// terms and no per-asset buffer convention is needed to make it hold. (The
+/// terms and no per-asset buffer convention is needed to make it hold. This check
+/// only holds at the moment it runs; a later governance cut is covered by
+/// capping `c_factor` at the pool's on every read (`capped_c_factor`). (The
 /// deploy script's habit of setting c_factor strictly below the pool's is still
 /// useful — it buys borrow headroom — but the vault's solvency no longer depends
 /// on it.)
@@ -414,9 +416,14 @@ fn validate_risk_params(
 /// what is checked includes the pool's own rounding. A failure reverts the whole
 /// transaction, submit included.
 fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError> {
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
+    let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
-    check_min_health_factor(e, b_tokens, d_tokens, b_rate, d_rate, l_factor, config)
+    // Checked at the capped c_factor, not the stored one.
+    let config = Config {
+        c_factor,
+        ..config.clone()
+    };
+    check_min_health_factor(e, b_tokens, d_tokens, b_rate, d_rate, l_factor, &config)
 }
 
 /// Where a rebalance lands: `REBALANCE_HF_BUFFER` above the `orange_hf` trigger.
@@ -440,33 +447,20 @@ fn unwind_to(
     trigger_hf: i128,
     target_hf: i128,
 ) -> Result<(i128, i128, i128), StrategyError> {
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
+    let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
 
     if d_tokens == 0 {
         return Ok((i128::MAX, i128::MAX, 0));
     }
 
-    let before_hf = compute_health_factor(
-        b_tokens,
-        d_tokens,
-        b_rate,
-        d_rate,
-        config.c_factor,
-        l_factor,
-    )?;
+    let before_hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     if before_hf >= trigger_hf {
         return Ok((before_hf, before_hf, 0));
     }
 
     let repay = compute_partial_unwind(
-        b_tokens,
-        d_tokens,
-        b_rate,
-        d_rate,
-        config.c_factor,
-        l_factor,
-        target_hf,
+        b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor, target_hf,
     )?;
     if repay == 0 {
         return Ok((before_hf, before_hf, 0));
@@ -485,7 +479,7 @@ fn unwind_to(
     let after_hf = if d2 == 0 {
         i128::MAX
     } else {
-        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?
+        compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?
     };
 
     Ok((before_hf, after_hf, repay))
@@ -596,21 +590,14 @@ impl BlendLeverageStrategy {
     pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
 
         if d_tokens == 0 {
             return Ok(0);
         }
 
-        let hf = compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )?;
+        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
 
         // Only the keeper can trigger above the orange zone; anyone can inside it.
         let is_keeper = caller == storage::get_keeper(&e);
@@ -694,7 +681,7 @@ impl BlendLeverageStrategy {
         }
 
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
         if b_tokens <= 0 {
             return Ok(0); // no collateral to lever against
@@ -702,14 +689,8 @@ impl BlendLeverageStrategy {
 
         let target_hf = config.target_hf;
 
-        let before_hf = compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )?;
+        let before_hf =
+            compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
 
         // Require the same buffer of slack above the target before acting, so a
         // position hovering near it is left alone instead of being re-levered
@@ -720,13 +701,7 @@ impl BlendLeverageStrategy {
         }
 
         let borrow_underlying = compute_releverage(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-            target_hf,
+            b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor, target_hf,
         )?;
         if borrow_underlying <= 0 {
             return Ok(0);
@@ -744,7 +719,7 @@ impl BlendLeverageStrategy {
         // costs the vault. HF below the rebalance trigger reverts the whole
         // transaction.
         let (b2, d2) = blend_pool::get_strategy_positions(&e, &config);
-        let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?;
+        let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?;
         if after_hf < config.orange_hf {
             return Err(StrategyError::ExternalError);
         }
@@ -810,22 +785,15 @@ impl BlendLeverageStrategy {
     /// Get current health factor (1e7 scaled).
     ///
     /// Expressed in Blend's own terms: the collateral side is weighted by the
-    /// strategy's `c_factor` and the debt side carries the pool's live
-    /// `l_factor`, so 1.0 here is the liquidation threshold, not an optimistic
-    /// approximation of it.
+    /// strategy's `c_factor` (capped at the pool's live one) and the debt side
+    /// carries the pool's live `l_factor`, so 1.0 here is the liquidation
+    /// threshold, not an optimistic approximation of it.
     pub fn health_factor(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-        compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )
+        compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)
     }
 
     /// Live risk factors behind the health factor:

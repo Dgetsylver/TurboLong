@@ -66,9 +66,13 @@ pub fn submit_lever_in(
     let strategy = e.current_contract_address();
     let (pre_b, pre_d) = get_strategy_positions(e, config);
 
-    let (_, l_factor) = get_pool_risk_factors(e, config);
-    let (total_supply, total_borrow) =
-        compute_lever_in(initial_amount, config.c_factor, l_factor, config.target_hf)?;
+    let (pool_c_factor, l_factor) = get_pool_risk_factors(e, config);
+    let (total_supply, total_borrow) = compute_lever_in(
+        initial_amount,
+        capped_c_factor(config, pool_c_factor),
+        l_factor,
+        config.target_hf,
+    )?;
 
     // Supply first, so the borrow is checked against the final state. A dust
     // amount whose borrow floors to zero is supplied without one.
@@ -430,23 +434,38 @@ pub fn get_rates(e: &Env, config: &Config) -> (i128, i128) {
     (reserve.data.b_rate, reserve.data.d_rate)
 }
 
-/// Fetch `(b_rate, d_rate, l_factor)` for the configured asset in a single pool
-/// call — the inputs every health-factor computation needs.
+/// Fetch `(b_rate, d_rate, c_factor, l_factor)` for the configured asset in a
+/// single pool call — the inputs every health-factor computation needs.
 ///
 /// `l_factor` is the pool's *liability* factor (1e7): Blend measures solvency as
 /// `B × c_factor` against `D / l_factor`, so omitting it makes the strategy's HF
-/// systematically optimistic relative to the number that governs liquidation. It
-/// is read live rather than cached at construction because Blend governance can
-/// re-parameterise a reserve (`queue_set_reserve`), and a stale copy would fail
-/// in exactly the unsafe direction.
-pub fn get_rates_and_l_factor(e: &Env, config: &Config) -> (i128, i128, i128) {
+/// systematically optimistic relative to the number that governs liquidation.
+/// `c_factor` is the strategy's own, capped at the pool's (`capped_c_factor`).
+/// Both are read live rather than cached at construction because Blend
+/// governance can re-parameterise a reserve (`queue_set_reserve`), and a stale
+/// copy would fail in exactly the unsafe direction.
+pub fn get_rates_and_factors(e: &Env, config: &Config) -> (i128, i128, i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let reserve = pool_client.get_reserve(&config.asset);
     (
         reserve.data.b_rate,
         reserve.data.d_rate,
+        capped_c_factor(config, reserve.config.c_factor as i128),
         reserve.config.l_factor as i128,
     )
+}
+
+/// The collateral factor every health-factor and lever-in computation uses:
+/// the strategy's configured `c_factor`, capped at the pool's live one (audit
+/// C3).
+///
+/// The constructor and `set_risk_params` only check `c_factor <= pool c_factor`
+/// at the moment they run. If Blend governance later cuts the pool's factor
+/// below the strategy's, the stored value would overstate the HF — the vault
+/// would keep levering to, and stop rebalancing at, a ratio Blend can
+/// liquidate. Capping on every read keeps the HF a lower bound on Blend's own.
+pub fn capped_c_factor(config: &Config, pool_c_factor: i128) -> i128 {
+    config.c_factor.min(pool_c_factor)
 }
 
 /// Fetch the pool's own risk parameters for the configured asset:

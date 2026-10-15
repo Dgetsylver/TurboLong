@@ -738,7 +738,7 @@ fn test_health_factor_from_pool() {
         TEST_LOOPS,
     );
 
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
 
     let hf = compute_health_factor(
         b_tokens,
@@ -2440,7 +2440,7 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
         ],
     );
 
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -2599,7 +2599,7 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
         loops,
     );
 
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
@@ -2709,7 +2709,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
         ],
     );
 
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
 
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -2819,7 +2819,7 @@ fn deleverage_scenario(
     );
     accrue_interest(&e, &pool_addr, &token, seconds);
 
-    let (b_rate, d_rate, l) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l) = blend_pool::get_rates_and_factors(&e, &config);
     let (b, d) = e.as_contract(&strategy, || {
         blend_pool::get_strategy_positions(&e, &config)
     });
@@ -3144,7 +3144,7 @@ fn test_lever_in_lands_on_target_hf_after_rates_drift() {
         blend_pool::submit_lever_in(&e, deposit, &config, false).unwrap()
     });
 
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+    let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
     assert!(
         b_rate > SCALAR_12 && d_rate > b_rate,
         "rates must have drifted"
@@ -5201,7 +5201,7 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
         let config = storage::get_config(&e);
         let r = reserves::get_strategy_reserves_updated(&e, &config);
         let equity = crate::leverage::compute_equity(&r).unwrap();
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, _, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
         let hf = compute_health_factor(
             b_tokens,
@@ -5413,4 +5413,313 @@ fn test_health_factor_tracks_a_governance_l_factor_cut() {
     );
 
     std::println!("governance l_factor cut: hf {} -> {}", hf_before, hf_after);
+}
+
+// ── Audit verification: the three Major findings (C1, C2, C3) ────────────────
+//
+// Each test replays the scenario the audit describes against the real Blend
+// pool, through the production entrypoints.
+
+/// The harvest routes that lever new equity into the position.
+#[derive(Clone, Copy, Debug)]
+enum HarvestRoute {
+    /// `harvest_reinvest(via_soroswap = false)`: Broker proceeds, levered in.
+    Broker,
+    /// The same, with Blend refusing the borrow: the proceeds go in unlevered.
+    BrokerUnlevered,
+    /// Trait `harvest`: BLND swapped on Soroswap, levered in.
+    TraitHarvest,
+    /// `harvest_reinvest(via_soroswap = true)`.
+    ReinvestSoroswap,
+}
+
+/// C1's attack on one `route`: the attacker matches an honest holder's 1,000
+/// just before a harvest worth ~100 of equity and withdraws everything in the
+/// same ledger. Returns `(attacker_back, honest_jump, locked)` — what the
+/// attacker got back, how far the honest holder's balance moved at the harvest
+/// ledger, and the profit the harvest locked.
+fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    // 0.05 underlying per BLND, so 2,000 BLND swaps to 100.
+    let router = e.register(MockSoroswapRouter, (500_000_i128,));
+    let strategy = register_real_strategy_with_target_and_router(
+        &e, &pool_addr, &token, &blnd, TARGET_HF, &router,
+    );
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+    let keeper = sclient.get_keeper();
+    let mint = |asset: &Address, to: &Address, amount: i128| {
+        StellarAssetClient::new(&e, asset)
+            .mock_all_auths()
+            .mint(to, &amount)
+    };
+    mint(&token, &router, 10_000_0000000);
+
+    let honest = Address::generate(&e);
+    mint(&token, &honest, 1_000_0000000);
+    sclient.deposit(&1_000_0000000, &honest);
+    let attacker = Address::generate(&e);
+    mint(&token, &attacker, 1_000_0000000);
+    sclient.deposit(&1_000_0000000, &attacker);
+    let honest_before = sclient.balance(&honest);
+
+    let proceeds = 100_0000000_i128;
+    match route {
+        HarvestRoute::Broker => {
+            mint(&token, &strategy, proceeds);
+            sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+        }
+        HarvestRoute::BrokerUnlevered => {
+            pool::Client::new(&e, &pool_addr).set_status(&2); // no new borrowing
+            mint(&token, &strategy, proceeds);
+            sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+        }
+        HarvestRoute::TraitHarvest => {
+            mint(&blnd, &strategy, 2_000_0000000);
+            sclient.harvest(&keeper, &None);
+        }
+        HarvestRoute::ReinvestSoroswap => {
+            mint(&blnd, &strategy, 2_000_0000000);
+            sclient.harvest_reinvest(&keeper, &1, &true, &0);
+        }
+    }
+    let locked = sclient.locked_profit();
+    let honest_jump = sclient.balance(&honest) - honest_before;
+
+    sclient.withdraw(&sclient.balance(&attacker), &attacker, &attacker);
+    let attacker_back = TokenClient::new(&e, &token).balance(&attacker);
+    (attacker_back, honest_jump, locked)
+}
+
+// C1 (Major): a deposit just before a harvest and a withdraw just after must
+// not collect the harvest — on any route that levers harvest equity in. Priced
+// in at once, each of these would hand the attacker half of the ~100.
+#[test]
+fn test_c1_no_harvest_route_lets_a_round_trip_collect_the_harvest() {
+    for route in [
+        HarvestRoute::Broker,
+        HarvestRoute::BrokerUnlevered,
+        HarvestRoute::TraitHarvest,
+        HarvestRoute::ReinvestSoroswap,
+    ] {
+        let (attacker_back, honest_jump, locked) = round_trip_around_a_harvest(route);
+        std::println!(
+            "C1 {:?}: locked={} honest_jump={} attacker_back={}",
+            route,
+            locked,
+            honest_jump,
+            attacker_back
+        );
+        assert!(
+            (locked - 100_0000000).abs() <= 10,
+            "{:?}: the harvest's equity must be locked: {}",
+            route,
+            locked
+        );
+        assert!(
+            honest_jump.abs() <= 10,
+            "{:?}: the share price must not jump at the harvest: {}",
+            route,
+            honest_jump
+        );
+        assert!(
+            attacker_back <= 1_000_0000000,
+            "{:?}: the round trip must not profit: got back {}",
+            route,
+            attacker_back
+        );
+    }
+}
+
+// C2 (Major): after a liquidation or an outside repay takes the vault's Blend
+// debt to exactly zero, every holder must still get out — a small withdraw, a
+// partial one and full exits — at accrued rates. The pre-fix unwind sent a
+// zero-sized repay, which Blend rejects, so each of these reverted.
+#[test]
+fn test_c2_holders_exit_a_vault_with_exactly_zero_debt() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    sclient.set_share_token(&e.register(MockShareToken, ()));
+    let (alice, bob) = (Address::generate(&e), Address::generate(&e));
+    for user in [&alice, &bob] {
+        StellarAssetClient::new(&e, &token)
+            .mock_all_auths()
+            .mint(user, &1_000_0000000);
+        sclient.deposit(&1_000_0000000, user);
+    }
+    accrue_interest(&e, &pool_addr, &token, 30 * 24 * 60 * 60);
+
+    // Clear the debt in Blend, as the strategy's own position — the strategy's
+    // accounting never sees it, just as with a liquidation.
+    let positions =
+        |e: &Env| e.as_contract(&strategy, || blend_pool::get_strategy_positions(e, &config));
+    let (_, pool_d) = positions(&e);
+    let (_, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(d_rate > SCALAR_12, "precondition: interest has accrued");
+    let repay = (pool_d * d_rate + SCALAR_12 - 1) / SCALAR_12;
+    StellarAssetClient::new(&e, &token).mint(&strategy, &repay);
+    e.as_contract(&strategy, || {
+        TokenClient::new(&e, &token).approve(&strategy, &pool_addr, &repay, &e.ledger().sequence());
+        pool::Client::new(&e, &pool_addr).submit_with_allowance(
+            &strategy,
+            &strategy,
+            &strategy,
+            &vec![
+                &e,
+                pool::Request {
+                    address: token.clone(),
+                    amount: repay,
+                    request_type: REQUEST_TYPE_REPAY,
+                },
+            ],
+        );
+    });
+    assert_eq!(
+        positions(&e).1,
+        0,
+        "precondition: the vault has exactly zero debt"
+    );
+
+    let token_client = TokenClient::new(&e, &token);
+    let withdraw = |user: &Address, amount: i128| {
+        let before = token_client.balance(user);
+        sclient.withdraw(&amount, user, user);
+        let received = token_client.balance(user) - before;
+        assert!(
+            (received - amount).abs() <= 2,
+            "asked {}, got {}",
+            amount,
+            received
+        );
+    };
+    withdraw(&alice, 10); // a 10-stroop exit
+    withdraw(&alice, sclient.balance(&alice) / 2);
+    withdraw(&alice, sclient.balance(&alice));
+    withdraw(&bob, sclient.balance(&bob));
+
+    assert_eq!(positions(&e).1, 0, "no repay was ever sent");
+    assert!(sclient.balance(&alice) <= 2 && sclient.balance(&bob) <= 2);
+}
+
+// C2 (Major), the auditor's rounding edge: a one-d-token debt share at a
+// d_rate above 1.0. Floored twice, its repay would round to nothing and Blend
+// would reject it; rounded up, it cancels exactly that one d-token.
+#[test]
+fn test_c2_a_one_d_token_share_cancels_exactly_one_at_accrued_rates() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 10_000_0000000);
+
+    let strategy = e.register(TestStrategyContract, ());
+    StellarAssetClient::new(&e, &token).mint(&strategy, &1_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    execute_leverage_loop_stepped(
+        &e,
+        &pool_addr,
+        &strategy,
+        &token,
+        1_000_0000000,
+        config.c_factor,
+        TEST_LOOPS,
+    );
+    accrue_interest(&e, &pool_addr, &token, 365 * 24 * 60 * 60);
+    let (_, d_rate) = blend_pool::get_rates(&e, &config);
+    assert!(
+        d_rate > SCALAR_12,
+        "precondition: d_rate above 1.0: {}",
+        d_rate
+    );
+
+    let user = Address::generate(&e);
+    let (b_removed, d_removed) = e.as_contract(&strategy, || {
+        blend_pool::submit_unwind(&e, 30, 1, &user, &config).unwrap()
+    });
+    assert_eq!(d_removed, 1, "exactly the one d-token is cancelled");
+    assert_eq!(b_removed, 30);
+    assert!(TokenClient::new(&e, &token).balance(&user) > 0);
+}
+
+// C3 (Major): Blend governance cuts the reserve's c_factor below the
+// strategy's own. The strategy must measure health with the live, lower factor
+// — otherwise it calls a position Blend can liquidate healthy, `rebalance`
+// never steps in, and deposits keep levering to the stale ratio.
+#[test]
+fn test_c3_health_factor_follows_a_governance_c_factor_cut() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e); // c 0.95, l 1.0
+    seed_pool_liquidity(&e, &pool_addr, &token, 1_000_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    let config = make_config(&e, &pool_addr, &token, &blnd);
+
+    let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd); // c 0.90
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+
+    // Governance cuts the reserve's c_factor from 0.95 to 0.70.
+    let pool_client = pool::Client::new(&e, &pool_addr);
+    let mut reserve_config = pool_client.get_reserve(&token).config;
+    reserve_config.c_factor = 7_000_000;
+    pool_client.queue_set_reserve(&token, &reserve_config);
+    e.ledger()
+        .set_timestamp(e.ledger().timestamp() + 8 * 24 * 60 * 60);
+    pool_client.set_reserve(&token);
+    assert_eq!(sclient.risk_factors(), (9_000_000, 7_000_000, SCALAR_7));
+
+    // Blend's own ratio for the position, at the live c_factor.
+    let blend_hf = |e: &Env| {
+        let (b, d) = e.as_contract(&strategy, || blend_pool::get_strategy_positions(e, &config));
+        let (b_rate, d_rate) = blend_pool::get_rates(e, &config);
+        compute_health_factor(b, d, b_rate, d_rate, 7_000_000, SCALAR_7).unwrap()
+    };
+    assert!(
+        blend_hf(&e) < SCALAR_7,
+        "precondition: the cut leaves the position liquidatable: {}",
+        blend_hf(&e)
+    );
+
+    // 1. The strategy's HF is no longer optimistic.
+    let hf = sclient.health_factor();
+    assert!(
+        hf <= blend_hf(&e),
+        "strategy HF {} must not exceed Blend's {} after the cut",
+        hf,
+        blend_hf(&e)
+    );
+
+    // 2. So the permissionless rebalance acts, and lands clear of the orange
+    //    zone in Blend's terms.
+    sclient.rebalance();
+    assert!(
+        blend_hf(&e) >= config.orange_hf,
+        "rebalance must restore Blend's ratio above orange: {}",
+        blend_hf(&e)
+    );
+    assert!(!blend_would_liquidate(&e, &pool_addr, &strategy, &token));
+
+    // 3. And a new deposit levers to the target against the live factor, not
+    //    the stale one.
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    assert!(
+        blend_hf(&e) >= config.orange_hf,
+        "a deposit must not lever past the target in Blend's terms: {}",
+        blend_hf(&e)
+    );
+    assert!(!blend_would_liquidate(&e, &pool_addr, &strategy, &token));
 }

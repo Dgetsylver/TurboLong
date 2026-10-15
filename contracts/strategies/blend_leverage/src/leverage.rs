@@ -197,10 +197,10 @@ pub fn effective_c_factor(c_factor: i128, l_factor: i128) -> Result<i128, Strate
 /// HF = (b_tokens × b_rate × c_factor × l_factor) / (d_tokens × d_rate × SCALAR_7)
 /// Returns HF in 1e7 scale (1_000_000_0 = 1.0)
 ///
-/// Because the strategy's `c_factor` is asserted at construction to be no larger
-/// than the pool's, this HF is a lower bound on Blend's own solvency ratio
-/// `(B × pool_c_factor) / (D / l_factor)`: HF ≥ 1.0 therefore implies the
-/// position is not liquidatable in Blend's terms.
+/// Because callers pass the strategy's `c_factor` capped at the pool's live one
+/// (`blend_pool::capped_c_factor`), this HF is a lower bound on Blend's own
+/// solvency ratio `(B × pool_c_factor) / (D / l_factor)`: HF ≥ 1.0 therefore
+/// implies the position is not liquidatable in Blend's terms.
 pub fn compute_health_factor(
     b_tokens: i128,
     d_tokens: i128,
