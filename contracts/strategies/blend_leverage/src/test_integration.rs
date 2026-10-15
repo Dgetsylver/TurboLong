@@ -1179,7 +1179,7 @@ impl EighteenDecimalsToken {
 
 // Share pricing multiplies shares by equity in i128, which a high-decimals
 // asset overflows at trivial sizes (~13 tokens at 18 decimals), so the
-// constructor refuses one (finding 20).
+// constructor refuses one.
 #[test]
 #[should_panic(expected = "asset decimals must be <= 7")]
 fn test_constructor_refuses_an_asset_with_more_than_7_decimals() {
@@ -1190,7 +1190,7 @@ fn test_constructor_refuses_an_asset_with_more_than_7_decimals() {
     register_real_strategy(&e, &pool_addr, &token, &blnd);
 }
 
-// ── Risk parameter setters (finding 19) ──────────────────────────────────────
+// ── Risk parameter setters ───────────────────────────────────────────────────
 
 // The admin can retune the risk parameters without a redeploy, and the change
 // applies to the next deposit: here a lower target_hf levers it further.
@@ -3721,9 +3721,8 @@ fn test_partial_unwind_floors_the_keeper_target_at_the_rebalance_target() {
 }
 
 // The Soroswap route of `harvest_reinvest` runs under the same floor as the
-// trait `harvest` (finding 1). With neither the keeper's `amount_out_min` nor the
-// admin's rate there is no floor, and the swap is refused rather than run
-// unprotected.
+// trait `harvest`. With neither the keeper's `amount_out_min` nor the admin's
+// rate there is no floor, and the swap is refused rather than run unprotected.
 #[test]
 fn test_soroswap_reinvest_without_any_floor_is_refused() {
     let e = Env::default();
@@ -3739,9 +3738,8 @@ fn test_soroswap_reinvest_without_any_floor_is_refused() {
     }
 }
 
-// The gap finding 1 named: with no claim pending (a Broker partial fill already
-// settled it, or a vault without a swap account), the Soroswap route used to be
-// held only to the keeper's own `amount_out_min`. It now gets the admin's floor
+// With no claim pending (a Broker partial fill already settled it, or a vault
+// without a swap account), the Soroswap route still gets the admin's floor
 // whenever that is the stricter one — a keeper passing 1 cannot sell for 1.
 #[test]
 fn test_soroswap_reinvest_without_a_claim_is_held_to_the_admin_floor() {
@@ -3760,8 +3758,8 @@ fn test_soroswap_reinvest_without_a_claim_is_held_to_the_admin_floor() {
     assert_eq!(router.last_amount_out_min(), 20_0000000);
 }
 
-// The on-chain route can go through an intermediate token (finding 6): BLND →
-// via → underlying, for an asset with no BLND pair of its own.
+// The on-chain route can go through an intermediate token: BLND → via →
+// underlying, for an asset with no BLND pair of its own.
 #[test]
 fn test_soroswap_reinvest_swaps_through_swap_via() {
     let e = Env::default();
@@ -4383,7 +4381,7 @@ fn test_trait_harvest_below_the_reward_threshold_needs_no_floor() {
     assert_eq!(router.last_amount_out_min(), 0, "no swap ran");
 }
 
-// ── Audit finding 7: harvest profit is released, not sniped ──────────────────
+// ── Harvest profit is released, not sniped ───────────────────────────────────
 
 // A deposit just before a harvest and a withdraw just after used to collect a
 // pro-rata share of emissions earned before the deposit, and `harvest_claim`
@@ -4623,7 +4621,8 @@ fn test_harvest_reinvest_supplies_unlevered_when_blend_refuses_the_borrow() {
 
 // ── Audit M-2: stored reserves must reconcile with the real pool position ─────
 //
-// Finding ① below fixed the paths where the *strategy itself* moved the position.
+// The withdraw tests further down cover the paths where the *strategy itself*
+// moved the position.
 // M-2 is the complement: a position change the strategy did NOT initiate — a
 // liquidation seizing collateral, a Blend bad-debt socialization — was invisible
 // to the tracked ledger, so `compute_equity` kept quoting the pre-seizure
@@ -4841,8 +4840,8 @@ fn test_sync_reserves_writes_down_seizure_and_emits_event() {
 // The reconciliation is deliberately one-directional: it clamps the tracked
 // totals DOWN to the pool's, never up. Following the pool upwards would mean any
 // collateral credited to the strategy's position moved the share price — the
-// lever an inflation attack needs, and the opposite of the property the audit's
-// "not exploitable" list rests on ("a donation cannot move the share price").
+// lever an inflation attack needs, and the opposite of the property the strategy
+// relies on ("a donation cannot move the share price").
 //
 // Two things are pinned here. First, the assumption underneath: Blend does not
 // currently offer a way to credit somebody else's position — `submit`'s `to`
@@ -4955,7 +4954,7 @@ fn find_reserves_sync_event(e: &Env, strategy: &Address) -> Option<(i128, i128, 
     None
 }
 
-// ── Finding ①: withdraw must keep stored reserves in sync with the pool ───────
+// ── Withdraw must keep stored reserves in sync with the pool ─────────────────
 //
 // The strategy keeps TWO ledgers of the same position:
 //   A) stored `LeverageReserves.total_b/d_tokens`  — values shares (deposit /
@@ -4970,7 +4969,7 @@ fn find_reserves_sync_event(e: &Env, strategy: &Address) -> Option<(i128, i128, 
 // `reserves::commit_withdraw`, persisting the *measured* (b_removed, d_removed)
 // just like the other three paths.
 //
-// End-to-end guard for Finding ①, driven through the REAL `deposit`/`withdraw`
+// End-to-end guard for that, driven through the REAL `deposit`/`withdraw`
 // contract entrypoints (not the internal helpers). This is the test that
 // actually protects the production code path: it FAILS if lib.rs::withdraw is
 // reverted to subtract the intended deltas instead of committing the measured

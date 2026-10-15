@@ -136,9 +136,9 @@ pub fn submit_lever_in(
 /// rates (the two only coincide while the rates sit at 1.0) — and rounded
 /// against the withdrawer. The repay rounds *up*, so the pool burns exactly
 /// `d_tokens_to_remove`: none of the share's debt is left behind for the
-/// remaining holders, a full close needs no `i64::MAX` sweep, and a non-zero
-/// share can never round down to a zero-token burn. The withdraw rounds *down*,
-/// so it burns at most `b_tokens_to_remove`.
+/// remaining holders, a full close clears the whole debt, and a non-zero share
+/// can never round down to a zero-token burn. The withdraw rounds *down*, so it
+/// burns at most `b_tokens_to_remove`.
 ///
 /// Repay first, so the withdraw is checked against the final state. Netting
 /// means the pool pays out only `b − d` — the equity — and the strategy needs
@@ -337,7 +337,7 @@ pub fn claim(e: &Env, config: &Config) -> i128 {
 /// balance to the underlying — through `swap_via` when the admin set one — and
 /// lever the proceeds in.
 ///
-/// **The swap always runs with a floor** (audits M-5, finding 1): the stricter
+/// **The swap always runs with a floor**: the stricter
 /// of the caller's `keeper_min` and the admin's `min_harvest_rate` priced over
 /// the BLND being swapped, so a keeper cannot undercut the admin on either
 /// route, and a swap with neither is refused rather than executed unprotected.

@@ -60,12 +60,13 @@ pub struct Config {
     pub claim_ids: Vec<u32>,
     /// Minimum BLND balance to trigger harvest swap
     pub reward_threshold: i128,
-    /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95)
+    /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95). Health-factor
+    /// math uses the lower of this and the pool's live one.
     pub c_factor: i128,
     /// Health factor a deposit is levered to (1e7 scaled, e.g. 11_300_000 =
     /// 1.13), in Blend's terms: the pool's live `l_factor` is part of it. It is
     /// the vault's leverage, `B/E = target_hf / (target_hf − c_factor × l_factor)`.
-    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (asserted at construction).
+    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (`validate_risk_params`).
     pub target_hf: i128,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
@@ -156,7 +157,7 @@ pub fn get_keeper(e: &Env) -> Address {
 
 // ── Admin ────────────────────────────────────────────────────────────────────
 //
-// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// Admin storage lives in the `admin-sep` Administratable trait (see lib.rs),
 // under the SEP's canonical instance-storage key — there is no local Admin key.
 
 // ── Version ──────────────────────────────────────────────────────────────────
@@ -232,7 +233,7 @@ pub fn get_swap_via(e: &Env) -> Option<Address> {
     e.storage().instance().get(&DataKey::SwapVia)
 }
 
-// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+// ── Harvest settlement floor ─────────────────────────────────────────────────
 
 /// Minimum underlying owed back per `SCALAR_7` (1e7) of BLND handed to the swap
 /// account, in the underlying's own smallest units.
@@ -299,7 +300,7 @@ pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
     pending
 }
 
-// ── Locked harvest profit (audit finding 7) ──────────────────────────────────
+// ── Locked harvest profit ────────────────────────────────────────────────────
 
 /// Harvest profit held out of the share price: `amount` at ledger `from`,
 /// released linearly to nothing at ledger `until` (see `PROFIT_UNLOCK_LEDGERS`).

@@ -748,7 +748,7 @@ fn test_harvest_increases_share_value() {
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
 }
 
-// ── Profit release (audit finding 7) ─────────────────────────────────────────
+// ── Profit release ───────────────────────────────────────────────────────────
 
 const W: u32 = PROFIT_UNLOCK_LEDGERS;
 

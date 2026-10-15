@@ -61,7 +61,7 @@ pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
 
 /// Landing margin above `orange_hf`, 1e7-scaled, for the rebalance path.
 ///
-/// `rebalance` still fires once HF drops below `orange_hf`, but it unwinds to
+/// `rebalance` fires once HF drops below `orange_hf`, but it unwinds to
 /// `orange_hf + this` rather than to the trigger itself. The unwind is a single
 /// exact repay that lands on its target to within a few 1e-7, and a position
 /// parked exactly on the trigger is back under it after a few minutes of
@@ -82,8 +82,6 @@ const _: () = assert!(REBALANCE_HF_BUFFER < 2 * RELEVERAGE_HF_BUFFER);
 ///
 /// The approval exists for exactly one purpose: to let the off-chain Broker
 /// pull the just-claimed BLND in the transaction that follows `harvest_claim`.
-/// It was ~1 day (17_280 ledgers), which left a standing pull right over the
-/// vault's BLND for the 99.97% of that window when no harvest was in flight.
 /// Five minutes is the operational envelope of the claim → swap → settle
 /// round trip; anything longer is allowance the flow never uses.
 ///

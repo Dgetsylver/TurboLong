@@ -32,32 +32,21 @@ pub fn get_strategy_reserves_updated(e: &Env, config: &Config) -> LeverageReserv
 /// the pool's measured figure when the pool reports *less*, and left alone when
 /// the pool reports more.
 ///
-/// Clamping down is what closes the finding. `total_b_tokens` / `total_d_tokens`
-/// are otherwise a running ledger of deltas the strategy itself caused, so any
-/// position change it did not initiate — a liquidation seizing collateral, a
-/// Blend bad-debt socialization — was invisible to share pricing. `compute_equity`
-/// would keep quoting the pre-seizure position, `withdraw` would price shares off
-/// that inflated figure, and the shortfall would land entirely on whoever was
-/// last out. Clamping makes the loss visible to every holder at once, on the
-/// first read after it happens.
+/// Clamping down prices in position changes the strategy did not make — a
+/// liquidation seizing collateral, a Blend bad-debt socialization — on the first
+/// read after they happen, so a loss lands on every holder at once rather than on
+/// whoever is last out.
 ///
-/// *Not* clamping up is what keeps that safe. If the tracked total followed the
-/// pool upwards, any collateral credited to the strategy's position would move
-/// the share price — the lever an inflation attack needs, and the opposite of the
-/// "a donation cannot move the share price" property the strategy relies on.
-/// Blend offers no such credit path today (`submit`'s `to` routes outgoing
-/// transfers, so a third party's `SupplyCollateral` lands on the sender), so this
-/// is defence in depth rather than a live hole — but it is cheap, and it is what
-/// makes the property hold by construction instead of by the pool's good manners.
-/// Any excess is not lost, merely unpriced: it accrues to the position and is
-/// realized on a full close.
+/// *Not* clamping up keeps a donation from moving the share price: collateral
+/// credited to the strategy's position stays unpriced until a full close
+/// realizes it. Blend has no such credit path (`submit`'s `to` routes outgoing
+/// transfers, so a third party's `SupplyCollateral` lands on the sender), so
+/// this is defence in depth.
 ///
-/// The one asymmetry worth naming: a third party *repaying* the strategy's debt
-/// lowers `pool_d`, which does clamp down and does raise equity. That is a
-/// donation of value that moves the share price, but it is bounded by the vault's
-/// own outstanding debt rather than unbounded like a collateral donation, and the
-/// alternative — leaving `total_d_tokens` high after a liquidation — would
-/// systematically under-price every holder's shares until the position closed.
+/// A third party repaying the strategy's debt, if it could, would clamp
+/// `total_d_tokens` down and raise equity. That donation is bounded by the
+/// vault's own debt, and not clamping would leave every holder under-priced
+/// after a liquidation.
 pub fn reconcile(
     e: &Env,
     pool_b: i128,
@@ -113,10 +102,10 @@ pub fn locked_profit(e: &Env) -> Result<i128, StrategyError> {
 ///
 /// Returns `(vault_minted_shares, lockup_shares, updated_reserves)`.
 ///
-/// The per-user ledger is the SEP-41 share token, not strategy storage, so this
-/// no longer writes `VaultPos`: the caller (`lib.rs::deposit`) mints
-/// `vault_minted_shares` to the depositor and, on the first deposit, mints
-/// `lockup_shares` to a lock address so `token.total_supply == total_shares`.
+/// The per-user ledger is the SEP-41 share token, not strategy storage: the
+/// caller (`lib.rs::deposit`) mints `vault_minted_shares` to the depositor and,
+/// on the first deposit, mints `lockup_shares` to a lock address so
+/// `token.total_supply == total_shares`.
 pub fn deposit(
     e: &Env,
     b_tokens_delta: i128,
@@ -208,8 +197,7 @@ pub fn deposit(
 ///
 /// Nothing is persisted here. The token amounts are what `submit_unwind` is
 /// asked to remove; `commit_withdraw` then records what the pool *measurably*
-/// removed, so stored reserves stay in lock-step with the actual pool position
-/// (Finding ①).
+/// removed, so stored reserves stay in lock-step with the actual pool position.
 pub fn withdraw(
     e: &Env,
     user_shares: i128,

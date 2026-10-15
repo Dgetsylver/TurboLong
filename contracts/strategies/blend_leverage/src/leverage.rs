@@ -106,7 +106,7 @@ pub fn underlying_to_shares(
         .ok_or(StrategyError::ArithmeticError)
 }
 
-// ── Profit release (audit finding 7) ─────────────────────────────────────────
+// ── Profit release ───────────────────────────────────────────────────────────
 //
 // A harvest's equity gain is locked and released into the share price linearly
 // over `PROFIT_UNLOCK_LEDGERS` rather than priced in at the harvest ledger (the
@@ -267,7 +267,9 @@ pub fn check_min_health_factor(e: &Env, hf: i128, min_hf: i128) -> Result<(), St
 ///
 /// After repaying x underlying (and withdrawing x collateral):
 ///   (B - x) × cl = target_hf × (D - x)
-///   x = (B × cl - target_hf × D) / (cl - target_hf)
+///   x = (target_hf × D - B × cl) / (target_hf - cl)
+/// Both terms are positive while HF is below target: target_hf > cl for any
+/// healthy target, since cl <= c_factor < 1.0 < target_hf.
 ///
 /// The closed form is exact; the pool is not. Blend burns `ceil(x / b_rate)`
 /// b-tokens for the withdraw and `floor(x / d_rate)` d-tokens for the repay, and
@@ -311,9 +313,7 @@ pub fn compute_partial_unwind(
         .fixed_mul_floor(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
-    // numerator   = B × cl - target_hf × D  (both in 1e7 × underlying)
-    // denominator = cl - target_hf           (in 1e7)
-    // x = numerator / denominator
+    // B × cl - target_hf × D (1e7 × underlying), negative while HF < target_hf.
     let numerator = supply_value
         .checked_mul(cl)
         .ok_or(StrategyError::ArithmeticError)?
@@ -324,8 +324,7 @@ pub fn compute_partial_unwind(
         )
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // denominator = cl - target_hf; negative when target_hf > cl (always true for
-    // a healthy target, since cl <= c_factor < 1.0 < target), so we negate both sides.
+    // target_hf - cl (1e7).
     let denom = target_hf
         .checked_sub(cl)
         .ok_or(StrategyError::UnderflowOverflow)?;
@@ -335,10 +334,9 @@ pub fn compute_partial_unwind(
         return Err(StrategyError::ArithmeticError);
     }
 
-    // x = -numerator / denom  (numerator is negative when HF < target_hf)
-    // +1 stroop to clear the threshold, plus the rounding margin; clamped at the
-    // debt so a zero/negative equity position resolves to a full close instead
-    // of an over-repay.
+    // x = -numerator / denom, +1 stroop to clear the threshold, plus the
+    // rounding margin; clamped at the debt so a zero/negative equity position
+    // resolves to a full close instead of an over-repay.
     let margin = unwind_rounding_margin(b_rate, d_rate, cl, target_hf)?;
     let repay_underlying = numerator
         .checked_neg()
@@ -399,8 +397,8 @@ pub fn unwind_rounding_margin(
 ///   (B + x) × cl = target_hf × (D + x)
 ///   x = (B × cl − target_hf × D) / (target_hf − cl)
 ///
-/// which is `compute_partial_unwind`'s `x = (B×cl − t×D) / (cl − t)` with the
-/// denominator negated. The shared numerator is the position's distance from the
+/// which is `compute_partial_unwind`'s `x = (t×D − B×cl) / (t − cl)` with the
+/// numerator negated. `B×cl − t×D` is the position's distance from the
 /// target: positive when HF sits *above* it (slack to re-lever, this function),
 /// negative when it sits below (debt to repay, that one). Equity `B − D` is
 /// invariant under the operation, so this moves the leverage ratio without
@@ -465,7 +463,7 @@ pub fn compute_releverage(
     .max(0))
 }
 
-// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+// ── Harvest settlement floor ─────────────────────────────────────────────────
 //
 // The Broker harvest leaves the chain between `harvest_claim` and
 // `harvest_reinvest`: BLND is approved out, a swap happens off-chain, underlying
