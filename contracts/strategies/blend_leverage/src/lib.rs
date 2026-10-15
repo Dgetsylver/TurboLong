@@ -376,7 +376,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 /// bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed in Blend's
 /// terms and no per-asset buffer convention is needed to make it hold. This check
 /// only holds at the moment it runs; a later governance cut is covered by
-/// capping `c_factor` at the pool's on every read (`capped_c_factor`). (The
+/// capping `c_factor` at the pool's on every read (`get_rates_and_factors`). (The
 /// deploy script's habit of setting c_factor strictly below the pool's is still
 /// useful — it buys borrow headroom — but the vault's solvency no longer depends
 /// on it.)
@@ -418,12 +418,8 @@ fn validate_risk_params(
 fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError> {
     let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
-    // Checked at the capped c_factor, not the stored one.
-    let config = Config {
-        c_factor,
-        ..config.clone()
-    };
-    check_min_health_factor(e, b_tokens, d_tokens, b_rate, d_rate, l_factor, &config)
+    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
+    check_min_health_factor(e, hf, config.min_hf)
 }
 
 /// Where a rebalance lands: `REBALANCE_HF_BUFFER` above the `orange_hf` trigger.

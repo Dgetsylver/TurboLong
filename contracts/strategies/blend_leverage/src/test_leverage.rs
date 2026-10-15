@@ -1018,35 +1018,20 @@ fn test_multi_user_proportional() {
 #[test]
 fn test_safety_allows_healthy_pool() {
     use crate::leverage::check_min_health_factor;
-    use crate::storage::Config;
 
     let e = Env::default();
-    let dummy = Address::generate(&e);
-    let config = Config {
-        asset: dummy.clone(),
-        pool: dummy.clone(),
-        reserve_id: 0,
-        blend_token: dummy.clone(),
-        router: dummy.clone(),
-        claim_ids: soroban_sdk::Vec::new(&e),
-        reward_threshold: 1,
-        c_factor: 9_500_000,
-        target_hf: 11_700_000,
-        min_hf: 10_500_000,
-        orange_hf: 11_500_000,
-    };
+    let hf = compute_health_factor(
+        2_000_0000000, // plenty of collateral
+        500_0000000,
+        SCALAR_12,
+        SCALAR_12,
+        9_500_000,
+        L_NONE,
+    )
+    .unwrap();
 
     assert!(
-        check_min_health_factor(
-            &e,
-            2_000_0000000, // plenty of collateral
-            500_0000000,
-            SCALAR_12,
-            SCALAR_12,
-            L_NONE,
-            &config,
-        )
-        .is_ok(),
+        check_min_health_factor(&e, hf, 10_500_000).is_ok(),
         "Should allow a healthy HF"
     );
 }
@@ -1063,23 +1048,9 @@ fn test_safety_allows_healthy_pool() {
 #[should_panic(expected = "Error(Contract, #422)")]
 fn test_safety_rejects_position_blend_would_liquidate() {
     use crate::leverage::check_min_health_factor;
-    use crate::storage::Config;
 
     let e = Env::default();
-    let dummy = Address::generate(&e);
-    let config = Config {
-        asset: dummy.clone(),
-        pool: dummy.clone(),
-        reserve_id: 0,
-        blend_token: dummy.clone(),
-        router: dummy.clone(),
-        claim_ids: soroban_sdk::Vec::new(&e),
-        reward_threshold: 1,
-        c_factor: 7_000_000,
-        target_hf: 11_700_000,
-        min_hf: 11_000_000,
-        orange_hf: 11_500_000,
-    };
+    let (c_factor, min_hf) = (7_000_000, 11_000_000);
 
     let post_d = 1_000_0000000_i128;
     // B/D = min_hf / c_factor, rounded up a stroop so the markup-free HF lands on
@@ -1088,22 +1059,15 @@ fn test_safety_rejects_position_blend_would_liquidate() {
     let post_b = 1_571_4285715_i128;
 
     // Sanity: this position is exactly at min_hf when the markup is ignored.
-    let hf_old = compute_health_factor(
-        post_b,
-        post_d,
-        SCALAR_12,
-        SCALAR_12,
-        config.c_factor,
-        L_NONE,
-    )
-    .unwrap();
-    assert!(hf_old >= config.min_hf, "fixture must clear the old gate");
+    let hf_old =
+        compute_health_factor(post_b, post_d, SCALAR_12, SCALAR_12, c_factor, L_NONE).unwrap();
+    assert!(hf_old >= min_hf, "fixture must clear the old gate");
 
-    check_min_health_factor(
-        &e, post_b, post_d, SCALAR_12, SCALAR_12, 8_000_000, // l_factor = 0.80
-        &config,
+    let hf = compute_health_factor(
+        post_b, post_d, SCALAR_12, SCALAR_12, c_factor, 8_000_000, // l_factor = 0.80
     )
     .unwrap();
+    check_min_health_factor(&e, hf, min_hf).unwrap();
 }
 
 /// The unwind closed form must solve for the HF that includes the markup, not

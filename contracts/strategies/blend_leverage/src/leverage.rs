@@ -1,5 +1,5 @@
 use crate::constants::{SCALAR_12, SCALAR_7};
-use crate::storage::{Config, LeverageReserves, LockedProfit};
+use crate::storage::{LeverageReserves, LockedProfit};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};
@@ -198,7 +198,7 @@ pub fn effective_c_factor(c_factor: i128, l_factor: i128) -> Result<i128, Strate
 /// Returns HF in 1e7 scale (1_000_000_0 = 1.0)
 ///
 /// Because callers pass the strategy's `c_factor` capped at the pool's live one
-/// (`blend_pool::capped_c_factor`), this HF is a lower bound on Blend's own
+/// (`blend_pool::get_rates_and_factors`), this HF is a lower bound on Blend's own
 /// solvency ratio `(B × pool_c_factor) / (D / l_factor)`: HF ≥ 1.0 therefore
 /// implies the position is not liquidatable in Blend's terms.
 pub fn compute_health_factor(
@@ -243,30 +243,14 @@ pub fn compute_health_factor(
 
 // ── Safety checks ────────────────────────────────────────────────────────────
 
-/// Refuse a position whose health factor is below `config.min_hf`.
+/// Refuse a health factor below `min_hf`.
 ///
 /// Run on the position Blend actually settled, not a projection of it.
-/// `min_hf > 1.0` is a Blend-terms floor — the HF here already carries the
-/// pool's `l_factor` — so clearing it means the position is not liquidatable by
-/// the pool's own measure.
-pub fn check_min_health_factor(
-    e: &Env,
-    b_tokens: i128,
-    d_tokens: i128,
-    b_rate: i128,
-    d_rate: i128,
-    l_factor: i128,
-    config: &Config,
-) -> Result<(), StrategyError> {
-    let hf = compute_health_factor(
-        b_tokens,
-        d_tokens,
-        b_rate,
-        d_rate,
-        config.c_factor,
-        l_factor,
-    )?;
-    if hf < config.min_hf {
+/// `min_hf > 1.0` is a Blend-terms floor — `compute_health_factor` carries the
+/// pool's `l_factor` and a `c_factor` no higher than the pool's — so clearing it
+/// means the position is not liquidatable by the pool's own measure.
+pub fn check_min_health_factor(e: &Env, hf: i128, min_hf: i128) -> Result<(), StrategyError> {
+    if hf < min_hf {
         panic_with_error!(e, StrategyError::ExternalError);
     }
     Ok(())
