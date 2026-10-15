@@ -1105,6 +1105,26 @@ fn test_safety_rejects_position_blend_would_liquidate() {
     check_min_health_factor(&e, hf, min_hf).unwrap();
 }
 
+/// The guard `unwind_to` runs after a deleverage, `check_min_health_factor(e,
+/// after_hf, before_hf)`. Repaying and withdrawing the same amount raises the HF
+/// of any position with equity (`test_rebalance_never_lowers_the_health_factor`);
+/// it lowers it only when the collateral is worth less than the debt, and that
+/// is what the guard refuses.
+#[test]
+#[should_panic(expected = "Error(Contract, #422)")]
+fn test_deleverage_guard_refuses_a_lower_health_factor() {
+    use crate::leverage::check_min_health_factor;
+
+    let e = Env::default();
+    let hf =
+        |b: i128, d: i128| compute_health_factor(b, d, SCALAR_12, SCALAR_12, 9_000_000, L_NONE);
+    let (b, d, x) = (900_0000000_i128, 1_000_0000000_i128, 100_0000000_i128);
+    let (before, after) = (hf(b, d).unwrap(), hf(b - x, d - x).unwrap());
+    assert!(after < before, "fixture: the deleverage lowers HF");
+
+    check_min_health_factor(&e, after, before).unwrap();
+}
+
 /// The unwind closed form must solve for the HF that includes the markup, not
 /// the optimistic one — otherwise it under-repays and leaves the vault short of
 /// `target_hf` in Blend's terms.

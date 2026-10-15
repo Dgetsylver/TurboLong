@@ -1417,6 +1417,47 @@ fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
     );
 }
 
+// `unwind_to` refuses a deleverage that leaves HF lower than it found it. That
+// guard must never fire on a real rebalance, or it would block liquidation
+// protection: across liability markups and accrued rates, the keeper's
+// rebalance goes through and the HF it reports only rises.
+#[test]
+fn test_rebalance_never_lowers_the_health_factor() {
+    for l_factor in [10_000_000_u32, 9_500_000, 8_500_000] {
+        for seconds in [0_u64, 30 * 24 * 60 * 60] {
+            let e = Env::default();
+            e.mock_all_auths();
+            e.cost_estimate().budget().reset_unlimited();
+            let (pool_addr, token, blnd, _blend, _deployer) =
+                setup_blend_env_with_l_factor(&e, l_factor);
+            seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+            let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
+            if seconds > 0 {
+                accrue_interest(&e, &pool_addr, &token, seconds);
+            }
+            let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+            let keeper = sclient.get_keeper();
+
+            assert!(
+                sclient.rebalance_keeper(&keeper) > 0,
+                "l={} after {}s: the stressed position must repay",
+                l_factor,
+                seconds
+            );
+            let (before_hf, after_hf, _) =
+                find_rebalance_event(&e, &strategy, &keeper).expect("rebalance event");
+            assert!(
+                after_hf > before_hf,
+                "l={} after {}s: HF {} -> {}",
+                l_factor,
+                seconds,
+                before_hf,
+                after_hf
+            );
+        }
+    }
+}
+
 // The rebalance needs no rate limit: it acts only below `orange_hf` and lands
 // above it, so an immediate repeat — by the keeper, or by anyone through the
 // permissionless `rebalance` — repays nothing, emits nothing and leaves the

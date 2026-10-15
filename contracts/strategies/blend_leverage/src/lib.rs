@@ -481,6 +481,10 @@ fn unwind_to(
     } else {
         compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?
     };
+    // A deleverage must leave HF no lower than it found it. Repaying and
+    // withdrawing the same amount raises the HF of any position with equity, so
+    // this only catches a settlement that went wrong.
+    check_min_health_factor(e, after_hf, before_hf)?;
 
     Ok((before_hf, after_hf, repay))
 }
