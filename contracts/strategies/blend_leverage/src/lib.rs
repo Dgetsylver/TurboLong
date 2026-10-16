@@ -616,50 +616,34 @@ impl BlendLeverageStrategy {
         Ok(repaid)
     }
 
-    /// Partial-unwind liquidation protection: repay just enough debt to restore
-    /// HF to `target_hf`. Callable by the keeper, or by anyone when HF is already
-    /// in the orange zone.
+    /// Keeper-only partial unwind: if HF is below `target_hf`, repay just enough
+    /// debt to bring it there. Unlike `rebalance` it acts at any HF below the
+    /// target, inside the orange zone or not, so the keeper can take leverage off
+    /// ahead of a move it expects. Anyone else protects the vault through
+    /// `rebalance`. Emits a `rebalance` event with the keeper as caller when debt
+    /// is repaid. Returns the underlying repaid.
     ///
-    /// `target_hf` is honoured only for the keeper, and is floored at the
-    /// rebalance target (`orange_hf + REBALANCE_HF_BUFFER`) so it can never
-    /// *under*-unwind. A permissionless caller gets the rebalance target
-    /// regardless of the `target_hf` they pass: the unauthenticated branch is
-    /// deliberately no more powerful than `rebalance()`, so it cannot be used to
-    /// force leverage below the configured floor. Emits a `rebalance` event when
-    /// debt is repaid. Returns the underlying repaid.
-    pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<i128, StrategyError> {
+    /// The keeper's authorization is required before anything else, so it is
+    /// spent even by a call that turns out to be a no-op: a signed call sent
+    /// while the vault has no debt cannot be replayed later, by anyone, at a
+    /// moment of their choosing.
+    ///
+    /// `target_hf` is used as given, and refused with `InvalidArgument` below the
+    /// rebalance target (`orange_hf + REBALANCE_HF_BUFFER`): landing nearer the
+    /// trigger would re-arm it on the next accrual, the churn the buffer exists
+    /// to prevent.
+    pub fn partial_unwind(e: Env, target_hf: i128) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
-        let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-
-        if d_tokens == 0 {
-            return Ok(0);
+        if target_hf < rebalance_target(&config)? {
+            return Err(StrategyError::InvalidArgument);
         }
-
-        let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
-
-        // Only the keeper can trigger above the orange zone; anyone can inside it.
-        let is_keeper = caller == storage::get_keeper(&e);
-        if hf >= config.orange_hf && !is_keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
-        caller.require_auth();
-
-        // The keeper picks its own target (floored at the rebalance target) and may
-        // act above the orange zone; a permissionless caller gets exactly what
-        // `rebalance()` gives, so an arbitrarily large `target_hf` cannot be used
-        // to deleverage the vault past the configured floor.
-        let floor = rebalance_target(&config)?;
-        let (trigger_hf, effective_target) = if is_keeper {
-            let target = target_hf.max(floor);
-            (target, target)
-        } else {
-            (config.orange_hf, floor)
-        };
-        let (before_hf, after_hf, repaid) = unwind_to(&e, &config, trigger_hf, effective_target)?;
+        let (before_hf, after_hf, repaid) = unwind_to(&e, &config, target_hf, target_hf)?;
         if repaid > 0 {
-            emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
+            emit_rebalance(&e, &keeper, before_hf, after_hf, repaid);
         }
         Ok(repaid)
     }

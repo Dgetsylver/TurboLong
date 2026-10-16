@@ -19,7 +19,10 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    testutils::{Address as _, BytesN as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
+    testutils::{
+        Address as _, AuthorizedFunction, AuthorizedInvocation, BytesN as _, Events as _,
+        Ledger as _, MockAuth, MockAuthInvoke,
+    },
     token::{StellarAssetClient, TokenClient},
     vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
@@ -1538,17 +1541,18 @@ fn test_rebalance_keeper_already_at_floor_is_a_noop() {
     assert_eq!(sclient.health_factor(), hf, "position untouched");
 }
 
-// ── partial_unwind target bounding (audit M-1) ───────────────────────────────
+// ── partial_unwind is keeper-only (audit M-1) ────────────────────────────────
 
-// Regression for M-1: inside the orange zone `partial_unwind` is unauthenticated,
-// and it used to pass the caller's `target_hf` straight through (floored, never
-// capped). Any address could pass an arbitrarily large target and drive
+// Regression for M-1. `partial_unwind` used to be open to anyone inside the
+// orange zone, and to pass the caller's `target_hf` straight through: any
+// address could ask for an arbitrarily large target and drive
 // `compute_partial_unwind` to a full repay — the whole debt retired, the vault's
-// yield destroyed for a transaction fee. A permissionless caller must now get
-// exactly what `rebalance()` gives: HF restored to the rebalance target
-// (orange_hf + REBALANCE_HF_BUFFER), no further.
+// yield destroyed for a transaction fee. It now takes the keeper's
+// authorization at any HF, so a stranger cannot reach it at all; the protective
+// unwind open to anyone is `rebalance()`, which lands on the rebalance target
+// and no further.
 #[test]
-fn test_partial_unwind_ignores_target_from_permissionless_caller() {
+fn test_partial_unwind_is_keeper_only_even_in_the_orange_zone() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
@@ -1558,65 +1562,102 @@ fn test_partial_unwind_ignores_target_from_permissionless_caller() {
     let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let (_, _, _, orange_hf) = sclient.config();
-
     let before_hf = sclient.health_factor();
-    let (_, _, _, d_before, _, _) = sclient.position();
     assert!(
         before_hf < orange_hf,
-        "fixture must open inside the orange zone so the caller needs no keeper role"
+        "fixture must open inside the orange zone, where no keeper used to be needed"
     );
 
-    // A stranger asking for HF 100 — far above anything the vault is configured
-    // to hold, and enough to clamp the closed form to a full repay.
+    // A stranger signs a call asking for HF 100, enough to clamp the closed form
+    // to a full repay. Without the keeper's signature it is refused.
     let stranger = Address::generate(&e);
-    let repaid = sclient.partial_unwind(&stranger, &100_0000000);
-    assert!(
-        repaid > 0,
-        "the permissionless branch must still do its job"
-    );
+    let target = 100_0000000_i128;
+    let args: Vec<Val> = (target,).into_val(&e);
+    assert!(sclient
+        .mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &strategy,
+                fn_name: "partial_unwind",
+                args,
+                sub_invokes: &[],
+            },
+        }])
+        .try_partial_unwind(&target)
+        .is_err());
+    assert_eq!(sclient.health_factor(), before_hf, "position untouched");
 
-    let (_, _, _, d_after, _, _) = sclient.position();
+    // Anyone can still protect the vault through `rebalance()`, which lands on
+    // the rebalance target and leaves the debt in place.
+    sclient.rebalance();
     let after_hf = sclient.health_factor();
-
-    // The finding: debt fully retired, HF at i128::MAX. The fix: debt survives.
-    assert!(
-        d_after > 0,
-        "M-1: a stranger must not be able to force a full deleverage (d_tokens {} -> {})",
-        d_before,
-        d_after
-    );
-    assert!(d_after < d_before, "the unwind must still reduce debt");
     let floor = orange_hf + crate::constants::REBALANCE_HF_BUFFER;
     assert!(
         after_hf >= floor && after_hf <= floor + 10,
-        "HF must land on the rebalance target: after={}, target={}",
+        "rebalance lands on the rebalance target: after={}, target={}",
         after_hf,
         floor
     );
+    let (_, _, _, d_after, _, _) = sclient.position();
+    assert!(d_after > 0, "rebalance must not retire the whole debt");
+}
 
-    // "No more powerful than rebalance()": the position is now where the
-    // permissionless rebalance would leave it, so rebalance is a no-op — and the
-    // stranger cannot come back for a second bite, because HF is out of the orange
-    // zone and the keeper gate now applies.
-    sclient.rebalance();
+// The keeper's authorization is spent even when the call has nothing to do. A
+// call that returned before asking for it left the signature unspent, so anyone
+// could replay it from the public transaction until it expired, deleveraging
+// the vault at a moment of their choosing; a debt-free vault was that case.
+#[test]
+fn test_partial_unwind_spends_the_keeper_authorization_on_a_no_op() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let keeper = sclient.get_keeper();
+    let (_, _, _, orange_hf) = sclient.config();
+    let target = orange_hf + crate::constants::REBALANCE_HF_BUFFER;
+    let keeper_signed = || {
+        std::vec![(
+            keeper.clone(),
+            AuthorizedInvocation {
+                function: AuthorizedFunction::Contract((
+                    strategy.clone(),
+                    Symbol::new(&e, "partial_unwind"),
+                    (target,).into_val(&e),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    };
+
+    // No debt at all.
+    assert_eq!(sclient.partial_unwind(&target), 0);
     assert_eq!(
-        sclient.health_factor(),
-        after_hf,
-        "rebalance has nothing left to do"
+        e.auths(),
+        keeper_signed(),
+        "keeper auth required with no debt"
     );
+
+    // Debt, with HF already above the target.
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
     assert!(
-        sclient.try_partial_unwind(&stranger, &100_0000000).is_err(),
-        "with HF restored the stranger is back outside the permissionless window"
+        sclient.health_factor() > target,
+        "precondition: above target"
     );
+    assert_eq!(sclient.partial_unwind(&target), 0);
     assert_eq!(
-        sclient.health_factor(),
-        after_hf,
-        "position untouched by the retry"
+        e.auths(),
+        keeper_signed(),
+        "keeper auth required above target"
     );
 }
 
-// The other half of the M-1 fix: capping the target must not disarm the keeper.
-// The keeper is a trusted role and still gets the `target_hf` it asks for, so it
+// The keeper gets the `target_hf` it asks for, above the orange zone too, so it
 // can deleverage past orange_hf when it judges that necessary.
 #[test]
 fn test_partial_unwind_honours_keeper_target_above_orange() {
@@ -1631,11 +1672,14 @@ fn test_partial_unwind_honours_keeper_target_above_orange() {
     let keeper = sclient.get_keeper();
     let (_, _, _, orange_hf) = sclient.config();
 
-    // A target comfortably above the orange floor (1.15) — further than a
-    // permissionless caller would be allowed to unwind.
+    // A target comfortably above the orange floor (1.15), further than
+    // `rebalance()` would unwind.
     let target = orange_hf + 2_000_000;
-    let repaid = sclient.partial_unwind(&keeper, &target);
+    let repaid = sclient.partial_unwind(&target);
     assert!(repaid > 0, "keeper unwind must do work");
+    let (_, _, ev_repaid) = find_rebalance_event(&e, &strategy, &keeper)
+        .expect("the rebalance event is attributed to the keeper");
+    assert_eq!(ev_repaid, repaid);
 
     let after_hf = sclient.health_factor();
     assert!(
@@ -1643,38 +1687,6 @@ fn test_partial_unwind_honours_keeper_target_above_orange() {
         "keeper target must be honoured: after={}, target={}",
         after_hf,
         target
-    );
-}
-
-// Unchanged by the M-1 fix, pinned so the auth gate is not lost while the target
-// bounding moves around it: above the orange zone the entrypoint is keeper-only.
-#[test]
-fn test_partial_unwind_rejects_non_keeper_above_orange_zone() {
-    let e = Env::default();
-    e.mock_all_auths();
-    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    e.cost_estimate().budget().reset_unlimited();
-
-    // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
-    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
-    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
-    StellarAssetClient::new(&e, &token)
-        .mock_all_auths()
-        .mint(&user, &1_000_0000000);
-    sclient.deposit(&1_000_0000000, &user);
-
-    let (_, _, _, orange_hf) = sclient.config();
-    assert!(
-        sclient.health_factor() >= orange_hf,
-        "fixture must sit above the orange floor"
-    );
-
-    let stranger = Address::generate(&e);
-    assert!(
-        sclient.try_partial_unwind(&stranger, &orange_hf).is_err(),
-        "outside the orange zone partial_unwind is keeper-only"
     );
 }
 
@@ -1755,7 +1767,7 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
     );
 
     // Emergency: the keeper deleverages far past the orange floor.
-    let repaid = sclient.partial_unwind(&keeper, &(design_hf + 4_000_000));
+    let repaid = sclient.partial_unwind(&(design_hf + 4_000_000));
     assert!(repaid > 0, "emergency unwind must do work");
 
     let (equity1, _, _, d1, _, _) = sclient.position();
@@ -1875,7 +1887,7 @@ fn test_releverage_to_the_lowest_target_stays_clear_of_the_rebalance_band() {
     let keeper = sclient.get_keeper();
 
     // Deleverage well clear of the band, then re-lever.
-    sclient.partial_unwind(&keeper, &(orange_hf + 3_000_000));
+    sclient.partial_unwind(&(orange_hf + 3_000_000));
     let borrowed = sclient.releverage(&keeper);
     assert!(borrowed > 0, "must re-lever toward the target");
 
@@ -1947,7 +1959,7 @@ fn test_releverage_cooldown_rate_limits_on_chain() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let keeper = sclient.get_keeper();
 
-    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
     assert!(sclient.releverage(&keeper) > 0, "first call must do work");
     assert_eq!(
         e.as_contract(&strategy, || storage::get_last_releverage(&e)),
@@ -2001,7 +2013,7 @@ fn test_releverage_rejects_non_keeper() {
     let keeper = sclient.get_keeper();
 
     // Genuine slack to re-lever, so the rejection is about identity, not state.
-    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
 
     let stranger = Address::generate(&e);
     match sclient.try_releverage(&stranger) {
@@ -3022,8 +3034,7 @@ fn test_withdraw_after_the_debt_is_fully_repaid() {
     // The keeper retires the debt. The closed form only approaches a full repay
     // as the target grows (HF 100 still leaves ~0.4% of it), so ask for an HF no
     // partial repay can reach: the repay clamps at the whole debt.
-    let keeper = sclient.get_keeper();
-    assert!(sclient.partial_unwind(&keeper, &100_000_000_000_000_000_000) > 0);
+    assert!(sclient.partial_unwind(&100_000_000_000_000_000_000) > 0);
     let (_, _, _, d_tokens, _, _) = sclient.position();
     assert!(
         d_tokens <= 1,
@@ -3371,7 +3382,7 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
     let keeper = sclient.get_keeper();
 
     // Slack to re-lever: the keeper deleverages well clear of the band.
-    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
 
     // A borrower takes the pool to just under the reserve's max_util (99% here)
     // — inside the cap now, past it once the re-leverage borrows.
@@ -3640,7 +3651,7 @@ fn test_releverage_larger_than_the_free_liquidity() {
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let keeper = sclient.get_keeper();
-    sclient.partial_unwind(&keeper, &(sclient.health_factor() + 4_000_000));
+    sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
 
     // What `releverage` will borrow, from the same inputs it reads.
     let (c_factor, target, _, _) = sclient.config();
@@ -3719,11 +3730,12 @@ fn test_unwind_of_a_share_with_no_equity_is_refused() {
     }
 }
 
-// The keeper's own target is floored at the rebalance target, not at orange_hf:
-// a keeper landing exactly on the trigger would re-arm it on the next accrual,
-// the churn the buffer exists to prevent.
+// The keeper may not ask for less than the rebalance target: a keeper landing on
+// the trigger would re-arm it on the next accrual, the churn the buffer exists
+// to prevent. Such a target is refused rather than quietly raised, so the keeper
+// gets the target it asked for or an error, never a different one.
 #[test]
-fn test_partial_unwind_floors_the_keeper_target_at_the_rebalance_target() {
+fn test_partial_unwind_refuses_a_target_below_the_rebalance_target() {
     let e = Env::default();
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
@@ -3732,15 +3744,27 @@ fn test_partial_unwind_floors_the_keeper_target_at_the_rebalance_target() {
 
     let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     let (_, _, _, orange_hf) = sclient.config();
-
-    assert!(sclient.partial_unwind(&keeper, &orange_hf) > 0);
-    let after_hf = sclient.health_factor();
     let floor = orange_hf + crate::constants::REBALANCE_HF_BUFFER;
+    let before_hf = sclient.health_factor();
+
+    for target in [orange_hf, floor - 1] {
+        assert_eq!(
+            sclient.try_partial_unwind(&target),
+            Err(Ok(StrategyError::InvalidArgument)),
+            "target {} is below the rebalance target {}",
+            target,
+            floor
+        );
+    }
+    assert_eq!(sclient.health_factor(), before_hf, "position untouched");
+
+    // The rebalance target itself is the lowest the keeper may ask for.
+    assert!(sclient.partial_unwind(&floor) > 0);
+    let after_hf = sclient.health_factor();
     assert!(
         after_hf >= floor && after_hf <= floor + 10,
-        "keeper asking for orange_hf must land on the rebalance target: {} vs {}",
+        "keeper asking for the rebalance target must land on it: {} vs {}",
         after_hf,
         floor
     );

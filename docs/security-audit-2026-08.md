@@ -231,6 +231,14 @@ keeper role is needed):
 - `test_partial_unwind_rejects_non_keeper_above_orange_zone` — the pre-existing auth gate,
   pinned so it is not lost while the target bounding moves around it.
 
+**Superseded (October 2026).** `partial_unwind` is now keeper-only at any HF and takes
+no `caller`: the keeper's authorization is its first statement, and a `target_hf` below
+the rebalance target is refused with `InvalidArgument` rather than raised. A stranger
+cannot reach it at all, which closes M-1 more tightly than the cap above; anyone can
+still call `rebalance()`. The first and third tests above are replaced by
+`test_partial_unwind_is_keeper_only_even_in_the_orange_zone`; the second is kept. This
+answers C25 and C26 of the external audit of October 2026.
+
 The caveat about permanence in this finding was resolved separately by M-3, which adds
 the keeper-gated `releverage` path: what a stranger forces off is now bounded to one
 rebalance's worth *and* is recoverable, rather than bounded but permanent.
