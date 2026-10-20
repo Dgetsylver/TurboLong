@@ -2276,7 +2276,7 @@ fn test_unwind_pays_correct_equity_after_rates_accrue() {
     let user_before = token_client.balance(&user);
 
     // Run the REAL production unwind against the REAL pool.
-    let (b_removed, d_removed) = e.as_contract(&strategy, || {
+    let (b_removed, d_removed, _) = e.as_contract(&strategy, || {
         blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &user, &config).unwrap()
     });
 
@@ -2932,7 +2932,7 @@ fn test_unwind_of_a_dust_share_repays_its_debt() {
     );
 
     let user = Address::generate(&e);
-    let (b_removed, d_removed) = e.as_contract(&strategy, || {
+    let (b_removed, d_removed, _) = e.as_contract(&strategy, || {
         blend_pool::submit_unwind(&e, 30, 2, &user, &config).unwrap()
     });
 
@@ -2977,7 +2977,7 @@ fn test_unwind_of_a_one_token_debt_share_at_accrued_rates() {
     );
 
     let user = Address::generate(&e);
-    let (b_removed, d_removed) = e.as_contract(&strategy, || {
+    let (b_removed, d_removed, _) = e.as_contract(&strategy, || {
         blend_pool::submit_unwind(&e, 30, 1, &user, &config).unwrap()
     });
     assert_eq!(d_removed, 1, "exactly the one d-token is cancelled");
@@ -5487,6 +5487,121 @@ fn test_transferred_shares_let_recipient_withdraw() {
         shclient.total_supply(),
         stored.total_shares,
         "token supply must stay equal to strategy total_shares"
+    );
+}
+
+// A holder quotes their balance, and by the time the withdraw lands the share
+// price has moved: `withdraw` of that quote either asks for more than the shares
+// are now worth and is refused, or for less and leaves shares behind. `redeem`
+// of the share balance exits completely and pays what the shares are worth.
+#[test]
+fn test_redeem_exits_by_share_count_after_the_price_moves() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    let underlying = TokenClient::new(&e, &token);
+    let (alice, bob) = (Address::generate(&e), Address::generate(&e));
+    for holder in [sclient.get_keeper(), alice.clone(), bob.clone()] {
+        StellarAssetClient::new(&e, &token).mint(&holder, &1_000_0000000);
+        sclient.deposit(&1_000_0000000, &holder);
+    }
+    let alice_quote = sclient.balance(&alice);
+    accrue_interest(&e, &pool_addr, &token, 30 * 24 * 60 * 60);
+    assert_ne!(
+        sclient.balance(&alice),
+        alice_quote,
+        "precondition: the price moved"
+    );
+
+    match sclient.try_withdraw(&alice_quote, &alice, &alice) {
+        Err(_) => {}
+        Ok(_) => assert!(
+            share.balance(&alice) > 0,
+            "a withdraw that lands leaves shares"
+        ),
+    }
+
+    let worth = sclient.balance(&bob);
+    let paid = sclient.redeem(&share.balance(&bob), &bob, &bob);
+    assert_eq!(share.balance(&bob), 0, "nothing is left behind");
+    assert_eq!(
+        underlying.balance(&bob),
+        paid,
+        "the return value is what was paid"
+    );
+    assert!(
+        paid <= worth && worth - paid <= 10,
+        "pays the shares' worth, rounded against the holder: paid={} worth={}",
+        paid,
+        worth
+    );
+
+    // Recorded from the measured pool deltas, as `withdraw` is.
+    let pos = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let stored = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(
+        stored.total_b_tokens,
+        pos.collateral.get(cfg.reserve_id).unwrap_or(0)
+    );
+    assert_eq!(
+        stored.total_d_tokens,
+        pos.liabilities.get(cfg.reserve_id).unwrap_or(0)
+    );
+    assert_eq!(stored.total_shares, share.total_supply());
+}
+
+#[test]
+fn test_redeem_refuses_what_the_holder_cannot_redeem() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    let user = Address::generate(&e);
+    for holder in [sclient.get_keeper(), user.clone()] {
+        StellarAssetClient::new(&e, &token).mint(&holder, &1_000_0000000);
+        sclient.deposit(&1_000_0000000, &holder);
+    }
+    let held = share.balance(&user);
+
+    match sclient.try_redeem(&(held + 1), &user, &user) {
+        Err(Ok(StrategyError::InsufficientBalance)) => {}
+        other => std::panic!("expected InsufficientBalance, got {:?}", other),
+    }
+    match sclient.try_redeem(&0, &user, &user) {
+        Err(Ok(StrategyError::OnlyPositiveAmountAllowed)) => {}
+        other => std::panic!("expected OnlyPositiveAmountAllowed, got {:?}", other),
+    }
+
+    // A stranger's signature does not redeem the holder's shares.
+    let stranger = Address::generate(&e);
+    assert!(sclient
+        .mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &strategy,
+                fn_name: "redeem",
+                args: (held, user.clone(), stranger.clone()).into_val(&e),
+                sub_invokes: &[],
+            },
+        }])
+        .try_redeem(&held, &user, &stranger)
+        .is_err());
+    assert_eq!(
+        share.balance(&user),
+        held,
+        "the holder's shares are untouched"
     );
 }
 

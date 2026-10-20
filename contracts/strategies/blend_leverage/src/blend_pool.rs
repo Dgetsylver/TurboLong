@@ -148,14 +148,14 @@ pub fn submit_lever_in(
 /// caller burns the shares first, and an unwind that pays nothing would take
 /// them for nothing.
 ///
-/// Returns (b_tokens_removed, d_tokens_removed).
+/// Returns (b_tokens_removed, d_tokens_removed, underlying_paid).
 pub fn submit_unwind(
     e: &Env,
     b_tokens_to_remove: i128,
     d_tokens_to_remove: i128,
     to: &Address,
     config: &Config,
-) -> Result<(i128, i128), StrategyError> {
+) -> Result<(i128, i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let token_client = TokenClient::new(e, &config.asset);
     let strategy = e.current_contract_address();
@@ -211,7 +211,7 @@ pub fn submit_unwind(
         .checked_sub(end_d)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    Ok((b_removed, d_removed))
+    Ok((b_removed, d_removed, equity))
 }
 
 /// Deleverage by `repay_underlying`: repay that much debt and withdraw the same

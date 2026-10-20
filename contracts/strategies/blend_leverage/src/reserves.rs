@@ -178,16 +178,8 @@ pub fn deposit(
 // ── Withdraw accounting ──────────────────────────────────────────────────────
 
 /// Size a withdrawal of `amount` of equity: the shares to burn and the b/d
-/// tokens that carry them out.
-///
-/// Shares are priced net of the harvest profit still locked, and the slice of
-/// the position they take is scaled to match, so it carries out `amount` and
-/// leaves the withdrawer's part of the locked profit to the holders it is still
-/// being released to. With nothing locked the scale is exactly 1.
-///
-/// Every quantity rounds against the withdrawer — the shares burned round up,
-/// the collateral they take rounds down and the debt they repay rounds up — so
-/// the holders who stay never inherit a sliver of the leaver's debt.
+/// tokens that carry them out (see `share_slice`). The shares burned round up,
+/// against the withdrawer.
 ///
 /// Returns `(shares_to_burn, b_tokens_to_remove, d_tokens_to_remove)`.
 ///
@@ -223,18 +215,62 @@ pub fn withdraw(
         return Err(StrategyError::InsufficientBalance);
     }
 
-    // The shares' pro-rata b/d tokens, scaled by `priced / total_equity`
-    // (`priced > 0` implies `total_equity >= priced > 0`).
-    let b_tokens_to_remove = shares_to_burn
+    let (b_tokens_to_remove, d_tokens_to_remove) =
+        share_slice(shares_to_burn, reserves, priced, total_equity)?;
+    Ok((shares_to_burn, b_tokens_to_remove, d_tokens_to_remove))
+}
+
+/// Size a redemption of exactly `shares`: the b/d tokens that carry them out
+/// (see `share_slice`). Refused with `InsufficientBalance` for more shares than
+/// `user_shares`, or while the shares are worth nothing.
+///
+/// Returns `(b_tokens_to_remove, d_tokens_to_remove)`. Like `withdraw`, it
+/// persists nothing.
+pub fn redeem(
+    e: &Env,
+    user_shares: i128,
+    shares: i128,
+    reserves: &LeverageReserves,
+) -> Result<(i128, i128), StrategyError> {
+    if shares > user_shares {
+        return Err(StrategyError::InsufficientBalance);
+    }
+
+    let total_equity = compute_equity(reserves)?;
+    let priced = priced_equity(reserves, locked_profit(e)?)?;
+    if priced <= 0 {
+        return Err(StrategyError::InsufficientBalance);
+    }
+
+    share_slice(shares, reserves, priced, total_equity)
+}
+
+/// The b/d tokens that carry `shares` out of the vault: their pro-rata slice of
+/// the position, scaled by `priced / total_equity`.
+///
+/// Shares are priced net of the harvest profit still locked, and the slice is
+/// scaled to match, so it carries out the shares' priced value and leaves the
+/// withdrawer's part of the locked profit to the holders it is still being
+/// released to. With nothing locked the scale is exactly 1.
+///
+/// The collateral rounds down and the debt rounds up, against the withdrawer,
+/// so the holders who stay never inherit a sliver of the leaver's debt.
+fn share_slice(
+    shares: i128,
+    reserves: &LeverageReserves,
+    priced: i128,
+    total_equity: i128,
+) -> Result<(i128, i128), StrategyError> {
+    // `priced > 0` implies `total_equity >= priced > 0`.
+    let b_tokens = shares
         .fixed_mul_floor(reserves.total_b_tokens, reserves.total_shares)
         .and_then(|b| b.fixed_mul_floor(priced, total_equity))
         .ok_or(StrategyError::ArithmeticError)?;
-    let d_tokens_to_remove = shares_to_burn
+    let d_tokens = shares
         .fixed_mul_ceil(reserves.total_d_tokens, reserves.total_shares)
         .and_then(|d| d.fixed_mul_ceil(priced, total_equity))
         .ok_or(StrategyError::ArithmeticError)?;
-
-    Ok((shares_to_burn, b_tokens_to_remove, d_tokens_to_remove))
+    Ok((b_tokens, d_tokens))
 }
 
 /// Commit a withdrawal to storage using the b/d tokens the pool *actually*

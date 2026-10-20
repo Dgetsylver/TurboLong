@@ -351,7 +351,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Execute unwind on the pool — net equity flows to `to`. The returned
         // deltas are the b/d tokens the pool *actually* removed.
-        let (b_removed, d_removed) =
+        let (b_removed, d_removed, _) =
             blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
 
         // Persist the measured pool deltas, as deposit/harvest/deleverage do, so
@@ -546,6 +546,35 @@ fn emit_rebalance(e: &Env, caller: &Address, before_hf: i128, after_hf: i128, re
 
 #[contractimpl]
 impl BlendLeverageStrategy {
+    /// Withdraw by share count: burn exactly `shares` of `from`'s and pay what
+    /// they are worth to `to`. Returns the underlying paid.
+    ///
+    /// `withdraw` takes an amount of underlying and refuses one worth more than
+    /// the caller's shares. The share price moves every ledger, so a holder
+    /// cannot reliably ask it for everything they hold; here they pass their
+    /// share balance and nothing is left behind. Sized and rounded like
+    /// `withdraw`, against the withdrawer. The DeFindex trait has no such call.
+    pub fn redeem(e: Env, shares: i128, from: Address, to: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        check_positive_amount(shares)?;
+        from.require_auth();
+
+        let config = storage::get_config(&e);
+        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        let (b_to_remove, d_to_remove) =
+            reserves::redeem(&e, token.balance(&from), shares, &reserves)?;
+
+        // Burn, unwind and record what the pool removed, as `withdraw` does.
+        token.burn_by_minter(&from, &shares);
+        let (b_removed, d_removed, paid) =
+            blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+        reserves::commit_withdraw(&e, shares, b_removed, d_removed, &reserves)?;
+
+        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), paid, from);
+        Ok(paid)
+    }
+
     /// Rebalance: partial-unwind if HF is in the orange zone (HF < orange_hf),
     /// restoring HF to `orange_hf + REBALANCE_HF_BUFFER`. Callable by anyone
     /// (permissionless — protects the vault). Emits a `rebalance` event when debt
