@@ -1219,8 +1219,9 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         // Seed a realistic leveraged position: ~8x supply, 7x debt.
         let reserves = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
         storage::set_strategy_reserves(e, reserves.clone());
-        let user = Address::generate(e);
-        storage::set_vault_shares(e, &user, 1_000_0000000);
+        // A holder's shares live in the share token, which an upgrade of the
+        // strategy does not touch; what the upgrade could change is their price.
+        let user_shares = 1_000_0000000_i128;
 
         // Pre-upgrade snapshot (v1 reading current storage).
         let equity_before = compute_equity(&reserves).unwrap();
@@ -1233,8 +1234,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             L_NONE,
         )
         .unwrap();
-        let user_underlying_before =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves, 0).unwrap();
+        let user_underlying_before = shares_to_underlying(user_shares, &reserves, 0).unwrap();
 
         // An upgrade does not touch contract storage; re-read it as v2 would.
         let reserves_after = storage::get_strategy_reserves(e);
@@ -1248,8 +1248,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             L_NONE,
         )
         .unwrap();
-        let user_underlying_after =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after, 0).unwrap();
+        let user_underlying_after = shares_to_underlying(user_shares, &reserves_after, 0).unwrap();
 
         // Parity within 1e-7 — here exactly equal.
         assert_eq!(equity_before, equity_after, "equity parity");

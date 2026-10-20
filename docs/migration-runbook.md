@@ -7,12 +7,12 @@ re-enter their leveraged positions. Covers the **in-place WASM upgrade** path
 ## Model
 
 The strategy upgrades **in place** via `update_current_contract_wasm`. The
-contract keeps the same address and all persistent storage — `Config`,
-`Reserves` (`total_shares`, `total_b_tokens`, `total_d_tokens`, rates), every
-per-user `VaultPos`, `Keeper`, and `Admin` — across the upgrade. Because the
-storage is byte-identical before and after, each user's health factor and
-underlying balance are unchanged: there is no exit/re-enter and no per-user
-signing.
+contract keeps the same address and all its storage — `Config`, `Reserves`
+(`total_shares`, `total_b_tokens`, `total_d_tokens`, rates), `Keeper`, and
+`Admin` — across the upgrade. Per-user shares live in the share token, a
+separate contract the upgrade does not touch. Because the storage is
+byte-identical before and after, each user's health factor and underlying
+balance are unchanged: there is no exit/re-enter and no per-user signing.
 
 Authorization: `upgrade(new_wasm_hash)` requires `admin.require_auth()`. The
 admin is set at construction (`init_args[9]`). A `version()` counter starts at
@@ -111,21 +111,7 @@ from it.
    `token.total_supply == total_shares`); `withdraw` burns; `balance` reads the
    token.
 
-Fresh deploys need no migration — there are no legacy `VaultPos` holders.
-
-### Tokenizing an upgraded legacy deployment (e.g. the testnet vault)
-**No longer possible in place.** The share token is deployed by the
-constructor, which does not run on upgrade, and there is no `set_share_token`.
-A deployment that predates the token must be redeployed. The steps below are
-kept for reference only.
-
-If a deployment predates the token (shares in `VaultPos`):
-1. Upgrade the strategy WASM (above) and `set_share_token`.
-2. For each known holder, call `migrate_position(holder)` — permissionless,
-   idempotent; mints their `VaultPos` shares into the token and zeroes the
-   legacy entry. (No theft possible: it only moves a holder's own shares.)
-3. Reconcile the lockup: after all holders are migrated,
-   `token.total_supply()` will be `total_shares - FIRST_DEPOSIT_LOCKUP`. Mint
-   the remaining lockup to the strategy's own address so supply matches
-   `total_shares` (or accept the constant lockup gap and document it).
-4. Verify: `Σ token.balance(holder) + lockup == reserves.total_shares`.
+### Deployments that predate the token (e.g. the old testnet vault)
+A deployment that kept its shares in strategy storage cannot be moved onto the
+token: the token is deployed by the constructor, which does not run on
+upgrade, and the code that read those shares is gone. It must be redeployed.

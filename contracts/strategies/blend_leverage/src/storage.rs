@@ -7,9 +7,6 @@ const ONE_DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * ONE_DAY_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - ONE_DAY_LEDGERS;
 
-const PERSISTENT_BUMP_AMOUNT: u32 = 120 * ONE_DAY_LEDGERS;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - 20 * ONE_DAY_LEDGERS;
-
 // ── Data keys ────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -17,7 +14,6 @@ const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - 20 * ONE_DAY
 pub enum DataKey {
     Config,
     Reserves,
-    VaultPos(Address),
     Keeper,
     /// Monotonic contract version, bumped on each upgrade.
     Version,
@@ -114,31 +110,6 @@ pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
         .instance()
         .get(&DataKey::Reserves)
         .unwrap_or_default()
-}
-
-// ── Per-user vault shares ────────────────────────────────────────────────────
-
-pub fn set_vault_shares(e: &Env, address: &Address, shares: i128) {
-    let key = DataKey::VaultPos(address.clone());
-    e.storage().persistent().set(&key, &shares);
-    e.storage().persistent().extend_ttl(
-        &key,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
-}
-
-pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
-    let key = DataKey::VaultPos(address.clone());
-    let shares = e.storage().persistent().get(&key).unwrap_or(0i128);
-    if shares > 0 {
-        e.storage().persistent().extend_ttl(
-            &key,
-            PERSISTENT_LIFETIME_THRESHOLD,
-            PERSISTENT_BUMP_AMOUNT,
-        );
-    }
-    shares
 }
 
 // ── Keeper ───────────────────────────────────────────────────────────────────

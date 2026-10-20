@@ -861,23 +861,6 @@ impl BlendLeverageStrategy {
         Ok(storage::get_share_token(&e))
     }
 
-    /// Migrate a legacy `VaultPos` holder onto the share token: mint their
-    /// shares into the token and zero the legacy entry. Permissionless and
-    /// idempotent (it only moves a holder's own shares into their token
-    /// balance — no theft possible). Used once after upgrading a deployment
-    /// that predates the token; fresh deploys never need it.
-    pub fn migrate_position(e: Env, holder: Address) -> Result<i128, StrategyError> {
-        extend_instance_ttl(&e);
-        let legacy = storage::get_vault_shares(&e, &holder);
-        if legacy <= 0 {
-            return Ok(0);
-        }
-        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
-        token.mint(&holder, &legacy);
-        storage::set_vault_shares(&e, &holder, 0);
-        Ok(legacy)
-    }
-
     // ── Split harvest for pluggable swap routing (T2.1) ──────────────────────
     //
     // The DeFindex-trait `harvest` stays as the atomic on-chain Soroswap path.

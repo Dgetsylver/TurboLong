@@ -32,7 +32,6 @@ pub enum TokenError {
     InsufficientBalance = 2,
     InsufficientAllowance = 3,
     BadExpiration = 4,
-    NotAuthorized = 5,
 }
 
 fn check_nonnegative(amount: i128) -> Result<(), TokenError> {
