@@ -355,6 +355,17 @@ config leverage number. Consuming `reserves_sync` means building event subscript
 which is a separate piece of work rather than part of this fix. The contract now emits the
 signal; nothing yet listens for it.
 
+**Superseded (October 2026).** The stored copy of the position is gone: `reserves::current`
+reads the b/d tokens and rates from Blend on every call, and only the share count is
+stored, so there is nothing left to reconcile. `reconcile`, `sync` and the `sync_reserves()`
+entrypoint with its `reserves_sync` event are removed. A liquidation is priced in from the
+next call, as before. The anti-donation property now rests on Blend alone, which credits no
+one else's supply to a borrower's position: `test_no_one_else_can_add_to_the_position`,
+the first half of `test_reconciliation_never_revises_the_position_upward`, pins it.
+`test_sync_reserves_writes_down_seizure_and_emits_event` went with the entrypoint, and
+`test_seized_collateral_is_priced_into_balance_immediately` is kept. This answers C17 of the
+external audit of October 2026.
+
 ### M-3 — No re-leverage path; leverage ratchets monotonically down
 
 The only operations that *add* leverage are `deposit`, `harvest`, and
@@ -742,10 +753,10 @@ Recorded because these close common failure modes in this contract class:
 - **Withdraw rounding runs the right way.** `shares_to_burn` uses `fixed_mul_ceil` while
   token removals use `fixed_mul_floor` (`reserves.rs:150-164`) — against the withdrawer.
 - **Inflation attack is structurally dead.** Equity derives from tracked b/d tokens, not
-  the contract's token balance, so a donation cannot move the share price. *(M-2's fix
-  reconciles those tracked totals against the pool. It clamps downward only, specifically
-  so this entry keeps holding — see that Resolution for the reasoning and the test that
-  pins it.)*
+  the contract's token balance, so a donation cannot move the share price. *(Since
+  October 2026 those b/d tokens are read from Blend on every call, and Blend credits no one
+  else's supply to the strategy's position, so this still holds — see M-2's superseded
+  note.)*
 - **Constructor validates risk parameters** (`lib.rs:119-128`), including the
   `orange_hf > min_hf > 1.0 > c_factor` ordering `compute_partial_unwind` depends on.
 - **Deployed parameters are genuinely conservative** — `target_loops` 2–4 against a
@@ -758,8 +769,9 @@ Recorded because these close common failure modes in this contract class:
 
 1. ~~**M-1** — cap `target_hf` for non-keeper callers~~ — done, see *Resolution* above.
 2. ~~**H-1** — add `l_factor` to the HF formula~~ — done, see *Resolution* above.
-3. ~~**M-2** — reconcile reserves against the pool~~ — done, see *Resolution* above. The
-   `alerts/` side of it (consume `reserves_sync`) is still outstanding.
+3. ~~**M-2** — reconcile reserves against the pool~~ — done, see *Resolution* above.
+   Since October 2026 there is no `reserves_sync` event to consume (see M-2): a
+   liquidation shows in Blend's own events.
 4. **M-4 / M-5** — settlement floor on the Broker path, mandatory slippage on `harvest`.
 5. **M-3** — `releverage()`, or make displayed APY track measured leverage. Now the top
    remaining item: with M-1 capped, the ratchet is the residual half of that pair.

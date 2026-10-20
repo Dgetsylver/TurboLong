@@ -28,11 +28,12 @@ use leverage::{
     check_min_health_factor, compute_health_factor, compute_partial_unwind, compute_releverage,
     shares_to_underlying,
 };
+use reserves::LeverageReserves;
 use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
     IntoVal, String, Symbol, Val, Vec,
 };
-use storage::{extend_instance_ttl, Config, LeverageReserves};
+use storage::{extend_instance_ttl, Config};
 
 /// Cross-contract client for the SEP-41 vault-share token (the per-user share
 /// ledger). The strategy is the token's minter, so `mint`/`burn_by_minter`
@@ -199,7 +200,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         from.require_auth();
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         check_not_wiped_out(&e, &reserves)?;
         if reserves.total_shares == 0 && from != storage::get_keeper(&e) && from != Self::admin(&e)
         {
@@ -276,7 +277,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Pre-reinvest snapshot: `reserves::harvest` adds the measured deltas to
         // this, so it must be read before the pool settles the reinvest.
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         check_not_wiped_out(&e, &reserves)?;
 
         // Claim BLND from both supply and borrow sides
@@ -337,14 +338,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         from.require_auth();
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
 
         // Read the caller's share balance from the token (the per-user ledger).
         let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
         let user_shares = token.balance(&from);
 
         // Calculate shares to burn + the intended proportional b/d tokens to
-        // unwind. This does NOT persist the position (see `commit_withdraw`).
+        // unwind. This persists nothing (see `commit_withdraw`).
         let (shares_to_burn, b_to_remove, d_to_remove) =
             reserves::withdraw(&e, user_shares, amount, &reserves)?;
 
@@ -356,8 +357,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let (b_removed, d_removed, paid) =
             blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
 
-        // Persist the measured pool deltas, as deposit/harvest/deleverage do, so
-        // the stored reserves stay in lock-step with the real pool position.
+        // Record the shares burned; the position after is the one read above
+        // less the measured deltas.
         let updated_reserves =
             reserves::commit_withdraw(&e, shares_to_burn, b_removed, d_removed, &reserves)?;
 
@@ -389,7 +390,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         }
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         shares_to_underlying(user_shares, &reserves, reserves::locked_profit(&e)?)
     }
 }
@@ -513,16 +514,11 @@ fn unwind_to(
         return Ok((before_hf, before_hf, 0));
     }
 
-    // Pre-unwind snapshot, built from the pool values already read above rather
-    // than re-fetching them; `reserves::deleverage` subtracts the measured
-    // removal from it.
-    let pre_unwind = reserves::reconcile(e, b_tokens, d_tokens, b_rate, d_rate);
-
     let (b_removed, d_removed) = blend_pool::submit_deleverage(e, repay, config)?;
-    reserves::deleverage(e, b_removed, d_removed, &pre_unwind)?;
 
-    // Recompute HF on the post-unwind position for the event / return.
-    let (b2, d2) = blend_pool::get_strategy_positions(e, config);
+    // HF of the settled position — the position read above less what the pool
+    // measurably removed — for the event / return.
+    let (b2, d2) = (b_tokens - b_removed, d_tokens - d_removed);
     let after_hf = if d2 == 0 {
         i128::MAX
     } else {
@@ -563,7 +559,7 @@ impl BlendLeverageStrategy {
         from.require_auth();
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
         let (b_to_remove, d_to_remove) =
             reserves::redeem(&e, token.balance(&from), shares, &reserves)?;
@@ -592,42 +588,6 @@ impl BlendLeverageStrategy {
             emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
         }
         Ok(())
-    }
-
-    /// Reconcile the tracked position with the pool's measured one, persisting
-    /// the correction. Permissionless — like `rebalance`, it can only move the
-    /// vault's accounting towards the truth, so anyone may call it.
-    ///
-    /// Share pricing does not *depend* on this being called: every read path
-    /// reconciles on the fly (`reserves::reconcile`), so a liquidation is priced
-    /// in from the moment it happens. This entrypoint exists to make the
-    /// correction **observable** — the tracked totals are written down and a
-    /// `reserves_sync` event is emitted, giving the `alerts/` stack a signal that
-    /// the strategy's position changed without the strategy asking. Without it a
-    /// liquidation is handled correctly but silently.
-    ///
-    /// Returns `(b_written_down, d_written_down)`; `(0, 0)` when already in sync.
-    /// Emits `reserves_sync` with topics `("reserves_sync",)` and data
-    /// `(b_before, b_after, d_before, d_after)` only when a correction is made.
-    pub fn sync_reserves(e: Env) -> Result<(i128, i128), StrategyError> {
-        extend_instance_ttl(&e);
-        let config = storage::get_config(&e);
-        let before = storage::get_strategy_reserves(&e);
-        let (b_correction, d_correction) = reserves::sync(&e, &config);
-
-        if b_correction != 0 || d_correction != 0 {
-            e.events().publish(
-                (Symbol::new(&e, "reserves_sync"),),
-                (
-                    before.total_b_tokens,
-                    before.total_b_tokens - b_correction,
-                    before.total_d_tokens,
-                    before.total_d_tokens - d_correction,
-                ),
-            );
-        }
-
-        Ok((b_correction, d_correction))
     }
 
     /// Keeper-authorised auto-rebalance: `rebalance`, attributed to the keeper.
@@ -761,18 +721,14 @@ impl BlendLeverageStrategy {
             return Ok(0);
         }
 
-        // Pre-submit snapshot from the pool values already read, exactly as
-        // `unwind_to` does; `reserves::releverage` adds the measured deltas to it.
-        let pre = reserves::reconcile(&e, b_tokens, d_tokens, b_rate, d_rate);
-
         let (b_delta, d_delta) = blend_pool::submit_releverage(&e, borrow_underlying, &config)?;
-        reserves::releverage(&e, b_delta, d_delta, &pre)?;
 
-        // Verify against the settled position rather than a projection: the pool
+        // Verify against the settled position — the position read above plus
+        // what the pool measurably added — rather than a projection: the pool
         // rounds its own conversions, and this is the direction where being wrong
         // costs the vault. HF below the rebalance trigger reverts the whole
         // transaction.
-        let (b2, d2) = blend_pool::get_strategy_positions(&e, &config);
+        let (b2, d2) = (b_tokens + b_delta, d_tokens + d_delta);
         let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?;
         if after_hf < config.orange_hf {
             return Err(StrategyError::ExternalError);
@@ -872,7 +828,7 @@ impl BlendLeverageStrategy {
     pub fn position(e: Env) -> Result<(i128, i128, i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         let equity = leverage::compute_equity(&reserves)?;
         Ok((
             equity,
@@ -1230,7 +1186,7 @@ impl BlendLeverageStrategy {
 
         // Pre-reinvest snapshot — see the trait `harvest` for why it must be
         // taken before the pool settles.
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         check_not_wiped_out(&e, &reserves)?;
 
         let (b_delta, d_delta, realized) = if via_soroswap {

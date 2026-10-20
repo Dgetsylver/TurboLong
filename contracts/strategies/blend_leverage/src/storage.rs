@@ -13,7 +13,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - ONE_DAY_LEDGERS;
 #[derive(Clone)]
 pub enum DataKey {
     Config,
-    Reserves,
+    TotalShares,
     Keeper,
     /// Monotonic contract version, bumped on each upgrade.
     Version,
@@ -82,34 +82,25 @@ pub fn get_config(e: &Env) -> Config {
         .expect("Config not initialized")
 }
 
-// ── Leverage reserves (strategy-level accounting) ────────────────────────────
+// ── Total shares ─────────────────────────────────────────────────────────────
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
-pub struct LeverageReserves {
-    /// Total shares outstanding across all depositors
-    pub total_shares: i128,
-    /// Total b-tokens (supply tokens) held by the strategy in the pool
-    pub total_b_tokens: i128,
-    /// Total d-tokens (debt tokens) owed by the strategy in the pool
-    pub total_d_tokens: i128,
-    /// Last known b_rate from the pool
-    pub b_rate: i128,
-    /// Last known d_rate from the pool
-    pub d_rate: i128,
-}
-
+/// The vault's only record of its position: the shares outstanding, lockup
+/// included, as minted on the share token. Its b/d tokens and the pool's rates
+/// are read from Blend on every call (`reserves::current`), not stored.
+///
 /// Global, so instance storage like the rest of the contract's state: it lives
 /// as long as the instance, whose TTL nearly every call extends.
-pub fn set_strategy_reserves(e: &Env, reserves: LeverageReserves) {
-    e.storage().instance().set(&DataKey::Reserves, &reserves);
-}
-
-pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
+pub fn set_total_shares(e: &Env, total_shares: i128) {
     e.storage()
         .instance()
-        .get(&DataKey::Reserves)
-        .unwrap_or_default()
+        .set(&DataKey::TotalShares, &total_shares);
+}
+
+pub fn get_total_shares(e: &Env) -> i128 {
+    e.storage()
+        .instance()
+        .get(&DataKey::TotalShares)
+        .unwrap_or(0)
 }
 
 // ── Keeper ───────────────────────────────────────────────────────────────────

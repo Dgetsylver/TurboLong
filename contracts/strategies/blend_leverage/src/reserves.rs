@@ -2,84 +2,50 @@ use crate::{
     blend_pool,
     constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12},
     leverage::{self, compute_equity, priced_equity, underlying_to_shares},
-    storage::{self, Config, LeverageReserves},
+    storage::{self, Config},
 };
 
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};
 
-// ── Reserve management ───────────────────────────────────────────────────────
+// ── The vault's position ─────────────────────────────────────────────────────
 
-/// Get the strategy reserves from storage, refresh b_rate/d_rate from the pool,
-/// and reconcile the tracked position against the pool's measured one.
+/// The vault's position at one moment: its b- and d-tokens and the pool's rates,
+/// as Blend reports them, and its total shares.
 ///
-/// See `reconcile` for the reconciliation rule. This does **not** persist: it is
-/// called from read-only views (`balance`, `position`) as well as the mutating
-/// paths, and a view must not write. The mutating paths persist the reconciled
-/// figure as a side effect of their own `± measured delta` write, and
-/// `sync_reserves()` persists it on demand.
-pub fn get_strategy_reserves_updated(e: &Env, config: &Config) -> LeverageReserves {
+/// Only `total_shares` is the vault's own record (`storage::get_total_shares`).
+/// The rest is read from Blend on every call (`current`) rather than stored, so
+/// it cannot drift from the pool: a change the strategy did not make — a
+/// liquidation seizing collateral, Blend writing down bad debt — is priced in
+/// from the next call, and lands on every holder at once rather than on
+/// whoever is last out. No one can add to the position: Blend changes a
+/// borrower's position only with its authorization, or by liquidation.
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct LeverageReserves {
+    /// Total shares outstanding across all depositors, lockup included.
+    pub total_shares: i128,
+    /// The vault's b-tokens (supply) in the pool.
+    pub total_b_tokens: i128,
+    /// The vault's d-tokens (debt) in the pool.
+    pub total_d_tokens: i128,
+    /// The pool's b_rate.
+    pub b_rate: i128,
+    /// The pool's d_rate.
+    pub d_rate: i128,
+}
+
+/// The vault's position now: read from Blend, with the stored share count.
+pub fn current(e: &Env, config: &Config) -> LeverageReserves {
     let (b_rate, d_rate) = blend_pool::get_rates(e, config);
-    let (pool_b, pool_d) = blend_pool::get_strategy_positions(e, config);
-    reconcile(e, pool_b, pool_d, b_rate, d_rate)
-}
-
-/// Build the reconciled reserves from pool values the caller has already read,
-/// avoiding a duplicate cross-contract round-trip.
-///
-/// The reconciliation rule is **downward only**: each tracked total is clamped to
-/// the pool's measured figure when the pool reports *less*, and left alone when
-/// the pool reports more.
-///
-/// Clamping down prices in position changes the strategy did not make — a
-/// liquidation seizing collateral, a Blend bad-debt socialization — on the first
-/// read after they happen, so a loss lands on every holder at once rather than on
-/// whoever is last out.
-///
-/// *Not* clamping up keeps a donation from moving the share price: collateral
-/// credited to the strategy's position stays unpriced until a full close
-/// realizes it. Blend has no such credit path (`submit`'s `to` routes outgoing
-/// transfers, so a third party's `SupplyCollateral` lands on the sender), so
-/// this is defence in depth.
-///
-/// A third party repaying the strategy's debt, if it could, would clamp
-/// `total_d_tokens` down and raise equity. That donation is bounded by the
-/// vault's own debt, and not clamping would leave every holder under-priced
-/// after a liquidation.
-pub fn reconcile(
-    e: &Env,
-    pool_b: i128,
-    pool_d: i128,
-    b_rate: i128,
-    d_rate: i128,
-) -> LeverageReserves {
-    let mut reserves = storage::get_strategy_reserves(e);
-    reserves.b_rate = b_rate;
-    reserves.d_rate = d_rate;
-    reserves.total_b_tokens = reserves.total_b_tokens.min(pool_b);
-    reserves.total_d_tokens = reserves.total_d_tokens.min(pool_d);
-    reserves
-}
-
-/// Persist the reconciliation, returning `(b_written_down, d_written_down)` —
-/// both non-negative, both zero when the tracked position already matched.
-///
-/// Storage is only written when the *position* actually moved: refreshed rates
-/// alone are not worth a persistent-entry write, and the read path recomputes
-/// them on every call anyway.
-pub fn sync(e: &Env, config: &Config) -> (i128, i128) {
-    let stored = storage::get_strategy_reserves(e);
-    let reconciled = get_strategy_reserves_updated(e, config);
-
-    let b_correction = stored.total_b_tokens - reconciled.total_b_tokens;
-    let d_correction = stored.total_d_tokens - reconciled.total_d_tokens;
-
-    if b_correction != 0 || d_correction != 0 {
-        storage::set_strategy_reserves(e, reconciled);
+    let (total_b_tokens, total_d_tokens) = blend_pool::get_strategy_positions(e, config);
+    LeverageReserves {
+        total_shares: storage::get_total_shares(e),
+        total_b_tokens,
+        total_d_tokens,
+        b_rate,
+        d_rate,
     }
-
-    (b_correction, d_correction)
 }
 
 /// Harvest profit still locked out of the share price at the current ledger.
@@ -91,16 +57,19 @@ pub fn locked_profit(e: &Env) -> Result<i128, StrategyError> {
 
 /// Account for a deposit into the leveraged position.
 ///
-/// Unlike the standard Blend strategy which tracks only b-tokens, we track both
-/// b-tokens AND d-tokens since leverage involves debt.
-///
 /// Process:
 /// 1. Calculate the equity added = (b_delta × b_rate - d_delta × d_rate) / SCALAR_12
 /// 2. Convert equity to shares proportionally
 /// 3. Apply inflation attack protection for first depositor
-/// 4. Update totals
+/// 4. Record the new share count
 ///
-/// Returns `(vault_minted_shares, lockup_shares, updated_reserves)`.
+/// `reserves` is the position **before** the deposit: the pool has already
+/// settled it by the time this is called, so a fresh read would price the new
+/// shares against equity that already includes the deposit. The deltas are the
+/// b/d tokens the pool measurably added.
+///
+/// Returns `(vault_minted_shares, lockup_shares, updated_reserves)`, the last
+/// being the position after the deposit.
 ///
 /// The per-user ledger is the SEP-41 share token, not strategy storage: the
 /// caller (`lib.rs::deposit`) mints `vault_minted_shares` to the depositor and,
@@ -156,7 +125,7 @@ pub fn deposit(
         (new_shares, 0)
     };
 
-    // Update totals (total_shares includes the lockup, matching token supply).
+    // total_shares includes the lockup, matching token supply.
     reserves.total_shares = reserves
         .total_shares
         .checked_add(new_shares)
@@ -170,8 +139,7 @@ pub fn deposit(
         .checked_add(d_tokens_delta)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    // Persist
-    storage::set_strategy_reserves(e, reserves.clone());
+    storage::set_total_shares(e, reserves.total_shares);
 
     Ok((vault_minted_shares, lockup_shares, reserves))
 }
@@ -189,8 +157,7 @@ pub fn deposit(
 /// `shares_to_burn` from the token.
 ///
 /// Nothing is persisted here. The token amounts are what `submit_unwind` is
-/// asked to remove; `commit_withdraw` then records what the pool *measurably*
-/// removed, so stored reserves stay in lock-step with the actual pool position.
+/// asked to remove; `commit_withdraw` then records the shares burned.
 pub fn withdraw(
     e: &Env,
     user_shares: i128,
@@ -274,19 +241,12 @@ fn share_slice(
     Ok((b_tokens, d_tokens))
 }
 
-/// Commit a withdrawal to storage using the b/d tokens the pool *actually*
-/// removed (returned by `submit_unwind`), keeping stored reserves in lock-step
-/// with the real pool position — the same measured-delta discipline used by
-/// `deposit`, `harvest` and `deleverage`.
+/// Record a withdrawal: `shares_to_burn` leave the share count.
 ///
-/// `reserves` is the pre-withdraw snapshot (with refreshed rates). `shares_to_burn`
-/// is the amount burned from the share token; `b_removed`/`d_removed` are the
-/// measured pool deltas. Position totals use `saturating_sub` as a floor: the
-/// measured removal should never exceed the share it was computed from, but if
-/// it ever did — the pool can hold more than the tracked totals, which only
-/// reconcile downward — the total floors at zero instead of reverting.
+/// `reserves` is the position before the unwind, and `b_removed`/`d_removed`
+/// the b/d tokens the pool measurably removed (returned by `submit_unwind`).
 ///
-/// Returns the persisted, post-withdraw reserves.
+/// Returns the position after the withdrawal.
 pub fn commit_withdraw(
     e: &Env,
     shares_to_burn: i128,
@@ -300,31 +260,46 @@ pub fn commit_withdraw(
         .total_shares
         .checked_sub(shares_to_burn)
         .ok_or(StrategyError::UnderflowOverflow)?;
-    reserves.total_b_tokens = reserves.total_b_tokens.saturating_sub(b_removed);
-    reserves.total_d_tokens = reserves.total_d_tokens.saturating_sub(d_removed);
+    reserves.total_b_tokens = reserves
+        .total_b_tokens
+        .checked_sub(b_removed)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    reserves.total_d_tokens = reserves
+        .total_d_tokens
+        .checked_sub(d_removed)
+        .ok_or(StrategyError::UnderflowOverflow)?;
 
-    storage::set_strategy_reserves(e, reserves.clone());
+    storage::set_total_shares(e, reserves.total_shares);
     Ok(reserves)
 }
 
 // ── Harvest accounting ───────────────────────────────────────────────────────
 
-/// Account for harvested rewards that have been re-leveraged.
-/// The b/d token deltas increase total tokens without minting new shares, and
-/// the equity they add is locked: it reaches the share price gradually, over
-/// `PROFIT_UNLOCK_LEDGERS`, rather than at this ledger.
+/// Account for harvested rewards that have been re-leveraged. No shares are
+/// minted, and the equity the b/d token deltas add is locked: it reaches the
+/// share price gradually, over `PROFIT_UNLOCK_LEDGERS`, rather than at this
+/// ledger.
 ///
-/// `reserves` is the **pre-reinvest** snapshot, exactly as `deposit` takes one.
-/// It cannot re-read the position itself: by the time this is called the pool
-/// has already settled the reinvest, so a fresh read would already include
-/// `b_tokens_delta` and adding it again would double-count.
+/// `reserves` is the position **before** the reinvest, exactly as `deposit`
+/// takes one: the pool has already settled the reinvest by the time this is
+/// called, so the gain is measured as the deltas' equity on top of it.
+///
+/// Returns the position after the reinvest.
 pub fn harvest(
     e: &Env,
     b_tokens_delta: i128,
     d_tokens_delta: i128,
     reserves: &LeverageReserves,
 ) -> Result<LeverageReserves, StrategyError> {
-    let updated = grow(e, b_tokens_delta, d_tokens_delta, reserves)?;
+    let mut updated = reserves.clone();
+    updated.total_b_tokens = updated
+        .total_b_tokens
+        .checked_add(b_tokens_delta)
+        .ok_or(StrategyError::UnderflowOverflow)?;
+    updated.total_d_tokens = updated
+        .total_d_tokens
+        .checked_add(d_tokens_delta)
+        .ok_or(StrategyError::UnderflowOverflow)?;
 
     let gain = compute_equity(&updated)?
         .checked_sub(compute_equity(reserves)?)
@@ -338,71 +313,4 @@ pub fn harvest(
     storage::set_locked_profit(e, &lock);
 
     Ok(updated)
-}
-
-/// Account for a re-leverage: b and d tokens both increase, shares unchanged.
-///
-/// The tracked position grows by the measured pool deltas exactly as in
-/// `harvest`, from the same pre-submit snapshot for the same reason. The
-/// economics are what differ: `harvest` brings in *new* equity (swapped BLND)
-/// and locks it for gradual release, while `releverage` borrows against
-/// collateral the vault already owns, leaving equity — and therefore every
-/// holder's share price — exactly where it was, and moving only the leverage
-/// ratio. There is nothing to lock.
-pub fn releverage(
-    e: &Env,
-    b_tokens_delta: i128,
-    d_tokens_delta: i128,
-    reserves: &LeverageReserves,
-) -> Result<LeverageReserves, StrategyError> {
-    grow(e, b_tokens_delta, d_tokens_delta, reserves)
-}
-
-/// Add measured pool deltas to the tracked position and persist it.
-fn grow(
-    e: &Env,
-    b_tokens_delta: i128,
-    d_tokens_delta: i128,
-    reserves: &LeverageReserves,
-) -> Result<LeverageReserves, StrategyError> {
-    let mut reserves = reserves.clone();
-
-    reserves.total_b_tokens = reserves
-        .total_b_tokens
-        .checked_add(b_tokens_delta)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    reserves.total_d_tokens = reserves
-        .total_d_tokens
-        .checked_add(d_tokens_delta)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-
-    storage::set_strategy_reserves(e, reserves.clone());
-    Ok(reserves)
-}
-
-/// Account for deleveraging: b and d tokens decrease without changing shares.
-///
-/// `reserves` is the **pre-unwind** snapshot, for the same reason `harvest` takes
-/// one: the pool has already settled the unwind, so a fresh read would already
-/// have `b_tokens_removed` taken out and subtracting it again would double-count.
-///
-/// Position totals use `saturating_sub`, matching `commit_withdraw`. The measured
-/// removal comes from the pool while the snapshot is clamped to the pool's
-/// *pre*-unwind position, so if the tracked total ever sat below the pool's the
-/// pool can legitimately report removing more than was ever tracked. Flooring at
-/// zero keeps liquidation protection working in that case; reverting would let an
-/// upward gap brick `rebalance`.
-pub fn deleverage(
-    e: &Env,
-    b_tokens_removed: i128,
-    d_tokens_removed: i128,
-    reserves: &LeverageReserves,
-) -> Result<LeverageReserves, StrategyError> {
-    let mut reserves = reserves.clone();
-
-    reserves.total_b_tokens = reserves.total_b_tokens.saturating_sub(b_tokens_removed);
-    reserves.total_d_tokens = reserves.total_d_tokens.saturating_sub(d_tokens_removed);
-
-    storage::set_strategy_reserves(e, reserves.clone());
-    Ok(reserves)
 }

@@ -140,3 +140,30 @@ Get the DeFindex team to co-sign the deployments.
 - File the SCF Tranche-1 completion report with the on-chain artifacts (4 vault IDs,
   deposit→loop→withdraw tx hashes, token addresses, test reports) and notify SCF of
   the revised completion dates.
+
+## 8. De-risk a vault
+
+When BLND emissions no longer pay for the borrowing (the borrow rate above the
+supply rate, times the leverage), leverage loses holders money. The vault has no
+separate supply-only mode; take it almost unlevered with the controls it has:
+
+1. **Admin:** raise `target_hf` to 100, keeping the other risk parameters
+   (`config()` returns the current ones). At HF 100 the debt is about 1% of the
+   collateral.
+   ```bash
+   stellar contract invoke --id <STRATEGY> --source-account <ADMIN> --network mainnet \
+     -- set_risk_params --c_factor <C> --target_hf 1000000000 --min_hf <MIN> --orange_hf <ORANGE>
+   ```
+2. **Keeper:** unwind the existing position to it.
+   ```bash
+   stellar contract invoke --id <STRATEGY> --source-account <KEEPER> --network mainnet \
+     -- partial_unwind --target_hf 1000000000
+   ```
+
+From then on deposits land at HF 100 and `releverage` keeps the vault there. To
+lever back up, set `target_hf` back; the keeper's next `releverage` restores it.
+
+Deposits still borrow that 1%, so they fail while Blend will not lend (the
+reserve at its `max_util`, or borrowing frozen). Withdrawals are unaffected.
+`test_the_admin_and_the_keeper_can_take_a_vault_almost_unlevered` runs this
+procedure.

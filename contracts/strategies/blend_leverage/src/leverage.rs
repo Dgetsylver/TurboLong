@@ -1,5 +1,5 @@
 use crate::constants::{SCALAR_12, SCALAR_7};
-use crate::storage::{LeverageReserves, LockedProfit};
+use crate::{reserves::LeverageReserves, storage::LockedProfit};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};

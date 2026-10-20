@@ -7,7 +7,8 @@ use crate::leverage::{
     locked_profit, priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
     unwind_rounding_margin,
 };
-use crate::storage::{LeverageReserves, LockedProfit};
+use crate::reserves::LeverageReserves;
+use crate::storage::LockedProfit;
 use soroban_fixed_point_math::FixedPoint;
 
 /// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
@@ -635,9 +636,9 @@ fn with_contract<F: FnOnce(&Env, &Address)>(e: &Env, f: F) {
 fn test_deposit_first_depositor() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        // Set up empty reserves in storage
+        // An empty vault
         let init_reserves = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init_reserves.clone());
+        storage::set_total_shares(e, init_reserves.total_shares);
 
         // First deposit: 1000 equity → 1000 shares - 1000 lockup
         // Simulating: b_delta = 8000 (leverage 8x), d_delta = 7000, equity = 1000
@@ -662,7 +663,7 @@ fn test_deposit_second_depositor() {
     with_contract(&e, |e, _| {
         // First deposit
         let init = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init.clone());
+        storage::set_total_shares(e, init.total_shares);
         let (_, _, after_first) =
             reserves::deposit(e, 8_000_0000000, 7_000_0000000, &init).unwrap();
 
@@ -685,7 +686,7 @@ fn test_withdraw_full() {
         // Set up: user has all shares (read from the token in production).
         let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Withdraw all equity (1000)
         let (burned, b_remove, d_remove) =
@@ -709,7 +710,7 @@ fn test_withdraw_partial() {
     with_contract(&e, |e, _| {
         let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Withdraw half equity (500)
         let (burned, b_remove, d_remove) =
@@ -731,7 +732,7 @@ fn test_withdraw_insufficient_balance() {
     with_contract(&e, |e, _| {
         let user_shares = 500_0000000_i128; // only has 500
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Try to withdraw more than the user's shares cover
         let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
@@ -746,7 +747,7 @@ fn test_withdraw_refused_when_underwater() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(900_0000000, 1_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         let result = reserves::withdraw(e, 1_000_0000000, 1_0000000, &reserves_state);
         assert!(matches!(
@@ -924,7 +925,7 @@ fn test_harvest_locks_the_equity_it_adds() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, r.clone());
+        storage::set_total_shares(e, r.total_shares);
 
         // +500 b / +400 d: the harvest adds 100 of equity, all of it locked.
         let updated = reserves::harvest(e, 500_0000000, 400_0000000, &r).unwrap();
@@ -940,9 +941,6 @@ fn test_harvest_locks_the_equity_it_adds() {
 
         e.ledger().with_mut(|li| li.sequence_number += W / 2);
         assert_eq!(value(e), 1_100_0000000, "all released after the window");
-
-        // A re-leverage moves the ratio, not the equity: nothing to lock.
-        reserves::releverage(e, 100_0000000, 100_0000000, &updated).unwrap();
         assert_eq!(reserves::locked_profit(e).unwrap(), 0);
     });
 }
@@ -985,7 +983,7 @@ fn test_deposit_zero_b_tokens_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         let result = reserves::deposit(e, 0, 0, &reserves_state);
         assert!(result.is_err());
@@ -997,7 +995,7 @@ fn test_deposit_negative_equity_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // More debt than supply → negative equity
         let result = reserves::deposit(e, 1_000_0000000, 2_000_0000000, &reserves_state);
@@ -1010,7 +1008,7 @@ fn test_multi_user_proportional() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let init = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init.clone());
+        storage::set_total_shares(e, init.total_shares);
 
         // Alice deposits first: equity = 1000
         let (alice_shares, _, after_alice) =
@@ -1206,19 +1204,19 @@ fn test_version_defaults_to_one_then_bumps() {
     });
 }
 
-/// An in-place WASM upgrade preserves all contract storage, so a user's
-/// underlying balance and the strategy HF computed from the stored position
-/// must be identical before and after. This asserts that parity invariant on
-/// a seeded fixture: the same stored reserves yield byte-identical equity, HF,
-/// and per-share underlying — well within the 1e-7 acceptance tolerance (the
-/// difference is exactly zero).
+/// An in-place WASM upgrade preserves all contract storage and leaves Blend's
+/// record of the position alone, so a user's underlying balance and the strategy
+/// HF must be identical before and after. This asserts that parity invariant on
+/// a seeded fixture: the same position and stored share count yield
+/// byte-identical equity, HF, and per-share underlying — well within the 1e-7
+/// acceptance tolerance (the difference is exactly zero).
 #[test]
 fn test_upgrade_preserves_hf_and_balance_parity() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         // Seed a realistic leveraged position: ~8x supply, 7x debt.
         let reserves = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves.clone());
+        storage::set_total_shares(e, reserves.total_shares);
         // A holder's shares live in the share token, which an upgrade of the
         // strategy does not touch; what the upgrade could change is their price.
         let user_shares = 1_000_0000000_i128;
@@ -1236,8 +1234,12 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
         .unwrap();
         let user_underlying_before = shares_to_underlying(user_shares, &reserves, 0).unwrap();
 
-        // An upgrade does not touch contract storage; re-read it as v2 would.
-        let reserves_after = storage::get_strategy_reserves(e);
+        // An upgrade touches neither Blend's record of the position nor the
+        // stored share count; rebuild the position as v2 would read it.
+        let reserves_after = LeverageReserves {
+            total_shares: storage::get_total_shares(e),
+            ..reserves.clone()
+        };
         let equity_after = compute_equity(&reserves_after).unwrap();
         let hf_after = compute_health_factor(
             reserves_after.total_b_tokens,
