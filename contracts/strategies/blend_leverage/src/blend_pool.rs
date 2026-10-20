@@ -321,8 +321,8 @@ pub fn submit_deleverage(
 /// checked against the final state. The order is not about funding — the two
 /// transfers net to zero, so the strategy needs no balance of its own either
 /// way. The pool health-checks the finished request set, and the caller
-/// (`releverage`) re-reads the position afterwards and reverts if the result is
-/// not where it asked for.
+/// (`releverage`) re-reads the position afterwards and reverts if its HF
+/// settled below `orange_hf`.
 ///
 /// Returns `(b_token_delta, d_token_delta)` — both positive on success.
 pub fn submit_releverage(

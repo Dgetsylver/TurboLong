@@ -280,7 +280,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         check_not_wiped_out(&e, &reserves)?;
 
         // Claim BLND from both supply and borrow sides
-        let harvested_blnd = blend_pool::claim(&e, &config);
+        blend_pool::claim(&e, &config);
 
         // Parse the caller's minimum swap output from data bytes. Absent (or a
         // nonsensical negative) it contributes nothing and the admin floor is
@@ -301,10 +301,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         // Update reserves without minting shares (yield accrues to existing holders)
         if b_delta > 0 {
             let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
+            // In underlying, as `harvest_reinvest` reports it: what the swap of
+            // every BLND the strategy held, claimed now or before, realized.
             event::emit_harvest(
                 &e,
                 String::from_str(&e, STRATEGY_NAME),
-                harvested_blnd,
+                realized_underlying,
                 keeper,
                 shares_to_underlying(SCALAR_12, &updated_reserves, reserves::locked_profit(&e)?)?,
             );
@@ -351,7 +353,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Execute unwind on the pool — net equity flows to `to`. The returned
         // deltas are the b/d tokens the pool *actually* removed.
-        let (b_removed, d_removed, _) =
+        let (b_removed, d_removed, paid) =
             blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
 
         // Persist the measured pool deltas, as deposit/harvest/deleverage do, so
@@ -368,7 +370,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             reserves::locked_profit(&e)?,
         )?;
 
-        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
+        // The amount paid, which rounding can leave a few stroops under `amount`.
+        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), paid, from);
 
         Ok(underlying_balance)
     }
@@ -717,7 +720,8 @@ impl BlendLeverageStrategy {
     /// consume the cooldown. Emits a `releverage` event when leverage is added.
     ///
     /// The cooldown rejection is `DeadlineExpired`, not `NotAuthorized`: the
-    /// keeper *is* authorized, it is simply too early.
+    /// keeper *is* authorized, it is simply too early. The DeFindex error set
+    /// has no "too early" code, and `DeadlineExpired` is the only timing one.
     pub fn releverage(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
@@ -938,12 +942,12 @@ impl BlendLeverageStrategy {
         Ok(())
     }
 
-    /// The configured swap account, or an error if unset.
+    /// The configured swap account, or `NotInitialized` if unset.
     pub fn swap_account(e: Env) -> Result<Address, StrategyError> {
         if storage::has_swap_account(&e) {
             Ok(storage::get_swap_account(&e))
         } else {
-            Err(StrategyError::NotAuthorized)
+            Err(StrategyError::NotInitialized)
         }
     }
 
@@ -1071,7 +1075,8 @@ impl BlendLeverageStrategy {
     ///
     /// Read-only view of the obligation the next `harvest_reinvest` has to
     /// clear, so the keeper and monitoring can see an unsettled claim (and the
-    /// ledger its allowance dies) rather than inferring it from events.
+    /// ledger at which its allowance expires) rather than inferring it from
+    /// events.
     pub fn pending_harvest(e: Env) -> Result<(i128, i128, i128, u32), StrategyError> {
         let p = storage::get_pending_harvest(&e).ok_or(StrategyError::NotInitialized)?;
         Ok((p.blnd_claimed, p.underlying_before, p.floor, p.expiration))
@@ -1111,8 +1116,8 @@ impl BlendLeverageStrategy {
 
         // An unsettled claim whose allowance is still live must be settled (or
         // waited out) first. `DeadlineExpired` rather than `NotAuthorized`: the
-        // keeper is authorized, it is simply too early — same distinction
-        // `releverage` draws.
+        // keeper is authorized, it is simply too early — same distinction, and
+        // same lack of a "too early" code, as `releverage`.
         if let Some(stale) = storage::get_pending_harvest(&e) {
             if now < stale.expiration {
                 return Err(StrategyError::DeadlineExpired);

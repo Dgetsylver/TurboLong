@@ -753,7 +753,7 @@ fn test_health_factor_from_pool() {
     )
     .unwrap();
 
-    // With 3 loops at c=0.95, HF should be > min_hf (1.05)
+    // With 3 loops at the strategy's c = 0.90, HF should be > min_hf (1.05)
     assert!(
         hf > config.min_hf,
         "HF {} should be > min_hf {}",
@@ -2129,7 +2129,10 @@ fn test_set_swap_account_admin_and_getter() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
     // Unset → error.
-    assert!(sclient.try_swap_account().is_err());
+    assert!(matches!(
+        sclient.try_swap_account(),
+        Err(Ok(StrategyError::NotInitialized))
+    ));
 
     let swap_acct = Address::generate(&e);
     sclient.set_swap_account(&swap_acct);
@@ -4429,6 +4432,68 @@ fn test_trait_harvest_uses_the_admin_floor_when_data_is_absent() {
         0,
         "the harvest still runs — the floor is a bound, not a blocker"
     );
+}
+
+/// The data of the strategy's last event named `name` in the last invocation.
+fn last_event_data(e: &Env, strategy: &Address, name: &str) -> Option<Val> {
+    use soroban_sdk::{xdr, TryFromVal};
+    let mut found = None;
+    for ev in e.events().all().filter_by_contract(strategy).events() {
+        let xdr::ContractEventBody::V0(v0) = &ev.body;
+        if v0.topics.first().map(|t| Symbol::try_from_val(e, t)) == Some(Ok(Symbol::new(e, name))) {
+            found = Val::try_from_val(e, &v0.data).ok();
+        }
+    }
+    found
+}
+
+/// The `amount` field of the strategy's last DeFindex event named `name`.
+fn defindex_event_amount(e: &Env, strategy: &Address, name: &str) -> Option<i128> {
+    use soroban_sdk::{Map, TryFromVal};
+    let data = Map::<Symbol, Val>::try_from_val(e, &last_event_data(e, strategy, name)?).ok()?;
+    i128::try_from_val(e, &data.get(Symbol::new(e, "amount"))?).ok()
+}
+
+// The DeFindex events report the underlying that moved: a harvest what the swap
+// of every BLND the strategy held realized, BLND held before the call included,
+// as `harvest_reinvest` reports it; a withdraw the amount paid.
+#[test]
+fn test_harvest_and_withdraw_events_report_the_underlying_that_moved() {
+    use soroban_sdk::TryFromVal;
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, _router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    // The 1000 BLND were in hand before the call; at 0.05 they sell for 50.
+    sclient.harvest(&keeper, &None);
+    let realized = i128::try_from_val(
+        &e,
+        &last_event_data(&e, &strategy, "harvest_realized").unwrap(),
+    )
+    .unwrap();
+    assert!(realized >= 50_0000000, "realized={}", realized);
+    assert_eq!(
+        defindex_event_amount(&e, &strategy, "harvest_event"),
+        Some(realized)
+    );
+
+    let user = Address::generate(&e);
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    // At accrued rates, rounding against the withdrawer pays a little under the
+    // amount asked; the event reports the payment. Read before any other call:
+    // the events are the last invocation's.
+    accrue_interest(&e, &pool_addr, &token, 30 * 24 * 60 * 60);
+    let asked = sclient.balance(&user) / 2;
+    sclient.withdraw(&asked, &user, &user);
+    let logged = defindex_event_amount(&e, &strategy, "withdraw_event");
+    let paid = TokenClient::new(&e, &token).balance(&user);
+    assert!(paid < asked, "precondition: paid={} asked={}", paid, asked);
+    assert_eq!(logged, Some(paid));
 }
 
 #[test]

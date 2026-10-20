@@ -32,6 +32,8 @@ pub enum TokenError {
     InsufficientBalance = 2,
     InsufficientAllowance = 3,
     BadExpiration = 4,
+    /// A balance or the total supply would exceed `i128::MAX`.
+    Overflow = 5,
 }
 
 fn check_nonnegative(amount: i128) -> Result<(), TokenError> {
@@ -78,11 +80,7 @@ impl VaultShareToken {
 
     fn receive(e: &Env, to: &Address, amount: i128) -> Result<(), TokenError> {
         let bal = storage::get_balance(e, to);
-        storage::set_balance(
-            e,
-            to,
-            bal.checked_add(amount).ok_or(TokenError::NegativeAmount)?,
-        );
+        storage::set_balance(e, to, bal.checked_add(amount).ok_or(TokenError::Overflow)?);
         Ok(())
     }
 
@@ -241,7 +239,7 @@ impl VaultShareToken {
             &e,
             storage::get_total_supply(&e)
                 .checked_add(amount)
-                .ok_or(TokenError::NegativeAmount)?,
+                .ok_or(TokenError::Overflow)?,
         );
         storage::extend_instance(&e);
         e.events()
