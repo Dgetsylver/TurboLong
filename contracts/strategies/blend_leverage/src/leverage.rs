@@ -43,10 +43,30 @@ pub fn compute_lever_in(
 
 /// Calculate the net equity of the strategy position.
 /// equity = (b_tokens × b_rate / SCALAR_12) - (d_tokens × d_rate / SCALAR_12)
+///
+/// Rounded down, as Blend values a position: the collateral down, the debt up.
 pub fn compute_equity(reserves: &LeverageReserves) -> Result<i128, StrategyError> {
     let supply_value = reserves
         .total_b_tokens
         .fixed_mul_floor(reserves.b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    let debt_value = reserves
+        .total_d_tokens
+        .fixed_mul_ceil(reserves.d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    supply_value
+        .checked_sub(debt_value)
+        .ok_or(StrategyError::UnderflowOverflow)
+}
+
+/// `compute_equity` rounded up instead: the collateral up, the debt down. What
+/// a deposit is priced against, so it never mints more shares than it adds.
+pub fn compute_equity_up(reserves: &LeverageReserves) -> Result<i128, StrategyError> {
+    let supply_value = reserves
+        .total_b_tokens
+        .fixed_mul_ceil(reserves.b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
     let debt_value = reserves
@@ -99,6 +119,8 @@ pub fn is_wiped_out(reserves: &LeverageReserves, locked: i128) -> Result<bool, S
 ///
 /// Refused with `InvalidSharesMinted` when shares are outstanding with no
 /// priced equity behind them (see `is_wiped_out`): there is no price to mint at.
+/// Otherwise the vault is priced at its equity rounded up (`compute_equity_up`)
+/// and the shares round down, so a deposit never mints more than it adds.
 pub fn underlying_to_shares(
     amount: i128,
     reserves: &LeverageReserves,
@@ -108,12 +130,15 @@ pub fn underlying_to_shares(
         // First deposit: 1 share = 1 unit
         return Ok(amount);
     }
-    let total_equity = priced_equity(reserves, locked)?;
-    if total_equity <= 0 {
+    if priced_equity(reserves, locked)? <= 0 {
         return Err(StrategyError::InvalidSharesMinted);
     }
+    let equity_up = compute_equity_up(reserves)?;
+    let priced_up = equity_up
+        .checked_sub(locked.clamp(0, equity_up.max(0)))
+        .ok_or(StrategyError::UnderflowOverflow)?;
     amount
-        .fixed_mul_floor(reserves.total_shares, total_equity)
+        .fixed_mul_floor(reserves.total_shares, priced_up)
         .ok_or(StrategyError::ArithmeticError)
 }
 
@@ -236,8 +261,9 @@ pub fn compute_health_factor(
         .fixed_mul_floor(l_factor, SCALAR_7)
         .ok_or(StrategyError::ArithmeticError)?;
 
+    // Rounded up, as Blend values debt, so this HF never exceeds Blend's.
     let debt_value = d_tokens
-        .fixed_mul_floor(d_rate, SCALAR_12)
+        .fixed_mul_ceil(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
     // HF = weighted_supply / (debt_value * SCALAR_7)
@@ -282,13 +308,13 @@ pub fn check_min_health_factor(e: &Env, hf: i128, min_hf: i128) -> Result<(), St
 /// Both terms are positive while HF is below target: target_hf > cl for any
 /// healthy target, since cl <= c_factor < 1.0 < target_hf.
 ///
-/// The closed form is exact; the pool is not. Blend burns `ceil(x / b_rate)`
-/// b-tokens for the withdraw and `floor(x / d_rate)` d-tokens for the repay, and
-/// `B`/`D` above are already floored — every rounding lands against HF, enough to
-/// leave the exact `x` one unit (1e-7) short of the target in a third to a half
-/// of cases, i.e. still inside the orange zone it was meant to leave. `x` is
-/// therefore padded by `unwind_rounding_margin` (≈25 stroops at typical
-/// parameters).
+/// `B` is rounded down and `D` up, as Blend values them, so both err toward
+/// repaying more. The closed form is exact; the pool is not. Blend burns
+/// `ceil(x / b_rate)` b-tokens for the withdraw and `floor(x / d_rate)` d-tokens
+/// for the repay — both against HF, enough to leave the exact `x` one unit
+/// (1e-7) short of the target in a third to a half of cases, i.e. still inside
+/// the orange zone it was meant to leave. `x` is therefore padded by
+/// `unwind_rounding_margin` (≈25 stroops at typical parameters).
 ///
 /// Returns `0` if already at or above target_hf, or if there is no debt.
 /// The result is clamped at the outstanding debt value: for degenerate positions
@@ -321,7 +347,7 @@ pub fn compute_partial_unwind(
         .fixed_mul_floor(b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
     let debt_value = d_tokens
-        .fixed_mul_floor(d_rate, SCALAR_12)
+        .fixed_mul_ceil(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
     // B × cl - target_hf × D (1e7 × underlying), negative while HF < target_hf.
@@ -361,8 +387,10 @@ pub fn compute_partial_unwind(
     Ok(repay_underlying)
 }
 
-/// Stroops added to `compute_partial_unwind`'s repay so that Blend's rounding
-/// cannot leave the settled HF below `target_hf`.
+/// Stroops added to `compute_partial_unwind`'s repay, and taken off
+/// `compute_releverage`'s borrow, so that Blend's rounding cannot leave the
+/// settled HF below `target_hf`. A re-leverage's legs (b-tokens minted down,
+/// d-tokens minted up) cost the position the same as an unwind's.
 ///
 /// Each leg can cost the position up to `rate / SCALAR_12 + 1` stroops on its
 /// side — one token of burn rounding plus the floor on the value — which the
@@ -444,7 +472,7 @@ pub fn compute_releverage(
         .fixed_mul_floor(b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
     let debt_value = d_tokens
-        .fixed_mul_floor(d_rate, SCALAR_12)
+        .fixed_mul_ceil(d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
 
     // numerator = B × cl − target_hf × D, positive exactly when HF > target_hf.
@@ -463,15 +491,18 @@ pub fn compute_releverage(
     }
 
     // −1 stroop, the mirror of the +1 in `compute_partial_unwind`, rounds the
-    // borrow down. The pool's own rounding (b-tokens minted down, d-tokens up)
-    // can still settle the HF a unit or so under the target, which is why
-    // `releverage` checks the settled HF only against `orange_hf` — a floor the
-    // target clears by `RELEVERAGE_HF_BUFFER`.
+    // borrow down, and the same rounding margin buys back what the pool's own
+    // rounding (b-tokens minted down, d-tokens up) costs the position, so the
+    // settled HF lands at or above the target. `releverage` still checks the
+    // settled HF against `orange_hf`, which the target clears by
+    // `RELEVERAGE_HF_BUFFER`.
+    let margin = unwind_rounding_margin(b_rate, d_rate, cl, target_hf)?;
     Ok((numerator
         .checked_div(denom)
         .ok_or(StrategyError::DivisionByZero)?
-        - 1)
-    .max(0))
+        - 1
+        - margin)
+        .max(0))
 }
 
 // ── Harvest settlement floor ─────────────────────────────────────────────────

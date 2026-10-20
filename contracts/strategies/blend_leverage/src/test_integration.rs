@@ -5605,6 +5605,75 @@ fn test_redeem_refuses_what_the_holder_cannot_redeem() {
     );
 }
 
+// Blend refuses a withdraw that leaves a borrower with debt and less than the
+// pool's `min_collateral` ($5 on the live pool). The last holder's exit leaves
+// only the locked shares' slice, worth a fraction of a cent, so a proportional
+// unwind would be refused and the holder locked in. The exit closes the whole
+// debt instead, and the locked shares keep their value, unlevered.
+#[test]
+fn test_the_last_holder_exits_below_the_pool_min_collateral() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    let cfg = make_config(&e, &pool_addr, &token, &blnd);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    // $5 at the mock oracle's 14 decimals, as on the live pool.
+    pool::Client::new(&e, &pool_addr).update_pool(&1_000_000, &4, &500_000_000_000_000);
+
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    let keeper = sclient.get_keeper();
+    let user = Address::generate(&e);
+    for holder in [keeper.clone(), user.clone()] {
+        StellarAssetClient::new(&e, &token).mint(&holder, &1_000_0000000);
+        sclient.deposit(&1_000_0000000, &holder);
+    }
+    accrue_interest(&e, &pool_addr, &token, 30 * 24 * 60 * 60);
+
+    // An exit that leaves the vault large goes out as usual.
+    sclient.redeem(&share.balance(&user), &user, &user);
+    let pool_d = |e: &Env| {
+        pool::Client::new(e, &pool_addr)
+            .get_positions(&strategy)
+            .liabilities
+            .get(cfg.reserve_id)
+            .unwrap_or(0)
+    };
+    assert!(pool_d(&e) > 0, "the vault is still levered");
+
+    // The last holder's exit closes the debt.
+    let locked_before = sclient.balance(&strategy);
+    let worth = sclient.balance(&keeper);
+    let paid = sclient.redeem(&share.balance(&keeper), &keeper, &keeper);
+    assert_eq!(share.balance(&keeper), 0);
+    assert_eq!(pool_d(&e), 0, "no debt is left behind");
+    assert!(
+        sclient.balance(&strategy) >= locked_before,
+        "the locked shares keep their value"
+    );
+    assert!(
+        paid <= worth && worth - paid <= 10,
+        "paid={} worth={}",
+        paid,
+        worth
+    );
+    let pos = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let stored = e.as_contract(&strategy, || storage::get_strategy_reserves(&e));
+    assert_eq!(
+        stored.total_b_tokens,
+        pos.collateral.get(cfg.reserve_id).unwrap_or(0)
+    );
+    assert_eq!(stored.total_d_tokens, 0);
+    assert_eq!(stored.total_shares, crate::constants::FIRST_DEPOSIT_LOCKUP);
+
+    // The vault takes deposits again.
+    StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
+    sclient.deposit(&1_000_0000000, &user);
+    assert!(pool_d(&e) > 0, "a new deposit levers in");
+}
+
 // ── T1.3: in-place WASM upgrade parity on a LIVE Blend pool-state fixture ──────
 //
 // The deliverable requires the in-place WASM upgrade to preserve each user's

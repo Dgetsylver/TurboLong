@@ -2,9 +2,9 @@
 
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
-    compute_equity, compute_health_factor, compute_lever_in, compute_partial_unwind,
-    compute_releverage, effective_c_factor, harvest_floor, lock_profit, locked_profit,
-    priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
+    compute_equity, compute_equity_up, compute_health_factor, compute_lever_in,
+    compute_partial_unwind, compute_releverage, effective_c_factor, harvest_floor, lock_profit,
+    locked_profit, priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
     unwind_rounding_margin,
 };
 use crate::storage::{LeverageReserves, LockedProfit};
@@ -1715,6 +1715,62 @@ fn test_releverage_with_accrued_rates_is_sane() {
         hf1,
         target
     );
+}
+
+// The position is valued as Blend values it, collateral down and debt up, so a
+// leaver never takes more than their shares hold and the HF never exceeds
+// Blend's. A deposit is priced against the equity rounded the other way, so it
+// never mints more shares than the value it adds.
+#[test]
+fn test_valuations_round_the_debt_up() {
+    let r = LeverageReserves {
+        total_shares: 3_000_0000000,
+        total_b_tokens: 10_000_0000001,
+        total_d_tokens: 7_000_0000001,
+        b_rate: 1_100_000_000_001,
+        d_rate: 1_050_000_000_001,
+    };
+    let supply_down = r
+        .total_b_tokens
+        .fixed_mul_floor(r.b_rate, SCALAR_12)
+        .unwrap();
+    let debt_up = r
+        .total_d_tokens
+        .fixed_mul_ceil(r.d_rate, SCALAR_12)
+        .unwrap();
+    assert_ne!(
+        debt_up,
+        r.total_d_tokens
+            .fixed_mul_floor(r.d_rate, SCALAR_12)
+            .unwrap(),
+        "precondition: the debt has a fractional part"
+    );
+
+    let equity = compute_equity(&r).unwrap();
+    assert_eq!(equity, supply_down - debt_up);
+    assert_eq!(compute_equity_up(&r).unwrap(), equity + 2);
+
+    let c = 9_000_000_i128;
+    assert_eq!(
+        compute_health_factor(
+            r.total_b_tokens,
+            r.total_d_tokens,
+            r.b_rate,
+            r.d_rate,
+            c,
+            L_NONE
+        )
+        .unwrap(),
+        (supply_down * c).fixed_mul_floor(L_NONE, SCALAR_7).unwrap() / debt_up
+    );
+
+    let amount = 1_000_0000000_i128;
+    let shares = underlying_to_shares(amount, &r, 0).unwrap();
+    assert_eq!(
+        shares,
+        amount.fixed_mul_floor(r.total_shares, equity + 2).unwrap()
+    );
+    assert!(shares <= amount.fixed_mul_floor(r.total_shares, equity).unwrap());
 }
 
 // ── Harvest settlement floor (audit M-4) ─────────────────────────────────────

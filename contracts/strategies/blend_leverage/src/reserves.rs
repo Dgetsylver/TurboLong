@@ -118,12 +118,13 @@ pub fn deposit(
         return Err(StrategyError::BTokensAmountBelowMin);
     }
 
-    // Calculate the equity added by this deposit
+    // Calculate the equity added by this deposit, rounded down (the collateral
+    // down, the debt up) so the depositor is never credited more than they add.
     let supply_added = b_tokens_delta
         .fixed_mul_floor(reserves.b_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
     let debt_added = d_tokens_delta
-        .fixed_mul_floor(reserves.d_rate, SCALAR_12)
+        .fixed_mul_ceil(reserves.d_rate, SCALAR_12)
         .ok_or(StrategyError::ArithmeticError)?;
     let equity_added = supply_added
         .checked_sub(debt_added)

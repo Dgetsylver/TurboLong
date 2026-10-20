@@ -1,7 +1,7 @@
-use blend_contract_sdk::pool::{Client as BlendPoolClient, Request};
+use blend_contract_sdk::pool::{Client as BlendPoolClient, PoolError, Request};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
-use soroban_sdk::{token::TokenClient, vec, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, token::TokenClient, vec, Address, Env, Error, Vec};
 
 use crate::{
     constants::{
@@ -148,6 +148,13 @@ pub fn submit_lever_in(
 /// caller burns the shares first, and an unwind that pays nothing would take
 /// them for nothing.
 ///
+/// **The last holders.** Blend refuses a withdraw that leaves a borrower with
+/// debt and less than the pool's `min_collateral` (`MinCollateralNotMet`), which
+/// an exit from a small enough vault would. Only then, the unwind closes the
+/// whole debt instead: the leaver also repays the rest of it and takes the
+/// collateral that repayment frees, rounded down. Blend checks no minimum on a
+/// borrower without debt, and the holders who stay keep their equity, unlevered.
+///
 /// Returns (b_tokens_removed, d_tokens_removed, underlying_paid).
 pub fn submit_unwind(
     e: &Env,
@@ -164,32 +171,34 @@ pub fn submit_unwind(
     let pre_balance = token_client.balance(&strategy);
 
     let (b_rate, d_rate) = get_rates(e, config);
-    let d_underlying = d_tokens_to_remove
-        .fixed_mul_ceil(d_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-    let b_underlying = b_tokens_to_remove
-        .fixed_mul_floor(b_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-
-    if b_underlying <= d_underlying {
-        return Err(StrategyError::AmountBelowMinDust);
+    let requests = unwind_requests(
+        e,
+        config,
+        b_tokens_to_remove,
+        d_tokens_to_remove,
+        b_rate,
+        d_rate,
+    )?;
+    match pool_client.try_submit_with_allowance(&strategy, &strategy, &strategy, &requests) {
+        Ok(_) => {}
+        Err(Ok(error))
+            if error == Error::from_contract_error(PoolError::MinCollateralNotMet as u32)
+                && d_tokens_to_remove < pre_d =>
+        {
+            let freed_b = (pre_d - d_tokens_to_remove)
+                .fixed_mul_floor(d_rate, b_rate)
+                .ok_or(StrategyError::ArithmeticError)?;
+            let b_tokens = b_tokens_to_remove
+                .checked_add(freed_b)
+                .ok_or(StrategyError::UnderflowOverflow)?
+                .min(pre_b);
+            let requests = unwind_requests(e, config, b_tokens, pre_d, b_rate, d_rate)?;
+            pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
+        }
+        // Any other refusal is Blend's to report.
+        Err(Ok(error)) => panic_with_error!(e, error),
+        Err(Err(_)) => panic_with_error!(e, StrategyError::ExternalError),
     }
-
-    let mut requests: Vec<Request> = Vec::new(e);
-    if d_underlying > 0 {
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount: d_underlying,
-            request_type: REQUEST_TYPE_REPAY,
-        });
-    }
-    requests.push_back(Request {
-        address: config.asset.clone(),
-        amount: b_underlying,
-        request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-    });
-
-    pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     // Transfer equity to `to`
     let post_balance = token_client.balance(&strategy);
@@ -212,6 +221,45 @@ pub fn submit_unwind(
         .ok_or(StrategyError::UnderflowOverflow)?;
 
     Ok((b_removed, d_removed, equity))
+}
+
+/// The `[repay, withdraw_collateral]` requests that remove `b_tokens` and
+/// `d_tokens`, converted to underlying and rounded against the withdrawer as
+/// `submit_unwind` describes. Refused with `AmountBelowMinDust` when they would
+/// carry no equity out.
+fn unwind_requests(
+    e: &Env,
+    config: &Config,
+    b_tokens: i128,
+    d_tokens: i128,
+    b_rate: i128,
+    d_rate: i128,
+) -> Result<Vec<Request>, StrategyError> {
+    let d_underlying = d_tokens
+        .fixed_mul_ceil(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let b_underlying = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    if b_underlying <= d_underlying {
+        return Err(StrategyError::AmountBelowMinDust);
+    }
+
+    let mut requests: Vec<Request> = Vec::new(e);
+    if d_underlying > 0 {
+        requests.push_back(Request {
+            address: config.asset.clone(),
+            amount: d_underlying,
+            request_type: REQUEST_TYPE_REPAY,
+        });
+    }
+    requests.push_back(Request {
+        address: config.asset.clone(),
+        amount: b_underlying,
+        request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+    });
+    Ok(requests)
 }
 
 /// Deleverage by `repay_underlying`: repay that much debt and withdraw the same

@@ -80,7 +80,9 @@ that vault harvests via Soroswap only — and only with a keeper-supplied
 the admin has made a vault's first deposit, every other deposit is refused with
 `NotAuthorized` (`#418`). That deposit gives up `FIRST_DEPOSIT_LOCKUP` (1,000)
 of its shares, which stay locked in the vault for good; the rest of the
-depositor's shares can be withdrawn like anyone's. A small amount is enough:
+depositor's shares can be withdrawn like anyone's. A small amount is enough, as
+long as its levered collateral clears the pool's `min_collateral` ($5 on the
+Etherfuse pool), which Blend checks on every borrow; a few dollars' worth does:
 
 ```bash
 stellar contract invoke --id <STRATEGY> --source-account <KEEPER> --network mainnet \
