@@ -188,7 +188,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///    `target_hf` (`compute_lever_in`). Blend refuses the borrow if it would
     ///    settle the reserve above its own `max_util`.
     /// 3. Check what the pool settled: HF >= `min_hf`
-    /// 4. Track b/d token deltas, mint proportional shares
+    /// 4. Price the equity the b/d token deltas add, mint proportional shares
     /// 5. Return the depositor's underlying balance
     ///
     /// The first deposit gives up `FIRST_DEPOSIT_LOCKUP` shares to the lockup,
@@ -299,7 +299,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let (b_delta, d_delta, realized_underlying) =
             blend_pool::perform_reinvest(&e, &config, caller_min)?;
 
-        // Update reserves without minting shares (yield accrues to existing holders)
+        // Lock the gain rather than mint shares: it reaches the share price as it
+        // is released (`reserves::harvest`).
         if b_delta > 0 {
             let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
             // In underlying, as `harvest_reinvest` reports it: what the swap of

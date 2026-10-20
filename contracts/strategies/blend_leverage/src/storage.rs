@@ -105,7 +105,7 @@ pub fn get_total_shares(e: &Env) -> i128 {
 
 // ── Keeper ───────────────────────────────────────────────────────────────────
 
-/// Instance storage, like the reserves above.
+/// Instance storage, like the share count above.
 pub fn set_keeper(e: &Env, keeper: &Address) {
     e.storage().instance().set(&DataKey::Keeper, keeper);
 }

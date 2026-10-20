@@ -757,6 +757,93 @@ fn test_withdraw_refused_when_underwater() {
     });
 }
 
+// A withdrawal's slice rounds against the withdrawer, at any rates and with
+// harvest profit locked or not. The shares burned cover the amount; the
+// collateral rounds down and the debt up, so the slice's collateral-to-debt
+// ratio is at most the vault's and its exact value at most the burned shares'.
+// A slice of a vault with debt always carries some, so its repay is never left
+// out. `redeem` of the same shares takes the same slice.
+#[test]
+fn test_a_withdrawal_slice_rounds_against_the_withdrawer() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        // (b_tokens, d_tokens, shares, b_rate, d_rate)
+        let vaults = [
+            (
+                8_123_456_789_i128,
+                7_012_345_678,
+                1_000_0001000,
+                1_043_210_987_654,
+                1_087_654_321_098,
+            ),
+            (
+                9_876_543_211,
+                8_765_432_109,
+                1_234_5678901,
+                1_500_000_000_001,
+                1_600_000_000_003,
+            ),
+            (5_000, 4_100, 1_201, 1_040_000_000_007, 1_080_000_000_009),
+        ];
+        for (b_tokens, d_tokens, total_shares, b_rate, d_rate) in vaults {
+            let reserves = LeverageReserves {
+                total_shares,
+                total_b_tokens: b_tokens,
+                total_d_tokens: d_tokens,
+                b_rate,
+                d_rate,
+            };
+            storage::set_total_shares(e, total_shares);
+            let equity = compute_equity(&reserves).unwrap();
+            // The position's exact value, in underlying × SCALAR_12.
+            let value = b_tokens * b_rate - d_tokens * d_rate;
+
+            for locked in [0, equity / 3] {
+                let now = e.ledger().sequence();
+                storage::set_locked_profit(
+                    e,
+                    &LockedProfit {
+                        amount: locked,
+                        from: now,
+                        until: now + W,
+                    },
+                );
+                let priced = equity - locked;
+
+                for amount in [1, 7, priced / 1_000 + 3, priced / 3, priced] {
+                    let case = (b_tokens, locked, amount);
+                    let (burned, b, d) =
+                        reserves::withdraw(e, total_shares, amount, &reserves).unwrap();
+
+                    assert!(
+                        burned * priced >= amount * total_shares,
+                        "{:?}: shares cover it",
+                        case
+                    );
+                    assert!(
+                        b * d_tokens <= b_tokens * d,
+                        "{:?}: ratio at most the vault's",
+                        case
+                    );
+                    assert!(
+                        (b * b_rate - d * d_rate) * total_shares
+                            <= burned * (value - locked * SCALAR_12),
+                        "{:?}: worth at most the shares burned",
+                        case
+                    );
+                    assert!(d >= 1, "{:?}: the slice carries debt", case);
+                    assert_eq!(
+                        reserves::redeem(e, total_shares, burned, &reserves).unwrap(),
+                        (b, d),
+                        "{:?}: redeem takes the same slice",
+                        case
+                    );
+                }
+            }
+        }
+    });
+}
+
 // ── Harvest accounting ───────────────────────────────────────────────────────
 
 #[test]

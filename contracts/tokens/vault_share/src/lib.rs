@@ -8,9 +8,9 @@
 //!
 //! A standard, transferable Soroban token (SEP-41) whose balance is the holder's
 //! vault-share count. The strategy contract is the sole **minter**: it mints
-//! shares to a depositor on `deposit` and burns them on `withdraw`. Because the
-//! token is a normal SEP-41 contract, shares are tradable on DEXes / Aquarius
-//! without routing through the strategy.
+//! shares to a depositor on `deposit` and burns them on `withdraw` and `redeem`.
+//! Because the token is a normal SEP-41 contract, shares are tradable on DEXes /
+//! Aquarius without routing through the strategy.
 //!
 //! This contract is intentionally independent of the strategy: it holds no
 //! leverage logic, only share accounting. Minting/burning is gated to the
@@ -248,7 +248,8 @@ impl VaultShareToken {
     }
 
     /// Burn `amount` shares from `from`. Only the minter (the strategy) may
-    /// call — used by `withdraw` so the strategy never needs the holder's auth.
+    /// call — used by `withdraw` and `redeem` so the strategy never needs the
+    /// holder's auth.
     pub fn burn_by_minter(e: Env, from: Address, amount: i128) -> Result<(), TokenError> {
         let minter = storage::get_minter(&e);
         minter.require_auth();
@@ -273,7 +274,8 @@ impl VaultShareToken {
         storage::get_minter(&e)
     }
 
-    /// Rotate the minter (admin only) — e.g. when the strategy is redeployed.
+    /// Rotate the minter (admin only). A strategy that deploys its own share
+    /// token is the token's admin and never calls this, so its minter is fixed.
     pub fn set_minter(e: Env, new_minter: Address) -> Result<(), TokenError> {
         Self::require_admin(&e);
         storage::set_minter(&e, &new_minter);

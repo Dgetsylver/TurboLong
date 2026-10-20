@@ -7,12 +7,13 @@ re-enter their leveraged positions. Covers the **in-place WASM upgrade** path
 ## Model
 
 The strategy upgrades **in place** via `update_current_contract_wasm`. The
-contract keeps the same address and all its storage — `Config`, `Reserves`
-(`total_shares`, `total_b_tokens`, `total_d_tokens`, rates), `Keeper`, and
-`Admin` — across the upgrade. Per-user shares live in the share token, a
-separate contract the upgrade does not touch. Because the storage is
-byte-identical before and after, each user's health factor and underlying
-balance are unchanged: there is no exit/re-enter and no per-user signing.
+contract keeps the same address and all its storage — `Config`, `TotalShares`,
+`Keeper`, `Admin` and the rest — across the upgrade. Its position lives in
+Blend, which the strategy reads on every call rather than storing, and per-user
+shares live in the share token: two contracts the upgrade does not touch.
+Because the storage is byte-identical before and after, each user's health
+factor and underlying balance are unchanged: there is no exit/re-enter and no
+per-user signing.
 
 Authorization: `upgrade(new_wasm_hash)` requires `admin.require_auth()`. The
 admin is set at construction (`init_args[9]`). A `version()` counter starts at
@@ -25,8 +26,11 @@ admin is set at construction (`init_args[9]`). A `version()` counter starts at
 
 ## Pre-flight
 
-1. Land and review the v2 code; `cargo test`, `cargo clippy --all-targets -- -D
-   warnings`, and `cargo fmt --check` all green (enforced by `contracts.yml`).
+1. Land and review the v2 code; `cargo test --locked`, `cargo clippy --locked
+   --all-targets -- -D warnings`, and `cargo fmt --check` all green (enforced by
+   `contracts.yml`). Build the `vault_share` wasm first (`cargo build --locked
+   --target wasm32v1-none --release` in `contracts/tokens/vault_share`): the
+   strategy's tests load it.
 2. Build the release WASM:
    ```
    cd contracts/strategies/blend_leverage
@@ -71,8 +75,10 @@ admin is set at construction (`init_args[9]`). A `version()` counter starts at
 
 ## Testnet rehearsal (do this before any mainnet upgrade)
 
-1. Deploy v1 to testnet (`scripts/deploy_strategy.ts`).
-2. Seed a real leveraged position: `deposit` from a funded test account; record
+1. Deploy v1 to testnet (`scripts/deploy_strategy.ts`, after building both
+   wasms; the deployer is the admin).
+2. Seed a real leveraged position: `deposit` from the deployer or the keeper,
+   since the strategy refuses a vault's first deposit from anyone else; record
    `position()` / `health_factor()` / `balance(user)`.
 3. Build v2, install, `upgrade()`.
 4. Re-read and assert parity within 1e-7 (above). Confirm a `deposit` and
@@ -89,16 +95,15 @@ without a compensating data fix — validate this in the testnet rehearsal first
 ## Admin key hygiene
 
 The admin can replace the contract code, so treat it like a protocol key:
-hold it in a hardware signer or multisig, never in source or CI. Rotating the
-admin is not yet an entrypoint; if needed, add a `set_admin(new)` guarded by the
-current admin in a future version (and ship it via this same upgrade flow).
+hold it in a hardware signer or multisig, never in source or CI. Rotate it with
+`set_admin(new)`, which the current admin must sign.
 
 ## Share-token wiring & tokenization (D2)
 
 The per-user share ledger is the standalone SEP-41 token
 (`contracts/tokens/vault_share`), not strategy storage. The strategy is the
-token's **minter** (mints on deposit, burns on withdraw) and reads balances
-from it.
+token's **minter** (mints on deposit, burns on withdraw and redeem) and reads
+balances from it.
 
 ### Deploy sequence (fresh deploy — e.g. each mainnet vault)
 1. Upload the `vault_share` wasm, then deploy the strategy
@@ -108,8 +113,8 @@ from it.
    `S.share_token()` returns its address. Neither can change afterwards.
 2. From here the token is canonical: `deposit` mints to the user (and the
    one-time inflation lockup to `S`'s own inert address, keeping
-   `token.total_supply == total_shares`); `withdraw` burns; `balance` reads the
-   token.
+   `token.total_supply == total_shares`); `withdraw` and `redeem` burn;
+   `balance` reads the token.
 
 ### Deployments that predate the token (e.g. the old testnet vault)
 A deployment that kept its shares in strategy storage cannot be moved onto the
