@@ -189,6 +189,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// 3. Check what the pool settled: HF >= `min_hf`
     /// 4. Track b/d token deltas, mint proportional shares
     /// 5. Return the depositor's underlying balance
+    ///
+    /// The first deposit gives up `FIRST_DEPOSIT_LOCKUP` shares to the lockup,
+    /// so only the keeper or the admin may make it; anyone else is refused with
+    /// `NotAuthorized` until the vault has been seeded.
     fn deposit(e: Env, amount: i128, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         check_positive_amount(amount)?;
@@ -197,6 +201,10 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let config = storage::get_config(&e);
         let reserves = reserves::get_strategy_reserves_updated(&e, &config);
         check_not_wiped_out(&e, &reserves)?;
+        if reserves.total_shares == 0 && from != storage::get_keeper(&e) && from != Self::admin(&e)
+        {
+            return Err(StrategyError::NotAuthorized);
+        }
 
         // Transfer the initial deposit from user to strategy contract
         let token_client = TokenClient::new(&e, &config.asset);

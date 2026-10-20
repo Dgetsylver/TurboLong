@@ -1156,7 +1156,8 @@ fn test_set_risk_params_applies_to_the_next_deposit() {
         (9_000_000, 11_800_000, 10_600_000, 11_600_000)
     );
 
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
     let hf = sclient.health_factor();
@@ -1260,7 +1261,8 @@ fn open_stressed_strategy(
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
 
-    let user = Address::generate(e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -1465,7 +1467,8 @@ fn test_rebalance_keeper_already_at_floor_is_a_noop() {
     // 3 loops at c = 0.90 opens at HF ≈ 1.27 — debt outstanding, above orange.
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -1588,7 +1591,8 @@ fn test_partial_unwind_spends_the_keeper_authorization_on_a_no_op() {
     );
 
     // Debt, with HF already above the target.
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = keeper.clone();
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
     assert!(
@@ -1645,7 +1649,8 @@ fn open_healthy_strategy(e: &Env, pool_addr: &Address, token: &Address, blnd: &A
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
 
-    let user = Address::generate(e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -1825,7 +1830,8 @@ fn test_releverage_to_the_lowest_target_stays_clear_of_the_rebalance_band() {
     let floor = orange_hf + crate::constants::RELEVERAGE_HF_BUFFER;
     let strategy = register_real_strategy_with_target(&e, &pool_addr, &token, &blnd, floor);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -2994,7 +3000,8 @@ fn test_withdraw_after_the_debt_is_fully_repaid() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -3039,7 +3046,8 @@ fn test_withdraw_after_an_outside_event_clears_the_debt() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let (alice, bob) = (Address::generate(&e), Address::generate(&e));
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let (alice, bob) = (sclient.get_keeper(), Address::generate(&e));
     for user in [&alice, &bob] {
         StellarAssetClient::new(&e, &token)
             .mock_all_auths()
@@ -3134,7 +3142,8 @@ fn test_rebalance_works_near_full_utilization() {
     // A stressed position (HF ≈ 1.076) opened through the real deposit.
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &10_000_0000000);
     set_target_hf(&e, &strategy, STRESSED_HF);
     sclient.deposit(&10_000_0000000, &user);
@@ -3315,7 +3324,8 @@ fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     set_target_hf(&e, &strategy, 10_140_000);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -3331,6 +3341,58 @@ fn test_deposit_reverts_when_the_settled_hf_is_below_min_hf() {
     );
     let (_, _, b_tokens, d_tokens, _, _) = sclient.position();
     assert_eq!((b_tokens, d_tokens), (0, 0), "no position is left behind");
+}
+
+// The first deposit gives up `FIRST_DEPOSIT_LOCKUP` shares, so a user is never
+// the one to make it: only the keeper or the admin opens a vault. Once it is
+// open, anyone deposits and keeps every share their deposit buys.
+#[test]
+fn test_only_the_keeper_or_the_admin_opens_the_vault() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    e.cost_estimate().budget().reset_unlimited();
+    let lockup = crate::constants::FIRST_DEPOSIT_LOCKUP;
+    let mint = |to: &Address| {
+        StellarAssetClient::new(&e, &token)
+            .mock_all_auths()
+            .mint(to, &1_000_0000000)
+    };
+
+    // A user's first deposit is refused, and nothing moves.
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    let user = Address::generate(&e);
+    mint(&user);
+    match sclient.try_deposit(&1_000_0000000, &user) {
+        Err(Ok(StrategyError::NotAuthorized)) => {}
+        other => std::panic!("expected NotAuthorized, got {:?}", other),
+    }
+    assert_eq!(TokenClient::new(&e, &token).balance(&user), 1_000_0000000);
+    assert_eq!(share.total_supply(), 0, "the vault is still unopened");
+
+    // The admin opens it and pays the lockup.
+    let admin = sclient.admin();
+    mint(&admin);
+    sclient.deposit(&1_000_0000000, &admin);
+    assert_eq!(share.balance(&strategy), lockup);
+
+    // Now the user's deposit goes through and gives up nothing to the lockup:
+    // the same amount buys more shares than the admin's did.
+    sclient.deposit(&1_000_0000000, &user);
+    assert_eq!(share.balance(&strategy), lockup, "the lockup is taken once");
+    assert!(share.balance(&user) > share.balance(&admin));
+
+    // The keeper can open a vault too.
+    let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
+    let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
+    let share = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+    let keeper = sclient.get_keeper();
+    mint(&keeper);
+    sclient.deposit(&1_000_0000000, &keeper);
+    assert_eq!(share.balance(&strategy), lockup);
 }
 
 // `releverage` adds borrow demand exactly as a deposit does, so Blend holds it to
@@ -3538,7 +3600,8 @@ fn test_large_deposit_into_a_pool_with_little_free_liquidity() {
         supply - borrow
     );
 
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &deposit);
     sclient.deposit(&deposit, &user);
 
@@ -3567,7 +3630,8 @@ fn test_withdraw_needs_only_its_equity_in_free_liquidity() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
 
@@ -3838,7 +3902,8 @@ fn setup_broker_harvest<'a>(
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
 
-    let user = Address::generate(e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -4280,7 +4345,8 @@ fn setup_trait_harvest<'a>(
     );
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
 
-    let user = Address::generate(e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -4457,7 +4523,8 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
             .mint(to, &amount)
     };
 
-    let honest = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let honest = sclient.get_keeper();
     mint(&honest, 1_000_0000000);
     sclient.deposit(&1_000_0000000, &honest);
     let honest_before = sclient.balance(&honest);
@@ -4562,7 +4629,8 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
     };
     mint(&token, &router, 10_000_0000000);
 
-    let honest = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let honest = keeper.clone();
     mint(&token, &honest, 1_000_0000000);
     sclient.deposit(&1_000_0000000, &honest);
     let attacker = Address::generate(&e);
@@ -4691,7 +4759,8 @@ fn open_position_for_seizure(
     let strategy = register_real_strategy(e, pool_addr, token, blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(e, &strategy);
 
-    let user = Address::generate(e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(e, token)
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
@@ -5118,7 +5187,8 @@ fn test_real_withdraw_entrypoint_keeps_reserves_in_sync() {
 
     // Fund a user and deposit through the REAL entrypoint (runs the real
     // submit_lever_in + reserves::deposit reconciliation).
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     let token_admin = StellarAssetClient::new(&e, &token);
     let deposit = 1_000_0000000_i128;
     token_admin.mint(&user, &deposit);
@@ -5206,7 +5276,8 @@ fn test_real_full_withdraw_entrypoint_keeps_reserves_in_sync() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let shclient = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
 
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     let token_admin = StellarAssetClient::new(&e, &token);
     let token_client = TokenClient::new(&e, &token);
     let deposit = 1_000_0000000_i128;
@@ -5319,7 +5390,8 @@ fn test_transferred_shares_let_recipient_withdraw() {
     let shclient = vault_share_token::VaultShareTokenClient::new(&e, &share);
 
     // Alice deposits through the real entrypoint (mints her shares on the token).
-    let alice = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let alice = sclient.get_keeper();
     let bob = Address::generate(&e);
     let token_admin = StellarAssetClient::new(&e, &token);
     let token_client = TokenClient::new(&e, &token);
@@ -5458,7 +5530,8 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
     let shclient = vault_share_token::VaultShareTokenClient::new(&e, &share);
 
     // Real leveraged deposit -> live pool position.
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     let token_admin = StellarAssetClient::new(&e, &token);
     let deposit = 1_000_0000000_i128;
     token_admin.mint(&user, &deposit);
@@ -5623,7 +5696,8 @@ fn test_health_factor_carries_pool_l_factor() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
 
@@ -5694,7 +5768,8 @@ fn test_health_factor_tracks_a_governance_l_factor_cut() {
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
 
-    let user = Address::generate(&e);
+    // The keeper opens the vault: only it or the admin may make the first deposit.
+    let user = sclient.get_keeper();
     StellarAssetClient::new(&e, &token).mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
 

@@ -36,9 +36,11 @@ Follow **`docs/mainnet-go-live-runbook.md`**:
    `set_min_harvest_rate` each (the last gates the Broker
    harvest path — see the runbook's `MIN_HARVEST_RATE_*` note); persist
    `deployed-vaults.mainnet.json`.
-3. Wire `frontend/src/defindex.ts` `MAINNET_VAULTS` from the deploy output (helper
+3. **Open each vault**: the keeper (or admin) makes its first deposit. Until
+   then the vault refuses every other deposit (`NotAuthorized`, `#418`).
+4. Wire `frontend/src/defindex.ts` `MAINNET_VAULTS` from the deploy output (helper
    `scripts/wire_mainnet_vaults.ts`).
-4. Per-asset **deposit → loop → withdraw** with small amounts; capture tx hashes
+5. Per-asset **deposit → loop → withdraw** with small amounts; capture tx hashes
    on Stellar Expert (b/d-token deltas). Record for the completion report.
 
 ## 2. List receipt tokens on Aquarius (T3.2)

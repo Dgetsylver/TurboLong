@@ -76,6 +76,17 @@ watch the log for `⚠ <SYMBOL>: … Broker harvest path left CLOSED`, which mea
 that vault harvests via Soroswap only — and only with a keeper-supplied
 `amount_out_min` — until an admin sets the rate.
 
+**Then open each vault**, before the frontend points at it. Until the keeper or
+the admin has made a vault's first deposit, every other deposit is refused with
+`NotAuthorized` (`#418`). That deposit gives up `FIRST_DEPOSIT_LOCKUP` (1,000)
+of its shares, which stay locked in the vault for good; the rest of the
+depositor's shares can be withdrawn like anyone's. A small amount is enough:
+
+```bash
+stellar contract invoke --id <STRATEGY> --source-account <KEEPER> --network mainnet \
+  -- deposit --amount <AMOUNT> --from <KEEPER_ADDRESS>
+```
+
 ## 4. Wire the frontend
 
 In `frontend/src/defindex.ts`, populate `MAINNET_VAULTS` from
