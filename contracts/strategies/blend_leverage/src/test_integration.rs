@@ -1285,17 +1285,27 @@ fn test_rebalance_keeper_auth_gating_and_noop() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     let stranger = Address::generate(&e);
 
-    // A non-keeper caller is rejected (caller != keeper).
+    // Signed by a stranger instead of the keeper, the call is rejected.
     assert!(
-        sclient.try_rebalance_keeper(&stranger).is_err(),
+        sclient
+            .mock_auths(&[MockAuth {
+                address: &stranger,
+                invoke: &MockAuthInvoke {
+                    contract: &strategy,
+                    fn_name: "rebalance_keeper",
+                    args: Vec::new(&e),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_rebalance_keeper()
+            .is_err(),
         "non-keeper must be rejected"
     );
 
     // The keeper may call; with no open position (no debt) it is a no-op.
-    assert_eq!(sclient.rebalance_keeper(&keeper), 0, "no debt → no-op");
+    assert_eq!(sclient.rebalance_keeper(), 0, "no debt → no-op");
 
     // The permissionless rebalance is also a safe no-op with no position.
     sclient.rebalance();
@@ -1382,7 +1392,7 @@ fn test_rebalance_keeper_unwinds_stressed_position_and_emits_event() {
         orange_hf
     );
 
-    let repaid = sclient.rebalance_keeper(&keeper);
+    let repaid = sclient.rebalance_keeper();
     assert!(repaid > 0, "stressed position must repay debt");
 
     // The `rebalance` event carries (before_hf, after_hf, repaid). Captured
@@ -1446,7 +1456,7 @@ fn test_rebalance_never_lowers_the_health_factor() {
             let keeper = sclient.get_keeper();
 
             assert!(
-                sclient.rebalance_keeper(&keeper) > 0,
+                sclient.rebalance_keeper() > 0,
                 "l={} after {}s: the stressed position must repay",
                 l_factor,
                 seconds
@@ -1481,13 +1491,13 @@ fn test_rebalance_keeper_repeat_call_is_a_noop() {
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
     let keeper = sclient.get_keeper();
 
-    let repaid = sclient.rebalance_keeper(&keeper);
+    let repaid = sclient.rebalance_keeper();
     assert!(repaid > 0, "first call must unwind");
     let hf = sclient.health_factor();
     let position = sclient.position();
 
     assert_eq!(
-        sclient.rebalance_keeper(&keeper),
+        sclient.rebalance_keeper(),
         0,
         "an immediate repeat repays nothing"
     );
@@ -1533,7 +1543,7 @@ fn test_rebalance_keeper_already_at_floor_is_a_noop() {
     assert!(hf >= orange_hf, "fixture must sit at/above the floor");
 
     // No-op: nothing repaid, no event, position untouched.
-    assert_eq!(sclient.rebalance_keeper(&keeper), 0, "at floor → no-op");
+    assert_eq!(sclient.rebalance_keeper(), 0, "at floor → no-op");
     assert!(
         find_rebalance_event(&e, &strategy, &keeper).is_none(),
         "no event on a no-op"
@@ -1784,7 +1794,7 @@ fn test_releverage_restores_design_leverage_after_an_emergency_unwind() {
         "rebalance cannot restore leverage — that is the finding"
     );
 
-    let borrowed = sclient.releverage(&keeper);
+    let borrowed = sclient.releverage();
     assert!(borrowed > 0, "re-leverage must borrow: {}", borrowed);
 
     let (ev_before, ev_after, ev_borrowed) = find_releverage_event(&e, &strategy, &keeper)
@@ -1884,11 +1894,10 @@ fn test_releverage_to_the_lowest_target_stays_clear_of_the_rebalance_band() {
         .mock_all_auths()
         .mint(&user, &1_000_0000000);
     sclient.deposit(&1_000_0000000, &user);
-    let keeper = sclient.get_keeper();
 
     // Deleverage well clear of the band, then re-lever.
     sclient.partial_unwind(&(orange_hf + 3_000_000));
-    let borrowed = sclient.releverage(&keeper);
+    let borrowed = sclient.releverage();
     assert!(borrowed > 0, "must re-lever toward the target");
 
     let hf = sclient.health_factor();
@@ -1928,7 +1937,7 @@ fn test_releverage_noop_without_slack_does_not_consume_cooldown() {
     let hf = sclient.health_factor();
     let (equity, _, b, d, _, _) = sclient.position();
 
-    assert_eq!(sclient.releverage(&keeper), 0, "no slack → no-op");
+    assert_eq!(sclient.releverage(), 0, "no slack → no-op");
     assert!(
         find_releverage_event(&e, &strategy, &keeper).is_none(),
         "no event on a no-op"
@@ -1940,7 +1949,7 @@ fn test_releverage_noop_without_slack_does_not_consume_cooldown() {
 
     let last = e.as_contract(&strategy, || storage::get_last_releverage(&e));
     assert_eq!(last, None, "a no-op must not arm the cooldown");
-    assert_eq!(sclient.releverage(&keeper), 0, "immediate retry allowed");
+    assert_eq!(sclient.releverage(), 0, "immediate retry allowed");
 }
 
 // Rate limit, on-chain: a real re-leverage arms the cooldown, and the rejection
@@ -1957,17 +1966,16 @@ fn test_releverage_cooldown_rate_limits_on_chain() {
 
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
 
     sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
-    assert!(sclient.releverage(&keeper) > 0, "first call must do work");
+    assert!(sclient.releverage() > 0, "first call must do work");
     assert_eq!(
         e.as_contract(&strategy, || storage::get_last_releverage(&e)),
         Some(e.ledger().sequence()),
         "a real re-leverage arms the cooldown"
     );
 
-    match sclient.try_releverage(&keeper) {
+    match sclient.try_releverage() {
         Err(Ok(StrategyError::DeadlineExpired)) => {}
         other => std::panic!(
             "expected DeadlineExpired inside the window, got {:?}",
@@ -1980,7 +1988,7 @@ fn test_releverage_cooldown_rate_limits_on_chain() {
         li.sequence_number += crate::constants::RELEVERAGE_COOLDOWN_LEDGERS - 1;
     });
     assert!(
-        sclient.try_releverage(&keeper).is_err(),
+        sclient.try_releverage().is_err(),
         "cooldown must hold until the full window has elapsed"
     );
 
@@ -1991,11 +1999,7 @@ fn test_releverage_cooldown_rate_limits_on_chain() {
     e.ledger().with_mut(|li| {
         li.sequence_number += 1;
     });
-    assert_eq!(
-        sclient.releverage(&keeper),
-        0,
-        "post-cooldown call succeeds"
-    );
+    assert_eq!(sclient.releverage(), 0, "post-cooldown call succeeds");
 }
 
 // Adding leverage is the unsafe direction, so unlike `rebalance` it is never
@@ -2010,20 +2014,29 @@ fn test_releverage_rejects_non_keeper() {
 
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
 
     // Genuine slack to re-lever, so the rejection is about identity, not state.
     sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
 
+    // The host refuses a stranger's signature for want of the keeper's, before
+    // the contract can answer with an error of its own.
     let stranger = Address::generate(&e);
-    match sclient.try_releverage(&stranger) {
-        Err(Ok(StrategyError::NotAuthorized)) => {}
-        other => std::panic!("expected NotAuthorized for a stranger, got {:?}", other),
+    match sclient
+        .mock_auths(&[MockAuth {
+            address: &stranger,
+            invoke: &MockAuthInvoke {
+                contract: &strategy,
+                fn_name: "releverage",
+                args: Vec::new(&e),
+                sub_invokes: &[],
+            },
+        }])
+        .try_releverage()
+    {
+        Err(Err(_)) => {}
+        other => std::panic!("expected an auth failure for a stranger, got {:?}", other),
     }
-    assert!(
-        sclient.releverage(&keeper) > 0,
-        "the keeper may still re-lever"
-    );
+    assert!(sclient.releverage() > 0, "the keeper may still re-lever");
 }
 
 // T2.3 spec edge case: "locked reserves". When pool utilization exceeds the
@@ -2136,7 +2149,7 @@ fn test_rebalance_keeper_works_while_deposits_locked_by_high_utilization() {
         before_hf
     );
 
-    let repaid = sclient.rebalance_keeper(&keeper);
+    let repaid = sclient.rebalance_keeper();
     assert!(
         repaid > 0,
         "rebalance must unwind even with locked reserves"
@@ -2191,12 +2204,32 @@ fn test_split_harvest_rejects_non_keeper() {
     let stranger = Address::generate(&e);
 
     assert!(
-        sclient.try_harvest_claim(&stranger).is_err(),
+        sclient
+            .mock_auths(&[MockAuth {
+                address: &stranger,
+                invoke: &MockAuthInvoke {
+                    contract: &strategy,
+                    fn_name: "harvest_claim",
+                    args: Vec::new(&e),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_harvest_claim()
+            .is_err(),
         "harvest_claim: non-keeper rejected"
     );
     assert!(
         sclient
-            .try_harvest_reinvest(&stranger, &1_000, &true, &900)
+            .mock_auths(&[MockAuth {
+                address: &stranger,
+                invoke: &MockAuthInvoke {
+                    contract: &strategy,
+                    fn_name: "harvest_reinvest",
+                    args: (1_000_i128, true, 900_i128).into_val(&e),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_harvest_reinvest(&1_000, &true, &900)
             .is_err(),
         "harvest_reinvest: non-keeper rejected"
     );
@@ -3379,7 +3412,6 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
 
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
 
     // Slack to re-lever: the keeper deleverages well clear of the band.
     sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
@@ -3428,7 +3460,7 @@ fn test_releverage_reverts_when_it_would_push_utilization_past_the_cap() {
 
     let hf = sclient.health_factor();
     // Blend's InvalidUtilRate.
-    match sclient.try_releverage(&keeper) {
+    match sclient.try_releverage() {
         Err(Err(soroban_sdk::InvokeError::Contract(1207))) => {}
         other => std::panic!("expected Blend's InvalidUtilRate (#1207), got {:?}", other),
     }
@@ -3455,10 +3487,9 @@ fn test_rebalance_lands_clear_of_its_own_trigger() {
 
     let strategy = open_stressed_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     let (_, _, _, orange_hf) = sclient.config();
 
-    assert!(sclient.rebalance_keeper(&keeper) > 0, "must rebalance");
+    assert!(sclient.rebalance_keeper() > 0, "must rebalance");
     let landed = sclient.health_factor();
     assert!(landed >= orange_hf + crate::constants::REBALANCE_HF_BUFFER);
 
@@ -3479,11 +3510,7 @@ fn test_rebalance_lands_clear_of_its_own_trigger() {
 
     sclient.rebalance();
     assert_eq!(sclient.health_factor(), drifted, "nothing to rebalance");
-    assert_eq!(
-        sclient.rebalance_keeper(&keeper),
-        0,
-        "nothing for the keeper"
-    );
+    assert_eq!(sclient.rebalance_keeper(), 0, "nothing for the keeper");
 }
 
 /// A fresh lender supplies `amount` of `token` (request type 0: a plain supply,
@@ -3650,7 +3677,6 @@ fn test_releverage_larger_than_the_free_liquidity() {
 
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     sclient.partial_unwind(&(sclient.health_factor() + 4_000_000));
 
     // What `releverage` will borrow, from the same inputs it reads.
@@ -3677,7 +3703,7 @@ fn test_releverage_larger_than_the_free_liquidity() {
     let free = (lo + x) / 2;
     borrow_until_free(&e, &config, &collateral, free);
 
-    let borrowed = sclient.releverage(&keeper);
+    let borrowed = sclient.releverage();
     assert_eq!(borrowed, x, "re-levers by the amount computed above");
     assert!(
         borrowed > free,
@@ -3779,10 +3805,10 @@ fn test_soroswap_reinvest_without_any_floor_is_refused() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (_strategy, sclient, _router, keeper) =
+    let (_strategy, sclient, _router, _keeper) =
         setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
 
-    match sclient.try_harvest_reinvest(&keeper, &1, &true, &0) {
+    match sclient.try_harvest_reinvest(&1, &true, &0) {
         Err(Ok(StrategyError::OnlyPositiveAmountAllowed)) => {}
         other => std::panic!("expected OnlyPositiveAmountAllowed, got {:?}", other),
     }
@@ -3797,12 +3823,12 @@ fn test_soroswap_reinvest_without_a_claim_is_held_to_the_admin_floor() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (_strategy, sclient, router, keeper) =
+    let (_strategy, sclient, router, _keeper) =
         setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
     sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE); // 0.02 per BLND
     assert!(sclient.try_pending_harvest().is_err(), "no claim in flight");
 
-    sclient.harvest_reinvest(&keeper, &1, &true, &1);
+    sclient.harvest_reinvest(&1, &true, &1);
 
     // 1000 BLND × 0.02 = 20 underlying, not the keeper's 1.
     assert_eq!(router.last_amount_out_min(), 20_0000000);
@@ -3816,13 +3842,13 @@ fn test_soroswap_reinvest_swaps_through_swap_via() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, router, keeper) =
+    let (strategy, sclient, router, _keeper) =
         setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
     let via = Address::generate(&e);
 
     sclient.set_swap_via(&Some(via.clone()));
     assert_eq!(sclient.swap_via(), Some(via.clone()));
-    let realized = sclient.harvest_reinvest(&keeper, &1, &true, &1);
+    let realized = sclient.harvest_reinvest(&1, &true, &1);
 
     assert_eq!(
         router.last_path(),
@@ -3931,7 +3957,7 @@ fn test_harvest_claim_without_floor_rate_grants_no_allowance() {
 
     // Swap account set, floor rate not: the claim succeeds and the BLND stays
     // put for the Soroswap route, but nothing may pull it.
-    let claimed = sclient.harvest_claim(&sclient.get_keeper());
+    let claimed = sclient.harvest_claim();
     assert_eq!(claimed, 1_000_0000000);
     assert_eq!(
         TokenClient::new(&e, &blnd).allowance(&strategy, &swap_account),
@@ -3950,11 +3976,11 @@ fn test_harvest_claim_records_floor_and_scopes_the_allowance() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
     let seq_before = e.ledger().sequence();
-    let claimed = sclient.harvest_claim(&keeper);
+    let claimed = sclient.harvest_claim();
     assert_eq!(claimed, 1_000_0000000);
 
     let (blnd_claimed, underlying_before, floor, expiration) = sclient.pending_harvest();
@@ -3994,11 +4020,11 @@ fn test_rotating_the_swap_account_revokes_the_old_allowance() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, old_account) =
+    let (strategy, sclient, _keeper, old_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
     let blnd_client = TokenClient::new(&e, &blnd);
 
-    let claimed = sclient.harvest_claim(&keeper);
+    let claimed = sclient.harvest_claim();
     assert_eq!(blnd_client.allowance(&strategy, &old_account), claimed);
 
     let new_account = Address::generate(&e);
@@ -4020,7 +4046,7 @@ fn test_rotating_the_swap_account_revokes_the_old_allowance() {
 
     e.ledger()
         .with_mut(|li| li.sequence_number += crate::constants::HARVEST_APPROVAL_LEDGERS);
-    assert_eq!(sclient.harvest_claim(&keeper), claimed);
+    assert_eq!(sclient.harvest_claim(), claimed);
     assert_eq!(
         blnd_client.allowance(&strategy, &new_account),
         claimed,
@@ -4034,15 +4060,15 @@ fn test_harvest_claim_rejected_while_a_claim_is_still_pullable() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (_strategy, sclient, keeper, _swap) =
+    let (_strategy, sclient, _keeper, _swap) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 
     // Overlapping approvals would put more BLND at risk than the newer floor
     // covers, so a second claim inside the window is refused.
     assert_eq!(
-        sclient.try_harvest_claim(&keeper),
+        sclient.try_harvest_claim(),
         Err(Ok(StrategyError::DeadlineExpired)),
         "claiming over a live allowance must be refused"
     );
@@ -4051,7 +4077,7 @@ fn test_harvest_claim_rejected_while_a_claim_is_still_pullable() {
     // fresh claim proceeds.
     e.ledger()
         .set_sequence_number(e.ledger().sequence() + crate::constants::HARVEST_APPROVAL_LEDGERS);
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 }
 
 #[test]
@@ -4060,10 +4086,10 @@ fn test_broker_settlement_below_floor_reverts() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 
     // The swap account pulls the whole approval — 20 underlying is now owed.
     TokenClient::new(&e, &blnd).transfer_from(
@@ -4079,14 +4105,14 @@ fn test_broker_settlement_below_floor_reverts() {
         .mock_all_auths()
         .mint(&strategy, &1_0000000);
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        sclient.try_harvest_reinvest(&1_0000000, &false, &0),
         Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
         "1 underlying back for 1000 BLND must not settle"
     );
 
     // Returning nothing at all is the same answer.
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &1_0000000, &false, &0),
+        sclient.try_harvest_reinvest(&1_0000000, &false, &0),
         Err(Ok(StrategyError::UnderlyingAmountBelowMin))
     );
 
@@ -4102,10 +4128,10 @@ fn test_broker_settlement_at_floor_succeeds_and_kills_the_allowance() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
     TokenClient::new(&e, &blnd).transfer_from(
         &swap_account,
         &strategy,
@@ -4121,7 +4147,7 @@ fn test_broker_settlement_at_floor_succeeds_and_kills_the_allowance() {
         .mint(&strategy, &proceeds);
 
     let before = sclient.balance(&strategy);
-    let realized = sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+    let realized = sclient.harvest_reinvest(&proceeds, &false, &0);
     assert_eq!(realized, proceeds);
     assert!(
         sclient.balance(&strategy) >= before,
@@ -4146,10 +4172,10 @@ fn test_broker_floor_prorates_to_the_blnd_actually_pulled() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 
     // The Broker takes a quarter of the approval: 250 BLND ⇒ 5 underlying owed,
     // not the full 20.
@@ -4164,7 +4190,7 @@ fn test_broker_floor_prorates_to_the_blnd_actually_pulled() {
         .mock_all_auths()
         .mint(&strategy, &4_0000000);
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &4_0000000, &false, &0),
+        sclient.try_harvest_reinvest(&4_0000000, &false, &0),
         Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
         "4 back for 250 BLND is under the prorated floor"
     );
@@ -4173,7 +4199,7 @@ fn test_broker_floor_prorates_to_the_blnd_actually_pulled() {
         .mock_all_auths()
         .mint(&strategy, &2_0000000);
     assert_eq!(
-        sclient.harvest_reinvest(&keeper, &6_0000000, &false, &0),
+        sclient.harvest_reinvest(&6_0000000, &false, &0),
         6_0000000,
         "6 back for 250 BLND clears the prorated floor"
     );
@@ -4185,7 +4211,7 @@ fn test_broker_settlement_ignores_pre_existing_idle_underlying() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
     // The vault is already sitting on 50 underlying *before* the claim — a
@@ -4196,7 +4222,7 @@ fn test_broker_settlement_ignores_pre_existing_idle_underlying() {
         .mock_all_auths()
         .mint(&strategy, &50_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
     TokenClient::new(&e, &blnd).transfer_from(
         &swap_account,
         &strategy,
@@ -4205,7 +4231,7 @@ fn test_broker_settlement_ignores_pre_existing_idle_underlying() {
     );
 
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &50_0000000, &false, &0),
+        sclient.try_harvest_reinvest(&50_0000000, &false, &0),
         Err(Ok(StrategyError::UnderlyingAmountBelowMin)),
         "idle underlying held before the claim cannot settle it"
     );
@@ -4220,7 +4246,7 @@ fn test_trait_harvest_refused_while_a_claim_awaits_settlement() {
     let (_strategy, sclient, keeper, _swap) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 
     // The trait path would swap the pending claim's BLND and lever the proceeds
     // in one call, leaving nothing for `harvest_reinvest` to measure.
@@ -4237,10 +4263,10 @@ fn test_unsettled_claim_is_reported_when_a_later_claim_replaces_it() {
     e.mock_all_auths();
     let (pool_addr, token, blnd, _blend, deployer) = setup_blend_env(&e);
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
-    let (strategy, sclient, keeper, swap_account) =
+    let (strategy, sclient, _keeper, swap_account) =
         setup_broker_harvest(&e, &pool_addr, &token, &blnd, &deployer, 1_000_0000000);
 
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
     TokenClient::new(&e, &blnd).transfer_from(
         &swap_account,
         &strategy,
@@ -4256,7 +4282,7 @@ fn test_unsettled_claim_is_reported_when_a_later_claim_replaces_it() {
     StellarAssetClient::new(&e, &blnd)
         .mock_all_auths()
         .mint(&strategy, &500_0000000);
-    sclient.harvest_claim(&keeper);
+    sclient.harvest_claim();
 
     use soroban_sdk::{xdr, TryFromVal};
     let unsettled = e
@@ -4489,7 +4515,6 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
 
     let strategy = register_real_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     let mint = |to: &Address, amount: i128| {
         StellarAssetClient::new(&e, &token)
             .mock_all_auths()
@@ -4510,7 +4535,7 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
     // rather than priced in.
     let proceeds = 100_0000000_i128;
     mint(&strategy, proceeds);
-    sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+    sclient.harvest_reinvest(&proceeds, &false, &0);
     let locked = sclient.locked_profit();
     assert!(
         (proceeds - locked).abs() <= 10,
@@ -4614,7 +4639,7 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
         HarvestRoute::BrokerUnlevered => {
             pool::Client::new(&e, &pool_addr).set_status(&2); // no new borrowing
             mint(&token, &strategy, proceeds);
-            sclient.harvest_reinvest(&keeper, &proceeds, &false, &0);
+            sclient.harvest_reinvest(&proceeds, &false, &0);
         }
         HarvestRoute::TraitHarvest => {
             mint(&blnd, &strategy, 2_000_0000000);
@@ -4622,7 +4647,7 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
         }
         HarvestRoute::ReinvestSoroswap => {
             mint(&blnd, &strategy, 2_000_0000000);
-            sclient.harvest_reinvest(&keeper, &1, &true, &0);
+            sclient.harvest_reinvest(&1, &true, &0);
         }
     }
     let locked = sclient.locked_profit();
@@ -4677,17 +4702,13 @@ fn test_harvest_reinvest_supplies_unlevered_when_blend_refuses_the_borrow() {
     seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
     let strategy = open_healthy_strategy(&e, &pool_addr, &token, &blnd);
     let sclient = crate::BlendLeverageStrategyClient::new(&e, &strategy);
-    let keeper = sclient.get_keeper();
     let (_, _, b0, d0, _, _) = sclient.position();
 
     pool::Client::new(&e, &pool_addr).set_status(&2); // admin on ice
 
     let proceeds = 10_0000000_i128;
     StellarAssetClient::new(&e, &token).mint(&strategy, &proceeds);
-    assert_eq!(
-        sclient.harvest_reinvest(&keeper, &proceeds, &false, &0),
-        proceeds
-    );
+    assert_eq!(sclient.harvest_reinvest(&proceeds, &false, &0), proceeds);
 
     let (_, _, b1, d1, b_rate, _) = sclient.position();
     assert_eq!(d1, d0, "no borrow while the pool is on ice");
@@ -5116,11 +5137,11 @@ fn test_a_wiped_out_vault_takes_no_deposit_and_no_harvest() {
     );
     StellarAssetClient::new(&e, &token).mint(&strategy, &10_0000000);
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &10_0000000, &false, &0),
+        sclient.try_harvest_reinvest(&10_0000000, &false, &0),
         Err(Ok(StrategyError::InvalidSharesMinted))
     );
     assert_eq!(
-        sclient.try_harvest_reinvest(&keeper, &1, &true, &0),
+        sclient.try_harvest_reinvest(&1, &true, &0),
         Err(Ok(StrategyError::InvalidSharesMinted))
     );
 }

@@ -599,19 +599,16 @@ impl BlendLeverageStrategy {
     /// Not rate-limited, and nothing would be gained by it: `rebalance` offers
     /// the same unwind to anyone, and the unwind limits itself — it acts only
     /// below `orange_hf` and lands above it, so a repeat call is a no-op.
-    pub fn rebalance_keeper(e: Env, caller: Address) -> Result<i128, StrategyError> {
+    pub fn rebalance_keeper(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if caller != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let config = storage::get_config(&e);
         let (before_hf, after_hf, repaid) =
             unwind_to(&e, &config, config.orange_hf, rebalance_target(&config)?)?;
         if repaid > 0 {
-            emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
+            emit_rebalance(&e, &keeper, before_hf, after_hf, repaid);
         }
         Ok(repaid)
     }
@@ -683,14 +680,11 @@ impl BlendLeverageStrategy {
     /// consume the cooldown. Emits a `releverage` event when leverage is added.
     ///
     /// The cooldown rejection is `DeadlineExpired`, not `NotAuthorized`: the
-    /// caller *is* authorized, it is simply too early.
-    pub fn releverage(e: Env, caller: Address) -> Result<i128, StrategyError> {
+    /// keeper *is* authorized, it is simply too early.
+    pub fn releverage(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if caller != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let now = e.ledger().sequence();
         if let Some(last) = storage::get_last_releverage(&e) {
@@ -745,7 +739,7 @@ impl BlendLeverageStrategy {
 
         storage::set_last_releverage(&e, now);
         e.events().publish(
-            (Symbol::new(&e, "releverage"), caller.clone()),
+            (Symbol::new(&e, "releverage"), keeper),
             (before_hf, after_hf, borrow_underlying),
         );
 
@@ -1085,13 +1079,10 @@ impl BlendLeverageStrategy {
     /// it, so a fresh claim proceeds — and if that stale claim's BLND did leave
     /// and never came back, `harvest_unsettled` is emitted rather than the
     /// obligation quietly disappearing.
-    pub fn harvest_claim(e: Env, from: Address) -> Result<i128, StrategyError> {
+    pub fn harvest_claim(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if from != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let config = storage::get_config(&e);
         let now = e.ledger().sequence();
@@ -1184,7 +1175,6 @@ impl BlendLeverageStrategy {
     /// for the keeper's A/B telemetry. Returns realized underlying re-leveraged.
     pub fn harvest_reinvest(
         e: Env,
-        from: Address,
         amount_in: i128,
         via_soroswap: bool,
         amount_out_min: i128,
@@ -1192,9 +1182,6 @@ impl BlendLeverageStrategy {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if from != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
         check_positive_amount(amount_in)?;
         let config = storage::get_config(&e);
         let strategy = e.current_contract_address();
