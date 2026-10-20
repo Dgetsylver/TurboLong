@@ -2,11 +2,10 @@
  * Deploy the Turbolong BlendLeverage vaults to Stellar MAINNET — SCF T1 D1.
  *
  * For each of the four assets (USDC, USTRY, CETES, XLM) on the Etherfuse pool it:
- *   1. deploys the blend_leverage strategy (10-arg constructor),
- *   2. deploys its SEP-41 vault-share token (minter = the strategy),
- *   3. wires strategy.set_share_token(token),
- *   4. wires strategy.set_swap_account(keeper) for the Broker harvest path,
- *   5. wires strategy.set_min_harvest_rate(rate) — the harvest floor the Broker
+ *   1. deploys the blend_leverage strategy (13-arg constructor), which deploys
+ *      its own SEP-41 vault-share token (admin and minter = the strategy),
+ *   2. wires strategy.set_swap_account(keeper) for the Broker harvest path,
+ *   3. wires strategy.set_min_harvest_rate(rate) — the harvest floor the Broker
  *      path is gated on (audit M-4) and the trait harvest's default slippage
  *      bound (audit M-5); omitted assets keep both unfloored calls closed,
  * then writes every deployed contract ID to deployed-vaults.mainnet.json.
@@ -17,7 +16,7 @@
  *
  * Env:
  *   DEPLOY_SECRET_KEY  S... deployer (pays fees, installs WASM, deploys)
- *   ADMIN_PUBKEY       G... admin (upgrade + set_share_token/set_swap_account); default = deployer
+ *   ADMIN_PUBKEY       G... admin (upgrade + set_swap_account); default = deployer
  *   KEEPER_PUBKEY      G... keeper (harvest + rebalance_keeper + pulls BLND); REQUIRED
  *   MIN_HARVEST_RATE_<SYMBOL>  harvest floor per asset (see MIN_HARVEST_RATES);
  *                      omit to leave that vault's Broker path closed and its
@@ -25,8 +24,8 @@
  *   DRY_RUN=1          simulate only, do not submit
  *
  * Pre-req: build both wasms first —
- *   (cd contracts/strategies/blend_leverage && cargo build --target wasm32v1-none --release)
- *   (cd contracts/tokens/vault_share        && cargo build --target wasm32v1-none --release)
+ *   (cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+ *   (cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
  */
 import {
   Address,
@@ -216,6 +215,20 @@ async function invoke(contractId: string, method: string, args: xdr.ScVal[], lab
   await signSubmit(tx, label);
 }
 
+async function read(contractId: string, method: string): Promise<xdr.ScVal> {
+  const acc = await server.getAccount(deployer);
+  const tx = new TransactionBuilder(acc, { fee: "100", networkPassphrase: PASSPHRASE })
+    .setTimeout(30)
+    .addOperation(new Contract(contractId).call(method))
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim) || !sim.result) {
+    const err = SorobanRpc.Api.isSimulationError(sim) ? sim.error : "no result";
+    throw new Error(`${method} simulation failed: ${err}`);
+  }
+  return sim.result.retval;
+}
+
 // ── Pre-flight: live pool risk parameters ──────────────────────────────────────
 
 /**
@@ -341,24 +354,18 @@ async function main() {
       nativeToScVal(a.minHf, { type: "i128" }),            // [7] min_hf
       nativeToScVal(a.orangeHf, { type: "i128" }),         // [8] orange_hf
       addr(ADMIN),                                         // [9] admin
+      xdr.ScVal.scvBytes(Buffer.from(tokenHash, "hex")),   // [10] share_token_wasm
+      nativeToScVal(`BlendLeverage ${a.symbol} Share`, { type: "string" }), // [11] share_name
+      nativeToScVal(`blv${a.symbol}`, { type: "string" }), // [12] share_symbol
     ]);
     const strategy = await deploy(strategyHash, [addr(a.asset), initArgs], `${a.symbol} strategy`);
     console.log(`  strategy=${strategy}`);
 
-    const token = await deploy(
-      tokenHash,
-      [
-        addr(ADMIN),                                              // admin
-        addr(strategy),                                           // minter = strategy
-        nativeToScVal(7, { type: "u32" }),                        // decimals
-        nativeToScVal(`BlendLeverage ${a.symbol} Share`, { type: "string" }),
-        nativeToScVal(`blv${a.symbol}`, { type: "string" }),
-      ],
-      `${a.symbol} token`,
-    );
+    // The strategy deployed its share token in its constructor, as the
+    // token's admin and minter.
+    const token = Address.fromScVal(await read(strategy, "share_token")).toString();
     console.log(`  token=${token}`);
 
-    await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER!)], `${a.symbol} set_swap_account`);
 
     // Harvest floor (audit M-4, M-5). Price-dependent and therefore not baked

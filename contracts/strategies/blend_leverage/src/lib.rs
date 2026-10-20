@@ -28,6 +28,7 @@ use leverage::{
     check_min_health_factor, compute_health_factor, compute_partial_unwind, compute_releverage,
     shares_to_underlying,
 };
+use reserves::LeverageReserves;
 use soroban_sdk::{
     contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, BytesN, Env,
     IntoVal, String, Symbol, Val, Vec,
@@ -72,7 +73,15 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///   [6] target_hf: i128        — health factor deposits are levered to (1e7)
     ///   [7] min_hf: i128           — minimum health factor (1e7)
     ///   [8] orange_hf: i128        — orange-zone threshold; partial unwind triggered below this (1e7)
-    ///   [9] admin: Address         — authorized to upgrade the contract and set the share token
+    ///   [9] admin: Address         — authorized to upgrade the contract
+    ///   [10] share_token_wasm: BytesN<32> — uploaded `vault_share` wasm hash
+    ///   [11] share_name: String    — share token name
+    ///   [12] share_symbol: String  — share token symbol
+    ///
+    /// The strategy deploys its own share token, as both its admin and its
+    /// minter, so the token and its minter are fixed from construction: no
+    /// later call can repoint the strategy at another token, or let another
+    /// address mint its shares.
     fn __constructor(e: Env, asset: Address, init_args: Vec<Val>) {
         let pool: Address = init_args
             .get(0)
@@ -90,10 +99,20 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let min_hf: i128 = init_args.get(7).expect("Missing: min_hf").into_val(&e);
         let orange_hf: i128 = init_args.get(8).expect("Missing: orange_hf").into_val(&e);
         let admin: Address = init_args.get(9).expect("Missing: admin").into_val(&e);
+        let share_token_wasm: BytesN<32> = init_args
+            .get(10)
+            .expect("Missing: share_token_wasm")
+            .into_val(&e);
+        let share_name: String = init_args.get(11).expect("Missing: share_name").into_val(&e);
+        let share_symbol: String = init_args
+            .get(12)
+            .expect("Missing: share_symbol")
+            .into_val(&e);
 
         // The share math has i128 headroom for up to 7 decimals only.
+        let decimals = TokenClient::new(&e, &asset).decimals();
         assert!(
-            TokenClient::new(&e, &asset).decimals() <= MAX_ASSET_DECIMALS,
+            decimals <= MAX_ASSET_DECIMALS,
             "asset decimals must be <= 7"
         );
 
@@ -132,8 +151,26 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             orange_hf,
         };
 
+        // One share token per strategy, at an address derived from the
+        // strategy's own.
+        let strategy = e.current_contract_address();
+        let share_token = e
+            .deployer()
+            .with_current_contract(BytesN::from_array(&e, &[0; 32]))
+            .deploy_v2(
+                share_token_wasm,
+                (
+                    strategy.clone(),
+                    strategy,
+                    decimals,
+                    share_name,
+                    share_symbol,
+                ),
+            );
+
         storage::set_config(&e, config);
         storage::set_keeper(&e, &keeper);
+        storage::set_share_token(&e, &share_token);
         Self::set_admin(&e, &admin);
         storage::set_version(&e, 1);
     }
@@ -151,15 +188,24 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///    `target_hf` (`compute_lever_in`). Blend refuses the borrow if it would
     ///    settle the reserve above its own `max_util`.
     /// 3. Check what the pool settled: HF >= `min_hf`
-    /// 4. Track b/d token deltas, mint proportional shares
+    /// 4. Price the equity the b/d token deltas add, mint proportional shares
     /// 5. Return the depositor's underlying balance
+    ///
+    /// The first deposit gives up `FIRST_DEPOSIT_LOCKUP` shares to the lockup,
+    /// so only the keeper or the admin may make it; anyone else is refused with
+    /// `NotAuthorized` until the vault has been seeded.
     fn deposit(e: Env, amount: i128, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         check_positive_amount(amount)?;
         from.require_auth();
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
+        if reserves.total_shares == 0 && from != storage::get_keeper(&e) && from != Self::admin(&e)
+        {
+            return Err(StrategyError::NotAuthorized);
+        }
 
         // Transfer the initial deposit from user to strategy contract
         let token_client = TokenClient::new(&e, &config.asset);
@@ -208,17 +254,12 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     /// already gone into the pool. Settle through `harvest_reinvest` (which
     /// covers the Soroswap route) rather than interleaving the two.
     ///
-    /// **The swap always runs with a floor** (audit M-5, see
-    /// `blend_pool::perform_reinvest`). `data` optionally carries the keeper's
-    /// own `amount_out_min` as 16 big-endian bytes; the admin's
-    /// `min_harvest_rate` prices a second floor over the BLND actually being
-    /// swapped. The stricter of the two applies, so a keeper cannot undercut the
-    /// admin, and a swap with neither is refused rather than executed
-    /// unprotected — `harvest(from, None)`, the natural call for a
-    /// DeFindex-trait caller unaware of this contract's private encoding, used
-    /// to mean `amount_out_min = 0`. It now means "use the admin's floor", and
-    /// fails closed when there is none, the same way `harvest_claim` declines
-    /// to approve a Broker pull it cannot floor.
+    /// **The swap always runs with a floor** (see `blend_pool::perform_reinvest`):
+    /// the stricter of the keeper's `amount_out_min`, optionally carried in
+    /// `data` as 16 big-endian bytes, and the admin's `min_harvest_rate` priced
+    /// over the BLND being swapped. `harvest(from, None)` therefore uses the
+    /// admin's floor, and is refused when no rate is set rather than swapping
+    /// unprotected.
     fn harvest(e: Env, from: Address, data: Option<Bytes>) -> Result<(), StrategyError> {
         extend_instance_ttl(&e);
 
@@ -236,10 +277,11 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Pre-reinvest snapshot: `reserves::harvest` adds the measured deltas to
         // this, so it must be read before the pool settles the reinvest.
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
 
         // Claim BLND from both supply and borrow sides
-        let harvested_blnd = blend_pool::claim(&e, &config);
+        blend_pool::claim(&e, &config);
 
         // Parse the caller's minimum swap output from data bytes. Absent (or a
         // nonsensical negative) it contributes nothing and the admin floor is
@@ -257,13 +299,16 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let (b_delta, d_delta, realized_underlying) =
             blend_pool::perform_reinvest(&e, &config, caller_min)?;
 
-        // Update reserves without minting shares (yield accrues to existing holders)
+        // Lock the gain rather than mint shares: it reaches the share price as it
+        // is released (`reserves::harvest`).
         if b_delta > 0 {
             let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
+            // In underlying, as `harvest_reinvest` reports it: what the swap of
+            // every BLND the strategy held, claimed now or before, realized.
             event::emit_harvest(
                 &e,
                 String::from_str(&e, STRATEGY_NAME),
-                harvested_blnd,
+                realized_underlying,
                 keeper,
                 shares_to_underlying(SCALAR_12, &updated_reserves, reserves::locked_profit(&e)?)?,
             );
@@ -294,14 +339,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         from.require_auth();
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
 
         // Read the caller's share balance from the token (the per-user ledger).
         let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
         let user_shares = token.balance(&from);
 
         // Calculate shares to burn + the intended proportional b/d tokens to
-        // unwind. This does NOT persist the position (see `commit_withdraw`).
+        // unwind. This persists nothing (see `commit_withdraw`).
         let (shares_to_burn, b_to_remove, d_to_remove) =
             reserves::withdraw(&e, user_shares, amount, &reserves)?;
 
@@ -310,12 +355,11 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         // Execute unwind on the pool — net equity flows to `to`. The returned
         // deltas are the b/d tokens the pool *actually* removed.
-        let (b_removed, d_removed) =
+        let (b_removed, d_removed, paid) =
             blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
 
-        // Persist using the measured pool deltas so stored reserves stay in
-        // lock-step with the real pool position (Finding ①), matching the
-        // measured-delta discipline of deposit/harvest/deleverage.
+        // Record the shares burned; the position after is the one read above
+        // less the measured deltas.
         let updated_reserves =
             reserves::commit_withdraw(&e, shares_to_burn, b_removed, d_removed, &reserves)?;
 
@@ -328,7 +372,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
             reserves::locked_profit(&e)?,
         )?;
 
-        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
+        // The amount paid, which rounding can leave a few stroops under `amount`.
+        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), paid, from);
 
         Ok(underlying_balance)
     }
@@ -346,7 +391,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         }
 
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         shares_to_underlying(user_shares, &reserves, reserves::locked_profit(&e)?)
     }
 }
@@ -369,15 +414,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 /// (orange_hf > c_factor, and target_hf > c_factor × l_factor, are implied by
 /// the chain above and 1.0 > c_factor.)
 ///
-/// Safety margin, derived rather than conventional. `compute_health_factor`
-/// reports HF = B × c_factor × l_factor / D, while Blend liquidates once
-/// B × pool_c_factor < D / l_factor, i.e. once B × pool_c_factor × l_factor / D
-/// drops below 1.0. With c_factor <= pool_c_factor the strategy's HF is a lower
-/// bound on Blend's own ratio, so `min_hf > 1.0` is a floor expressed in Blend's
-/// terms and no per-asset buffer convention is needed to make it hold. (The
-/// deploy script's habit of setting c_factor strictly below the pool's is still
-/// useful — it buys borrow headroom — but the vault's solvency no longer depends
-/// on it.)
+/// Safety margin. `compute_health_factor` reports HF = B × c_factor × l_factor / D,
+/// while Blend liquidates once B × pool_c_factor < D / l_factor, i.e. once
+/// B × pool_c_factor × l_factor / D drops below 1.0. With c_factor <= pool_c_factor
+/// the strategy's HF is a lower bound on Blend's own ratio, so `min_hf > 1.0` is a
+/// floor in Blend's terms. This check holds when it runs; `get_rates_and_factors`
+/// keeps it holding after a governance cut by capping c_factor at the pool's on
+/// every read. Setting c_factor strictly below the pool's buys borrow headroom,
+/// but solvency does not depend on it.
 fn validate_risk_params(
     c_factor: i128,
     target_hf: i128,
@@ -414,9 +458,21 @@ fn validate_risk_params(
 /// what is checked includes the pool's own rounding. A failure reverts the whole
 /// transaction, submit included.
 fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError> {
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
+    let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
-    check_min_health_factor(e, b_tokens, d_tokens, b_rate, d_rate, l_factor, config)
+    let hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
+    check_min_health_factor(e, hf, config.min_hf)
+}
+
+/// Refuse new equity — a deposit or a harvest — into a vault whose shares have
+/// no priced equity behind them (`leverage::is_wiped_out`). A deposit would be
+/// minted shares against nothing and diluted into the old ones, and a harvest
+/// would restart the vault at a dust share price.
+fn check_not_wiped_out(e: &Env, reserves: &LeverageReserves) -> Result<(), StrategyError> {
+    if leverage::is_wiped_out(reserves, reserves::locked_profit(e)?)? {
+        return Err(StrategyError::InvalidSharesMinted);
+    }
+    Ok(())
 }
 
 /// Where a rebalance lands: `REBALANCE_HF_BUFFER` above the `orange_hf` trigger.
@@ -440,53 +496,39 @@ fn unwind_to(
     trigger_hf: i128,
     target_hf: i128,
 ) -> Result<(i128, i128, i128), StrategyError> {
-    let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(e, config);
+    let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(e, config);
     let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(e, config);
 
     if d_tokens == 0 {
         return Ok((i128::MAX, i128::MAX, 0));
     }
 
-    let before_hf = compute_health_factor(
-        b_tokens,
-        d_tokens,
-        b_rate,
-        d_rate,
-        config.c_factor,
-        l_factor,
-    )?;
+    let before_hf = compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
     if before_hf >= trigger_hf {
         return Ok((before_hf, before_hf, 0));
     }
 
     let repay = compute_partial_unwind(
-        b_tokens,
-        d_tokens,
-        b_rate,
-        d_rate,
-        config.c_factor,
-        l_factor,
-        target_hf,
+        b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor, target_hf,
     )?;
     if repay == 0 {
         return Ok((before_hf, before_hf, 0));
     }
 
-    // Pre-unwind snapshot, built from the pool values already read above rather
-    // than re-fetching them; `reserves::deleverage` subtracts the measured
-    // removal from it.
-    let pre_unwind = reserves::reconcile(e, b_tokens, d_tokens, b_rate, d_rate);
-
     let (b_removed, d_removed) = blend_pool::submit_deleverage(e, repay, config)?;
-    reserves::deleverage(e, b_removed, d_removed, &pre_unwind)?;
 
-    // Recompute HF on the post-unwind position for the event / return.
-    let (b2, d2) = blend_pool::get_strategy_positions(e, config);
+    // HF of the settled position — the position read above less what the pool
+    // measurably removed — for the event / return.
+    let (b2, d2) = (b_tokens - b_removed, d_tokens - d_removed);
     let after_hf = if d2 == 0 {
         i128::MAX
     } else {
-        compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?
+        compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?
     };
+    // A deleverage must leave HF no lower than it found it. Repaying and
+    // withdrawing the same amount raises the HF of any position with equity, so
+    // this only catches a settlement that went wrong.
+    check_min_health_factor(e, after_hf, before_hf)?;
 
     Ok((before_hf, after_hf, repay))
 }
@@ -504,6 +546,35 @@ fn emit_rebalance(e: &Env, caller: &Address, before_hf: i128, after_hf: i128, re
 
 #[contractimpl]
 impl BlendLeverageStrategy {
+    /// Withdraw by share count: burn exactly `shares` of `from`'s and pay what
+    /// they are worth to `to`. Returns the underlying paid.
+    ///
+    /// `withdraw` takes an amount of underlying and refuses one worth more than
+    /// the caller's shares. The share price moves every ledger, so a holder
+    /// cannot reliably ask it for everything they hold; here they pass their
+    /// share balance and nothing is left behind. Sized and rounded like
+    /// `withdraw`, against the withdrawer. The DeFindex trait has no such call.
+    pub fn redeem(e: Env, shares: i128, from: Address, to: Address) -> Result<i128, StrategyError> {
+        extend_instance_ttl(&e);
+        check_positive_amount(shares)?;
+        from.require_auth();
+
+        let config = storage::get_config(&e);
+        let reserves = reserves::current(&e, &config);
+        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
+        let (b_to_remove, d_to_remove) =
+            reserves::redeem(&e, token.balance(&from), shares, &reserves)?;
+
+        // Burn, unwind and record what the pool removed, as `withdraw` does.
+        token.burn_by_minter(&from, &shares);
+        let (b_removed, d_removed, paid) =
+            blend_pool::submit_unwind(&e, b_to_remove, d_to_remove, &to, &config)?;
+        reserves::commit_withdraw(&e, shares, b_removed, d_removed, &reserves)?;
+
+        event::emit_withdraw(&e, String::from_str(&e, STRATEGY_NAME), paid, from);
+        Ok(paid)
+    }
+
     /// Rebalance: partial-unwind if HF is in the orange zone (HF < orange_hf),
     /// restoring HF to `orange_hf + REBALANCE_HF_BUFFER`. Callable by anyone
     /// (permissionless — protects the vault). Emits a `rebalance` event when debt
@@ -520,42 +591,6 @@ impl BlendLeverageStrategy {
         Ok(())
     }
 
-    /// Reconcile the tracked position with the pool's measured one, persisting
-    /// the correction. Permissionless — like `rebalance`, it can only move the
-    /// vault's accounting towards the truth, so anyone may call it.
-    ///
-    /// Share pricing does not *depend* on this being called: every read path
-    /// reconciles on the fly (`reserves::reconcile`), so a liquidation is priced
-    /// in from the moment it happens. This entrypoint exists to make the
-    /// correction **observable** — the tracked totals are written down and a
-    /// `reserves_sync` event is emitted, giving the `alerts/` stack a signal that
-    /// the strategy's position changed without the strategy asking. Without it a
-    /// liquidation is handled correctly but silently.
-    ///
-    /// Returns `(b_written_down, d_written_down)`; `(0, 0)` when already in sync.
-    /// Emits `reserves_sync` with topics `("reserves_sync",)` and data
-    /// `(b_before, b_after, d_before, d_after)` only when a correction is made.
-    pub fn sync_reserves(e: Env) -> Result<(i128, i128), StrategyError> {
-        extend_instance_ttl(&e);
-        let config = storage::get_config(&e);
-        let before = storage::get_strategy_reserves(&e);
-        let (b_correction, d_correction) = reserves::sync(&e, &config);
-
-        if b_correction != 0 || d_correction != 0 {
-            e.events().publish(
-                (Symbol::new(&e, "reserves_sync"),),
-                (
-                    before.total_b_tokens,
-                    before.total_b_tokens - b_correction,
-                    before.total_d_tokens,
-                    before.total_d_tokens - d_correction,
-                ),
-            );
-        }
-
-        Ok((b_correction, d_correction))
-    }
-
     /// Keeper-authorised auto-rebalance: `rebalance`, attributed to the keeper.
     /// Repays just enough debt to bring HF back to `orange_hf +
     /// REBALANCE_HF_BUFFER` when it has dropped into the orange zone; emits a
@@ -565,74 +600,48 @@ impl BlendLeverageStrategy {
     /// Not rate-limited, and nothing would be gained by it: `rebalance` offers
     /// the same unwind to anyone, and the unwind limits itself — it acts only
     /// below `orange_hf` and lands above it, so a repeat call is a no-op.
-    pub fn rebalance_keeper(e: Env, caller: Address) -> Result<i128, StrategyError> {
+    pub fn rebalance_keeper(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if caller != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let config = storage::get_config(&e);
         let (before_hf, after_hf, repaid) =
             unwind_to(&e, &config, config.orange_hf, rebalance_target(&config)?)?;
         if repaid > 0 {
-            emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
+            emit_rebalance(&e, &keeper, before_hf, after_hf, repaid);
         }
         Ok(repaid)
     }
 
-    /// Partial-unwind liquidation protection: repay just enough debt to restore
-    /// HF to `target_hf`. Callable by the keeper, or by anyone when HF is already
-    /// in the orange zone.
+    /// Keeper-only partial unwind: if HF is below `target_hf`, repay just enough
+    /// debt to bring it there. Unlike `rebalance` it acts at any HF below the
+    /// target, inside the orange zone or not, so the keeper can take leverage off
+    /// ahead of a move it expects. Anyone else protects the vault through
+    /// `rebalance`. Emits a `rebalance` event with the keeper as caller when debt
+    /// is repaid. Returns the underlying repaid.
     ///
-    /// `target_hf` is honoured only for the keeper, and is floored at the
-    /// rebalance target (`orange_hf + REBALANCE_HF_BUFFER`) so it can never
-    /// *under*-unwind. A permissionless caller gets the rebalance target
-    /// regardless of the `target_hf` they pass: the unauthenticated branch is
-    /// deliberately no more powerful than `rebalance()`, so it cannot be used to
-    /// force leverage below the configured floor. Emits a `rebalance` event when
-    /// debt is repaid. Returns the underlying repaid.
-    pub fn partial_unwind(e: Env, caller: Address, target_hf: i128) -> Result<i128, StrategyError> {
+    /// The keeper's authorization is required before anything else, so it is
+    /// spent even by a call that turns out to be a no-op: a signed call sent
+    /// while the vault has no debt cannot be replayed later, by anyone, at a
+    /// moment of their choosing.
+    ///
+    /// `target_hf` is used as given, and refused with `InvalidArgument` below the
+    /// rebalance target (`orange_hf + REBALANCE_HF_BUFFER`): landing nearer the
+    /// trigger would re-arm it on the next accrual, the churn the buffer exists
+    /// to prevent.
+    pub fn partial_unwind(e: Env, target_hf: i128) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
+        let keeper = storage::get_keeper(&e);
+        keeper.require_auth();
+
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
-        let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-
-        if d_tokens == 0 {
-            return Ok(0);
+        if target_hf < rebalance_target(&config)? {
+            return Err(StrategyError::InvalidArgument);
         }
-
-        let hf = compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )?;
-
-        // Only the keeper can trigger above the orange zone; anyone can inside it.
-        let is_keeper = caller == storage::get_keeper(&e);
-        if hf >= config.orange_hf && !is_keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
-        caller.require_auth();
-
-        // The keeper picks its own target (floored at the rebalance target) and may
-        // act above the orange zone; a permissionless caller gets exactly what
-        // `rebalance()` gives, so an arbitrarily large `target_hf` cannot be used
-        // to deleverage the vault past the configured floor.
-        let floor = rebalance_target(&config)?;
-        let (trigger_hf, effective_target) = if is_keeper {
-            let target = target_hf.max(floor);
-            (target, target)
-        } else {
-            (config.orange_hf, floor)
-        };
-        let (before_hf, after_hf, repaid) = unwind_to(&e, &config, trigger_hf, effective_target)?;
+        let (before_hf, after_hf, repaid) = unwind_to(&e, &config, target_hf, target_hf)?;
         if repaid > 0 {
-            emit_rebalance(&e, &caller, before_hf, after_hf, repaid);
+            emit_rebalance(&e, &keeper, before_hf, after_hf, repaid);
         }
         Ok(repaid)
     }
@@ -641,14 +650,9 @@ impl BlendLeverageStrategy {
     /// holds, supply it straight back, and restore the leverage ratio toward
     /// `target_hf`. Returns the underlying borrowed (`0` on a no-op).
     ///
-    /// This is the counterpart `rebalance` never had. Every other path that
-    /// moves leverage removes it — `rebalance`, `rebalance_keeper` and
-    /// `partial_unwind` all unwind — while the only paths that add it
-    /// (`deposit`, `harvest`, `harvest_reinvest`) lever the *new* capital they
-    /// bring in and never touch the existing position. So an emergency unwind
-    /// left the vault permanently under-levered: nothing on-chain could put back
-    /// what was taken off, and holders kept earning the reduced yield
-    /// indefinitely.
+    /// The only path that adds leverage to the existing position: `rebalance`,
+    /// `rebalance_keeper` and `partial_unwind` remove it, and `deposit`,
+    /// `harvest` and `harvest_reinvest` lever only the capital they bring in.
     ///
     /// Equity is untouched — the borrow and the supply are the same amount, so
     /// `B − D` is invariant and no share price moves. What changes is the ratio
@@ -663,7 +667,7 @@ impl BlendLeverageStrategy {
     ///   the same statement, so this *is* the "never exceed the configured
     ///   leverage" cap;
     /// - `target_hf` sits at least `RELEVERAGE_HF_BUFFER` above `orange_hf`
-    ///   (asserted at construction), so a re-leverage cannot land on the
+    ///   (`validate_risk_params`), so a re-leverage cannot land on the
     ///   rebalance trigger and start a ping-pong; and it only fires when the
     ///   current HF clears the target by the same buffer, so the position has to
     ///   have real slack before anything happens;
@@ -677,14 +681,12 @@ impl BlendLeverageStrategy {
     /// consume the cooldown. Emits a `releverage` event when leverage is added.
     ///
     /// The cooldown rejection is `DeadlineExpired`, not `NotAuthorized`: the
-    /// caller *is* authorized, it is simply too early.
-    pub fn releverage(e: Env, caller: Address) -> Result<i128, StrategyError> {
+    /// keeper *is* authorized, it is simply too early. The DeFindex error set
+    /// has no "too early" code, and `DeadlineExpired` is the only timing one.
+    pub fn releverage(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if caller != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let now = e.ledger().sequence();
         if let Some(last) = storage::get_last_releverage(&e) {
@@ -694,7 +696,7 @@ impl BlendLeverageStrategy {
         }
 
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
         if b_tokens <= 0 {
             return Ok(0); // no collateral to lever against
@@ -702,14 +704,8 @@ impl BlendLeverageStrategy {
 
         let target_hf = config.target_hf;
 
-        let before_hf = compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )?;
+        let before_hf =
+            compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)?;
 
         // Require the same buffer of slack above the target before acting, so a
         // position hovering near it is left alone instead of being re-levered
@@ -720,38 +716,28 @@ impl BlendLeverageStrategy {
         }
 
         let borrow_underlying = compute_releverage(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-            target_hf,
+            b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor, target_hf,
         )?;
         if borrow_underlying <= 0 {
             return Ok(0);
         }
 
-        // Pre-submit snapshot from the pool values already read, exactly as
-        // `unwind_to` does; `reserves::releverage` adds the measured deltas to it.
-        let pre = reserves::reconcile(&e, b_tokens, d_tokens, b_rate, d_rate);
-
         let (b_delta, d_delta) = blend_pool::submit_releverage(&e, borrow_underlying, &config)?;
-        reserves::releverage(&e, b_delta, d_delta, &pre)?;
 
-        // Verify against the settled position rather than a projection: the pool
+        // Verify against the settled position — the position read above plus
+        // what the pool measurably added — rather than a projection: the pool
         // rounds its own conversions, and this is the direction where being wrong
         // costs the vault. HF below the rebalance trigger reverts the whole
         // transaction.
-        let (b2, d2) = blend_pool::get_strategy_positions(&e, &config);
-        let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, config.c_factor, l_factor)?;
+        let (b2, d2) = (b_tokens + b_delta, d_tokens + d_delta);
+        let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?;
         if after_hf < config.orange_hf {
             return Err(StrategyError::ExternalError);
         }
 
         storage::set_last_releverage(&e, now);
         e.events().publish(
-            (Symbol::new(&e, "releverage"), caller.clone()),
+            (Symbol::new(&e, "releverage"), keeper),
             (before_hf, after_hf, borrow_underlying),
         );
 
@@ -792,10 +778,10 @@ impl BlendLeverageStrategy {
     /// Deployed risk configuration: `(c_factor, target_hf, min_hf, orange_hf)`,
     /// all 1e7-scaled.
     ///
-    /// Read-only view for off-chain consumers (frontend, keeper, monitoring) so
-    /// they can display and act on the *actual* on-chain thresholds instead of
-    /// hardcoding copies of the deploy-script values, which silently drift when
-    /// a strategy is redeployed or upgraded with different parameters.
+    /// Read-only view for off-chain consumers (frontend, keeper, monitoring), so
+    /// they act on the on-chain thresholds rather than copies of deploy values.
+    /// `c_factor` is the configured one; the HF uses the lower of it and the
+    /// pool's (see `risk_factors`).
     pub fn config(e: Env) -> Result<(i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
@@ -810,31 +796,24 @@ impl BlendLeverageStrategy {
     /// Get current health factor (1e7 scaled).
     ///
     /// Expressed in Blend's own terms: the collateral side is weighted by the
-    /// strategy's `c_factor` and the debt side carries the pool's live
-    /// `l_factor`, so 1.0 here is the liquidation threshold, not an optimistic
-    /// approximation of it.
+    /// strategy's `c_factor` (capped at the pool's live one) and the debt side
+    /// carries the pool's live `l_factor`, so 1.0 here is the liquidation
+    /// threshold, not an optimistic approximation of it.
     pub fn health_factor(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let (b_rate, d_rate, l_factor) = blend_pool::get_rates_and_l_factor(&e, &config);
+        let (b_rate, d_rate, c_factor, l_factor) = blend_pool::get_rates_and_factors(&e, &config);
         let (b_tokens, d_tokens) = blend_pool::get_strategy_positions(&e, &config);
-        compute_health_factor(
-            b_tokens,
-            d_tokens,
-            b_rate,
-            d_rate,
-            config.c_factor,
-            l_factor,
-        )
+        compute_health_factor(b_tokens, d_tokens, b_rate, d_rate, c_factor, l_factor)
     }
 
     /// Live risk factors behind the health factor:
     /// `(strategy_c_factor, pool_c_factor, pool_l_factor)`, all 1e7-scaled.
     ///
     /// Read-only view for operators and monitoring. The pool values are fetched
-    /// from the reserve config on every call, so this is the way to confirm a
-    /// live asset's `l_factor` (and to detect a Blend governance change to it)
-    /// against the vault that actually depends on it.
+    /// from the reserve config on every call, so a Blend governance change shows
+    /// here as soon as it lands. The HF uses `min(strategy_c_factor,
+    /// pool_c_factor)`.
     pub fn risk_factors(e: Env) -> Result<(i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
@@ -850,7 +829,7 @@ impl BlendLeverageStrategy {
     pub fn position(e: Env) -> Result<(i128, i128, i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
         let equity = leverage::compute_equity(&reserves)?;
         Ok((
             equity,
@@ -874,43 +853,10 @@ impl BlendLeverageStrategy {
         storage::get_version(&e)
     }
 
-    /// Set the SEP-41 vault-share token (admin-gated, one-time wiring).
-    ///
-    /// The token must already be deployed with this strategy as its minter.
-    /// Required before the first deposit. On a fresh deploy the token is the
-    /// per-user ledger from day one; for an upgraded legacy deployment, call
-    /// `migrate_position` per holder afterwards.
-    pub fn set_share_token(e: Env, token: Address) -> Result<(), StrategyError> {
-        Self::require_admin(&e);
-        storage::set_share_token(&e, &token);
-        extend_instance_ttl(&e);
-        Ok(())
-    }
-
-    /// The configured share token, or an error if not yet set.
+    /// The SEP-41 share token this strategy deployed at construction, and is
+    /// the admin and minter of.
     pub fn share_token(e: Env) -> Result<Address, StrategyError> {
-        if storage::has_share_token(&e) {
-            Ok(storage::get_share_token(&e))
-        } else {
-            Err(StrategyError::NotAuthorized)
-        }
-    }
-
-    /// Migrate a legacy `VaultPos` holder onto the share token: mint their
-    /// shares into the token and zero the legacy entry. Permissionless and
-    /// idempotent (it only moves a holder's own shares into their token
-    /// balance — no theft possible). Used once after upgrading a deployment
-    /// that predates the token; fresh deploys never need it.
-    pub fn migrate_position(e: Env, holder: Address) -> Result<i128, StrategyError> {
-        extend_instance_ttl(&e);
-        let legacy = storage::get_vault_shares(&e, &holder);
-        if legacy <= 0 {
-            return Ok(0);
-        }
-        let token = ShareTokenClient::new(&e, &storage::get_share_token(&e));
-        token.mint(&holder, &legacy);
-        storage::set_vault_shares(&e, &holder, 0);
-        Ok(legacy)
+        Ok(storage::get_share_token(&e))
     }
 
     // ── Split harvest for pluggable swap routing (T2.1) ──────────────────────
@@ -941,19 +887,24 @@ impl BlendLeverageStrategy {
 
     /// Set the keeper-controlled account allowed to pull claimed BLND for an
     /// off-chain swap (admin-gated).
+    ///
+    /// Revokes the outgoing account's allowance first, so a removed account
+    /// cannot pull a claim in flight. That claim stays pending: settle it through
+    /// `harvest_reinvest`, or let it expire and claim again for the new account.
     pub fn set_swap_account(e: Env, account: Address) -> Result<(), StrategyError> {
         Self::require_admin(&e);
+        Self::revoke_swap_allowance(&e, &storage::get_config(&e));
         storage::set_swap_account(&e, &account);
         extend_instance_ttl(&e);
         Ok(())
     }
 
-    /// The configured swap account, or an error if unset.
+    /// The configured swap account, or `NotInitialized` if unset.
     pub fn swap_account(e: Env) -> Result<Address, StrategyError> {
         if storage::has_swap_account(&e) {
             Ok(storage::get_swap_account(&e))
         } else {
-            Err(StrategyError::NotAuthorized)
+            Err(StrategyError::NotInitialized)
         }
     }
 
@@ -1039,17 +990,15 @@ impl BlendLeverageStrategy {
     ///
     /// One rate governs both harvest routes. On the off-chain (Broker) path it
     /// is the settlement floor `harvest_reinvest` measures the returned
-    /// underlying against (audit M-4); on the on-chain Soroswap swap (trait
-    /// `harvest`, and `harvest_reinvest` with `via_soroswap`) it becomes the
-    /// swap's `amount_out_min` when the caller supplies no stricter one of its
-    /// own (audit M-5). Same question in both cases — what is this BLND worth,
-    /// at minimum — so the same answer serves.
+    /// underlying against; on the on-chain Soroswap swap (trait `harvest`, and
+    /// `harvest_reinvest` with `via_soroswap`) it becomes the swap's
+    /// `amount_out_min` when the caller supplies no stricter one of its own.
     ///
-    /// This is the number that makes the Broker leg auditable on-chain. It is a
-    /// floor, not a price — set it well below the market BLND rate (a third to a
-    /// half is a reasonable starting point) so ordinary spread, Broker fee and
-    /// price drift between claim and settle never trip it, and it binds only
-    /// when a settlement comes back materially short of what the BLND was worth.
+    /// It is a floor, not a price — set it well below the market BLND rate (a
+    /// third to a half is a reasonable starting point) so ordinary spread, Broker
+    /// fee and price drift between claim and settle never trip it, and it binds
+    /// only when a settlement comes back materially short of what the BLND was
+    /// worth.
     ///
     /// Consequences of getting it wrong are asymmetric and both recoverable:
     /// too high and the harvest reverts until the admin lowers it (yield
@@ -1083,7 +1032,8 @@ impl BlendLeverageStrategy {
     ///
     /// Read-only view of the obligation the next `harvest_reinvest` has to
     /// clear, so the keeper and monitoring can see an unsettled claim (and the
-    /// ledger its allowance dies) rather than inferring it from events.
+    /// ledger at which its allowance expires) rather than inferring it from
+    /// events.
     pub fn pending_harvest(e: Env) -> Result<(i128, i128, i128, u32), StrategyError> {
         let p = storage::get_pending_harvest(&e).ok_or(StrategyError::NotInitialized)?;
         Ok((p.blnd_claimed, p.underlying_before, p.floor, p.expiration))
@@ -1111,13 +1061,10 @@ impl BlendLeverageStrategy {
     /// it, so a fresh claim proceeds — and if that stale claim's BLND did leave
     /// and never came back, `harvest_unsettled` is emitted rather than the
     /// obligation quietly disappearing.
-    pub fn harvest_claim(e: Env, from: Address) -> Result<i128, StrategyError> {
+    pub fn harvest_claim(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if from != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
 
         let config = storage::get_config(&e);
         let now = e.ledger().sequence();
@@ -1126,8 +1073,8 @@ impl BlendLeverageStrategy {
 
         // An unsettled claim whose allowance is still live must be settled (or
         // waited out) first. `DeadlineExpired` rather than `NotAuthorized`: the
-        // keeper is authorized, it is simply too early — same distinction
-        // `releverage` draws.
+        // keeper is authorized, it is simply too early — same distinction, and
+        // same lack of a "too early" code, as `releverage`.
         if let Some(stale) = storage::get_pending_harvest(&e) {
             if now < stale.expiration {
                 return Err(StrategyError::DeadlineExpired);
@@ -1186,12 +1133,9 @@ impl BlendLeverageStrategy {
     ///   it directly (asserted to be held). `amount_out_min` is ignored here.
     ///
     /// **Settlement floor.** This call closes out the `PendingHarvest` opened by
-    /// `harvest_claim`, and it does so on measurement rather than on the
-    /// keeper's word. `amount_in` is a parameter — it says nothing about where
-    /// the underlying came from, and the pre-existing "does the contract hold
-    /// `amount_in`?" check is satisfied just as well by funds that were already
-    /// there. So the floor is enforced against two balances the contract reads
-    /// itself:
+    /// `harvest_claim`, measured on two balances the contract reads itself
+    /// rather than on `amount_in`, which says nothing about where the
+    /// underlying came from:
     ///
     /// - `spent` — BLND the claim made pullable, minus what is still here.
     ///   However much left, by whatever route, is what is owed for.
@@ -1199,22 +1143,20 @@ impl BlendLeverageStrategy {
     ///   the on-chain swap's output when this call is the one that swapped.
     ///
     /// `delivered` must clear `floor × spent / claimed`, else the whole
-    /// transaction reverts with `UnderlyingAmountBelowMin`. Pulling BLND and
-    /// returning nothing no longer settles; it reverts, the allowance is gone,
-    /// and the shortfall is on-chain. The floor applies to the Soroswap route
-    /// too — the same BLND is at stake and `amount_out_min` is the keeper's
-    /// number, while the floor is the admin's.
+    /// transaction reverts with `UnderlyingAmountBelowMin`, leaving the pending
+    /// claim and what remains of its allowance in place until it expires. The
+    /// floor applies to the Soroswap route too — the same BLND is at stake and
+    /// `amount_out_min` is the keeper's number, while the floor is the admin's.
     ///
-    /// The allowance is revoked here regardless of route or outcome-of-the-leg,
-    /// so a settled claim never leaves a live pull behind. With no claim in
-    /// flight there is no allowance and no BLND can have left, so re-leveraging
-    /// idle underlying is unconstrained — there is nothing to owe for.
+    /// A settlement revokes the allowance whatever the route, so a settled claim
+    /// never leaves a live pull behind. With no claim in flight there is no
+    /// allowance and no BLND can have left, so re-leveraging idle underlying
+    /// owes nothing.
     ///
     /// Emits a `harvest_route` event `(route, amount_in, amount_out_min, realized)`
     /// for the keeper's A/B telemetry. Returns realized underlying re-leveraged.
     pub fn harvest_reinvest(
         e: Env,
-        from: Address,
         amount_in: i128,
         via_soroswap: bool,
         amount_out_min: i128,
@@ -1222,9 +1164,6 @@ impl BlendLeverageStrategy {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
-        if from != keeper {
-            return Err(StrategyError::NotAuthorized);
-        }
         check_positive_amount(amount_in)?;
         let config = storage::get_config(&e);
         let strategy = e.current_contract_address();
@@ -1248,7 +1187,8 @@ impl BlendLeverageStrategy {
 
         // Pre-reinvest snapshot — see the trait `harvest` for why it must be
         // taken before the pool settles.
-        let reserves = reserves::get_strategy_reserves_updated(&e, &config);
+        let reserves = reserves::current(&e, &config);
+        check_not_wiped_out(&e, &reserves)?;
 
         let (b_delta, d_delta, realized) = if via_soroswap {
             blend_pool::perform_reinvest(&e, &config, amount_out_min)?
@@ -1305,8 +1245,8 @@ impl BlendLeverageStrategy {
 //
 // Admin storage and the `admin` / `set_admin` entrypoints come from the
 // `admin-sep` Administratable trait (admin lives in instance storage under the
-// SEP's canonical key). `set_admin` is current-admin-gated, giving the missing
-// admin-rotation path. The constructor seeds the admin via `Self::set_admin`.
+// SEP's canonical key). `set_admin` is current-admin-gated. The constructor
+// seeds the admin via `Self::set_admin`.
 
 #[contractimpl(contracttrait)]
 impl Administratable for BlendLeverageStrategy {}

@@ -2,12 +2,13 @@
 
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
-    compute_equity, compute_health_factor, compute_lever_in, compute_partial_unwind,
-    compute_releverage, effective_c_factor, harvest_floor, lock_profit, locked_profit,
-    priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
+    compute_equity, compute_equity_up, compute_health_factor, compute_lever_in,
+    compute_partial_unwind, compute_releverage, effective_c_factor, harvest_floor, lock_profit,
+    locked_profit, priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
     unwind_rounding_margin,
 };
-use crate::storage::{LeverageReserves, LockedProfit};
+use crate::reserves::LeverageReserves;
+use crate::storage::LockedProfit;
 use soroban_fixed_point_math::FixedPoint;
 
 /// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
@@ -217,6 +218,41 @@ fn test_underlying_to_shares_proportional() {
     // Equity = 1000. Depositing 500 should get 500 shares.
     let shares = underlying_to_shares(500_0000000, &reserves, 0).unwrap();
     assert_eq!(shares, 500_0000000);
+}
+
+#[test]
+fn test_underlying_to_shares_refuses_shares_with_nothing_behind_them() {
+    // Shares outstanding, position gone: what a full liquidation or a bad-debt
+    // write-off leaves. Minting 1:1 here would dilute the deposit into the old
+    // shares.
+    let wiped_out = LeverageReserves {
+        total_shares: 1_000_0000000,
+        total_b_tokens: 0,
+        total_d_tokens: 0,
+        b_rate: SCALAR_12,
+        d_rate: SCALAR_12,
+    };
+    let underwater = LeverageReserves {
+        total_b_tokens: 900_0000000,
+        total_d_tokens: 1_000_0000000,
+        ..wiped_out.clone()
+    };
+    // Equity left, but no more than the harvest profit still locked.
+    let all_locked = LeverageReserves {
+        total_b_tokens: 1_050_0000000,
+        total_d_tokens: 1_000_0000000,
+        ..wiped_out.clone()
+    };
+
+    for (reserves, locked) in [(wiped_out, 0), (underwater, 0), (all_locked, 50_0000000)] {
+        assert_eq!(
+            underlying_to_shares(500_0000000, &reserves, locked),
+            Err(crate::StrategyError::InvalidSharesMinted),
+            "{:?} with {} locked",
+            reserves,
+            locked
+        );
+    }
 }
 
 #[test]
@@ -600,9 +636,9 @@ fn with_contract<F: FnOnce(&Env, &Address)>(e: &Env, f: F) {
 fn test_deposit_first_depositor() {
     let e = Env::default();
     with_contract(&e, |e, _| {
-        // Set up empty reserves in storage
+        // An empty vault
         let init_reserves = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init_reserves.clone());
+        storage::set_total_shares(e, init_reserves.total_shares);
 
         // First deposit: 1000 equity → 1000 shares - 1000 lockup
         // Simulating: b_delta = 8000 (leverage 8x), d_delta = 7000, equity = 1000
@@ -627,7 +663,7 @@ fn test_deposit_second_depositor() {
     with_contract(&e, |e, _| {
         // First deposit
         let init = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init.clone());
+        storage::set_total_shares(e, init.total_shares);
         let (_, _, after_first) =
             reserves::deposit(e, 8_000_0000000, 7_000_0000000, &init).unwrap();
 
@@ -650,7 +686,7 @@ fn test_withdraw_full() {
         // Set up: user has all shares (read from the token in production).
         let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Withdraw all equity (1000)
         let (burned, b_remove, d_remove) =
@@ -674,7 +710,7 @@ fn test_withdraw_partial() {
     with_contract(&e, |e, _| {
         let user_shares = 1_000_0000000_i128;
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Withdraw half equity (500)
         let (burned, b_remove, d_remove) =
@@ -696,7 +732,7 @@ fn test_withdraw_insufficient_balance() {
     with_contract(&e, |e, _| {
         let user_shares = 500_0000000_i128; // only has 500
         let reserves_state = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // Try to withdraw more than the user's shares cover
         let result = reserves::withdraw(e, user_shares, 600_0000000, &reserves_state);
@@ -711,13 +747,100 @@ fn test_withdraw_refused_when_underwater() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(900_0000000, 1_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         let result = reserves::withdraw(e, 1_000_0000000, 1_0000000, &reserves_state);
         assert!(matches!(
             result,
             Err(crate::StrategyError::InsufficientBalance)
         ));
+    });
+}
+
+// A withdrawal's slice rounds against the withdrawer, at any rates and with
+// harvest profit locked or not. The shares burned cover the amount; the
+// collateral rounds down and the debt up, so the slice's collateral-to-debt
+// ratio is at most the vault's and its exact value at most the burned shares'.
+// A slice of a vault with debt always carries some, so its repay is never left
+// out. `redeem` of the same shares takes the same slice.
+#[test]
+fn test_a_withdrawal_slice_rounds_against_the_withdrawer() {
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        // (b_tokens, d_tokens, shares, b_rate, d_rate)
+        let vaults = [
+            (
+                8_123_456_789_i128,
+                7_012_345_678,
+                1_000_0001000,
+                1_043_210_987_654,
+                1_087_654_321_098,
+            ),
+            (
+                9_876_543_211,
+                8_765_432_109,
+                1_234_5678901,
+                1_500_000_000_001,
+                1_600_000_000_003,
+            ),
+            (5_000, 4_100, 1_201, 1_040_000_000_007, 1_080_000_000_009),
+        ];
+        for (b_tokens, d_tokens, total_shares, b_rate, d_rate) in vaults {
+            let reserves = LeverageReserves {
+                total_shares,
+                total_b_tokens: b_tokens,
+                total_d_tokens: d_tokens,
+                b_rate,
+                d_rate,
+            };
+            storage::set_total_shares(e, total_shares);
+            let equity = compute_equity(&reserves).unwrap();
+            // The position's exact value, in underlying × SCALAR_12.
+            let value = b_tokens * b_rate - d_tokens * d_rate;
+
+            for locked in [0, equity / 3] {
+                let now = e.ledger().sequence();
+                storage::set_locked_profit(
+                    e,
+                    &LockedProfit {
+                        amount: locked,
+                        from: now,
+                        until: now + W,
+                    },
+                );
+                let priced = equity - locked;
+
+                for amount in [1, 7, priced / 1_000 + 3, priced / 3, priced] {
+                    let case = (b_tokens, locked, amount);
+                    let (burned, b, d) =
+                        reserves::withdraw(e, total_shares, amount, &reserves).unwrap();
+
+                    assert!(
+                        burned * priced >= amount * total_shares,
+                        "{:?}: shares cover it",
+                        case
+                    );
+                    assert!(
+                        b * d_tokens <= b_tokens * d,
+                        "{:?}: ratio at most the vault's",
+                        case
+                    );
+                    assert!(
+                        (b * b_rate - d * d_rate) * total_shares
+                            <= burned * (value - locked * SCALAR_12),
+                        "{:?}: worth at most the shares burned",
+                        case
+                    );
+                    assert!(d >= 1, "{:?}: the slice carries debt", case);
+                    assert_eq!(
+                        reserves::redeem(e, total_shares, burned, &reserves).unwrap(),
+                        (b, d),
+                        "{:?}: redeem takes the same slice",
+                        case
+                    );
+                }
+            }
+        }
     });
 }
 
@@ -748,7 +871,7 @@ fn test_harvest_increases_share_value() {
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
 }
 
-// ── Profit release (audit finding 7) ─────────────────────────────────────────
+// ── Profit release ───────────────────────────────────────────────────────────
 
 const W: u32 = PROFIT_UNLOCK_LEDGERS;
 
@@ -889,7 +1012,7 @@ fn test_harvest_locks_the_equity_it_adds() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, r.clone());
+        storage::set_total_shares(e, r.total_shares);
 
         // +500 b / +400 d: the harvest adds 100 of equity, all of it locked.
         let updated = reserves::harvest(e, 500_0000000, 400_0000000, &r).unwrap();
@@ -905,9 +1028,6 @@ fn test_harvest_locks_the_equity_it_adds() {
 
         e.ledger().with_mut(|li| li.sequence_number += W / 2);
         assert_eq!(value(e), 1_100_0000000, "all released after the window");
-
-        // A re-leverage moves the ratio, not the equity: nothing to lock.
-        reserves::releverage(e, 100_0000000, 100_0000000, &updated).unwrap();
         assert_eq!(reserves::locked_profit(e).unwrap(), 0);
     });
 }
@@ -950,7 +1070,7 @@ fn test_deposit_zero_b_tokens_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         let result = reserves::deposit(e, 0, 0, &reserves_state);
         assert!(result.is_err());
@@ -962,7 +1082,7 @@ fn test_deposit_negative_equity_fails() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let reserves_state = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, reserves_state.clone());
+        storage::set_total_shares(e, reserves_state.total_shares);
 
         // More debt than supply → negative equity
         let result = reserves::deposit(e, 1_000_0000000, 2_000_0000000, &reserves_state);
@@ -975,7 +1095,7 @@ fn test_multi_user_proportional() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let init = make_reserves(0, 0, 0);
-        storage::set_strategy_reserves(e, init.clone());
+        storage::set_total_shares(e, init.total_shares);
 
         // Alice deposits first: equity = 1000
         let (alice_shares, _, after_alice) =
@@ -1018,35 +1138,20 @@ fn test_multi_user_proportional() {
 #[test]
 fn test_safety_allows_healthy_pool() {
     use crate::leverage::check_min_health_factor;
-    use crate::storage::Config;
 
     let e = Env::default();
-    let dummy = Address::generate(&e);
-    let config = Config {
-        asset: dummy.clone(),
-        pool: dummy.clone(),
-        reserve_id: 0,
-        blend_token: dummy.clone(),
-        router: dummy.clone(),
-        claim_ids: soroban_sdk::Vec::new(&e),
-        reward_threshold: 1,
-        c_factor: 9_500_000,
-        target_hf: 11_700_000,
-        min_hf: 10_500_000,
-        orange_hf: 11_500_000,
-    };
+    let hf = compute_health_factor(
+        2_000_0000000, // plenty of collateral
+        500_0000000,
+        SCALAR_12,
+        SCALAR_12,
+        9_500_000,
+        L_NONE,
+    )
+    .unwrap();
 
     assert!(
-        check_min_health_factor(
-            &e,
-            2_000_0000000, // plenty of collateral
-            500_0000000,
-            SCALAR_12,
-            SCALAR_12,
-            L_NONE,
-            &config,
-        )
-        .is_ok(),
+        check_min_health_factor(&e, hf, 10_500_000).is_ok(),
         "Should allow a healthy HF"
     );
 }
@@ -1063,23 +1168,9 @@ fn test_safety_allows_healthy_pool() {
 #[should_panic(expected = "Error(Contract, #422)")]
 fn test_safety_rejects_position_blend_would_liquidate() {
     use crate::leverage::check_min_health_factor;
-    use crate::storage::Config;
 
     let e = Env::default();
-    let dummy = Address::generate(&e);
-    let config = Config {
-        asset: dummy.clone(),
-        pool: dummy.clone(),
-        reserve_id: 0,
-        blend_token: dummy.clone(),
-        router: dummy.clone(),
-        claim_ids: soroban_sdk::Vec::new(&e),
-        reward_threshold: 1,
-        c_factor: 7_000_000,
-        target_hf: 11_700_000,
-        min_hf: 11_000_000,
-        orange_hf: 11_500_000,
-    };
+    let (c_factor, min_hf) = (7_000_000, 11_000_000);
 
     let post_d = 1_000_0000000_i128;
     // B/D = min_hf / c_factor, rounded up a stroop so the markup-free HF lands on
@@ -1088,22 +1179,35 @@ fn test_safety_rejects_position_blend_would_liquidate() {
     let post_b = 1_571_4285715_i128;
 
     // Sanity: this position is exactly at min_hf when the markup is ignored.
-    let hf_old = compute_health_factor(
-        post_b,
-        post_d,
-        SCALAR_12,
-        SCALAR_12,
-        config.c_factor,
-        L_NONE,
-    )
-    .unwrap();
-    assert!(hf_old >= config.min_hf, "fixture must clear the old gate");
+    let hf_old =
+        compute_health_factor(post_b, post_d, SCALAR_12, SCALAR_12, c_factor, L_NONE).unwrap();
+    assert!(hf_old >= min_hf, "fixture must clear the old gate");
 
-    check_min_health_factor(
-        &e, post_b, post_d, SCALAR_12, SCALAR_12, 8_000_000, // l_factor = 0.80
-        &config,
+    let hf = compute_health_factor(
+        post_b, post_d, SCALAR_12, SCALAR_12, c_factor, 8_000_000, // l_factor = 0.80
     )
     .unwrap();
+    check_min_health_factor(&e, hf, min_hf).unwrap();
+}
+
+/// The guard `unwind_to` runs after a deleverage, `check_min_health_factor(e,
+/// after_hf, before_hf)`. Repaying and withdrawing the same amount raises the HF
+/// of any position with equity (`test_rebalance_never_lowers_the_health_factor`);
+/// it lowers it only when the collateral is worth less than the debt, and that
+/// is what the guard refuses.
+#[test]
+#[should_panic(expected = "Error(Contract, #422)")]
+fn test_deleverage_guard_refuses_a_lower_health_factor() {
+    use crate::leverage::check_min_health_factor;
+
+    let e = Env::default();
+    let hf =
+        |b: i128, d: i128| compute_health_factor(b, d, SCALAR_12, SCALAR_12, 9_000_000, L_NONE);
+    let (b, d, x) = (900_0000000_i128, 1_000_0000000_i128, 100_0000000_i128);
+    let (before, after) = (hf(b, d).unwrap(), hf(b - x, d - x).unwrap());
+    assert!(after < before, "fixture: the deleverage lowers HF");
+
+    check_min_health_factor(&e, after, before).unwrap();
 }
 
 /// The unwind closed form must solve for the HF that includes the markup, not
@@ -1187,21 +1291,22 @@ fn test_version_defaults_to_one_then_bumps() {
     });
 }
 
-/// An in-place WASM upgrade preserves all contract storage, so a user's
-/// underlying balance and the strategy HF computed from the stored position
-/// must be identical before and after. This asserts that parity invariant on
-/// a seeded fixture: the same stored reserves yield byte-identical equity, HF,
-/// and per-share underlying — well within the 1e-7 acceptance tolerance (the
-/// difference is exactly zero).
+/// An in-place WASM upgrade preserves all contract storage and leaves Blend's
+/// record of the position alone, so a user's underlying balance and the strategy
+/// HF must be identical before and after. This asserts that parity invariant on
+/// a seeded fixture: the same position and stored share count yield
+/// byte-identical equity, HF, and per-share underlying — well within the 1e-7
+/// acceptance tolerance (the difference is exactly zero).
 #[test]
 fn test_upgrade_preserves_hf_and_balance_parity() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         // Seed a realistic leveraged position: ~8x supply, 7x debt.
         let reserves = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
-        storage::set_strategy_reserves(e, reserves.clone());
-        let user = Address::generate(e);
-        storage::set_vault_shares(e, &user, 1_000_0000000);
+        storage::set_total_shares(e, reserves.total_shares);
+        // A holder's shares live in the share token, which an upgrade of the
+        // strategy does not touch; what the upgrade could change is their price.
+        let user_shares = 1_000_0000000_i128;
 
         // Pre-upgrade snapshot (v1 reading current storage).
         let equity_before = compute_equity(&reserves).unwrap();
@@ -1214,11 +1319,14 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             L_NONE,
         )
         .unwrap();
-        let user_underlying_before =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves, 0).unwrap();
+        let user_underlying_before = shares_to_underlying(user_shares, &reserves, 0).unwrap();
 
-        // An upgrade does not touch contract storage; re-read it as v2 would.
-        let reserves_after = storage::get_strategy_reserves(e);
+        // An upgrade touches neither Blend's record of the position nor the
+        // stored share count; rebuild the position as v2 would read it.
+        let reserves_after = LeverageReserves {
+            total_shares: storage::get_total_shares(e),
+            ..reserves.clone()
+        };
         let equity_after = compute_equity(&reserves_after).unwrap();
         let hf_after = compute_health_factor(
             reserves_after.total_b_tokens,
@@ -1229,8 +1337,7 @@ fn test_upgrade_preserves_hf_and_balance_parity() {
             L_NONE,
         )
         .unwrap();
-        let user_underlying_after =
-            shares_to_underlying(storage::get_vault_shares(e, &user), &reserves_after, 0).unwrap();
+        let user_underlying_after = shares_to_underlying(user_shares, &reserves_after, 0).unwrap();
 
         // Parity within 1e-7 — here exactly equal.
         assert_eq!(equity_before, equity_after, "equity parity");
@@ -1697,6 +1804,62 @@ fn test_releverage_with_accrued_rates_is_sane() {
         hf1,
         target
     );
+}
+
+// The position is valued as Blend values it, collateral down and debt up, so a
+// leaver never takes more than their shares hold and the HF never exceeds
+// Blend's. A deposit is priced against the equity rounded the other way, so it
+// never mints more shares than the value it adds.
+#[test]
+fn test_valuations_round_the_debt_up() {
+    let r = LeverageReserves {
+        total_shares: 3_000_0000000,
+        total_b_tokens: 10_000_0000001,
+        total_d_tokens: 7_000_0000001,
+        b_rate: 1_100_000_000_001,
+        d_rate: 1_050_000_000_001,
+    };
+    let supply_down = r
+        .total_b_tokens
+        .fixed_mul_floor(r.b_rate, SCALAR_12)
+        .unwrap();
+    let debt_up = r
+        .total_d_tokens
+        .fixed_mul_ceil(r.d_rate, SCALAR_12)
+        .unwrap();
+    assert_ne!(
+        debt_up,
+        r.total_d_tokens
+            .fixed_mul_floor(r.d_rate, SCALAR_12)
+            .unwrap(),
+        "precondition: the debt has a fractional part"
+    );
+
+    let equity = compute_equity(&r).unwrap();
+    assert_eq!(equity, supply_down - debt_up);
+    assert_eq!(compute_equity_up(&r).unwrap(), equity + 2);
+
+    let c = 9_000_000_i128;
+    assert_eq!(
+        compute_health_factor(
+            r.total_b_tokens,
+            r.total_d_tokens,
+            r.b_rate,
+            r.d_rate,
+            c,
+            L_NONE
+        )
+        .unwrap(),
+        (supply_down * c).fixed_mul_floor(L_NONE, SCALAR_7).unwrap() / debt_up
+    );
+
+    let amount = 1_000_0000000_i128;
+    let shares = underlying_to_shares(amount, &r, 0).unwrap();
+    assert_eq!(
+        shares,
+        amount.fixed_mul_floor(r.total_shares, equity + 2).unwrap()
+    );
+    assert!(shares <= amount.fixed_mul_floor(r.total_shares, equity).unwrap());
 }
 
 // ── Harvest settlement floor (audit M-4) ─────────────────────────────────────

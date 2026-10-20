@@ -3,11 +3,13 @@ on:
   pull_request:
     paths:
       - 'contracts/**'
+      - 'rust-toolchain.toml'
       - '.github/workflows/contracts.yml'
   push:
     branches: [main, dev]
     paths:
       - 'contracts/**'
+      - 'rust-toolchain.toml'
 
 jobs:
   build:
@@ -25,11 +27,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # Installs the compiler, target and components pinned in
+      # rust-toolchain.toml, never whatever stable is today.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-          components: rustfmt, clippy
+        run: rustup toolchain install && rustc --version
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -39,11 +40,22 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --check
 
+      # The strategy deploys its share token from this wasm, and its tests load
+      # it, so it must exist before they compile.
+      - name: Build the share token wasm
+        if: matrix.crate == 'contracts/strategies/blend_leverage'
+        working-directory: contracts/tokens/vault_share
+        run: cargo build --locked --target wasm32v1-none --release
+
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Build wasm release
-        run: cargo build --target wasm32v1-none --release
+        run: cargo build --locked --target wasm32v1-none --release
+
+      # A local build of the same commit, or the wasm hash on-chain, must match.
+      - name: Wasm hash
+        run: sha256sum target/wasm32v1-none/release/*.wasm

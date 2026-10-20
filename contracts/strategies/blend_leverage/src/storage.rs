@@ -7,17 +7,13 @@ const ONE_DAY_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * ONE_DAY_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - ONE_DAY_LEDGERS;
 
-const PERSISTENT_BUMP_AMOUNT: u32 = 120 * ONE_DAY_LEDGERS;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - 20 * ONE_DAY_LEDGERS;
-
 // ── Data keys ────────────────────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Config,
-    Reserves,
-    VaultPos(Address),
+    TotalShares,
     Keeper,
     /// Monotonic contract version, bumped on each upgrade.
     Version,
@@ -60,12 +56,13 @@ pub struct Config {
     pub claim_ids: Vec<u32>,
     /// Minimum BLND balance to trigger harvest swap
     pub reward_threshold: i128,
-    /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95)
+    /// Collateral factor (1e7 scaled, e.g. 9_500_000 = 0.95). Health-factor
+    /// math uses the lower of this and the pool's live one.
     pub c_factor: i128,
     /// Health factor a deposit is levered to (1e7 scaled, e.g. 11_300_000 =
     /// 1.13), in Blend's terms: the pool's live `l_factor` is part of it. It is
     /// the vault's leverage, `B/E = target_hf / (target_hf − c_factor × l_factor)`.
-    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (asserted at construction).
+    /// At least `orange_hf + RELEVERAGE_HF_BUFFER` (`validate_risk_params`).
     pub target_hf: i128,
     /// Minimum health factor (1e7 scaled, e.g. 1_050_000 = 1.05)
     pub min_hf: i128,
@@ -85,64 +82,30 @@ pub fn get_config(e: &Env) -> Config {
         .expect("Config not initialized")
 }
 
-// ── Leverage reserves (strategy-level accounting) ────────────────────────────
+// ── Total shares ─────────────────────────────────────────────────────────────
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
-pub struct LeverageReserves {
-    /// Total shares outstanding across all depositors
-    pub total_shares: i128,
-    /// Total b-tokens (supply tokens) held by the strategy in the pool
-    pub total_b_tokens: i128,
-    /// Total d-tokens (debt tokens) owed by the strategy in the pool
-    pub total_d_tokens: i128,
-    /// Last known b_rate from the pool
-    pub b_rate: i128,
-    /// Last known d_rate from the pool
-    pub d_rate: i128,
-}
-
+/// The vault's only record of its position: the shares outstanding, lockup
+/// included, as minted on the share token. Its b/d tokens and the pool's rates
+/// are read from Blend on every call (`reserves::current`), not stored.
+///
 /// Global, so instance storage like the rest of the contract's state: it lives
 /// as long as the instance, whose TTL nearly every call extends.
-pub fn set_strategy_reserves(e: &Env, reserves: LeverageReserves) {
-    e.storage().instance().set(&DataKey::Reserves, &reserves);
-}
-
-pub fn get_strategy_reserves(e: &Env) -> LeverageReserves {
+pub fn set_total_shares(e: &Env, total_shares: i128) {
     e.storage()
         .instance()
-        .get(&DataKey::Reserves)
-        .unwrap_or_default()
+        .set(&DataKey::TotalShares, &total_shares);
 }
 
-// ── Per-user vault shares ────────────────────────────────────────────────────
-
-pub fn set_vault_shares(e: &Env, address: &Address, shares: i128) {
-    let key = DataKey::VaultPos(address.clone());
-    e.storage().persistent().set(&key, &shares);
-    e.storage().persistent().extend_ttl(
-        &key,
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
-}
-
-pub fn get_vault_shares(e: &Env, address: &Address) -> i128 {
-    let key = DataKey::VaultPos(address.clone());
-    let shares = e.storage().persistent().get(&key).unwrap_or(0i128);
-    if shares > 0 {
-        e.storage().persistent().extend_ttl(
-            &key,
-            PERSISTENT_LIFETIME_THRESHOLD,
-            PERSISTENT_BUMP_AMOUNT,
-        );
-    }
-    shares
+pub fn get_total_shares(e: &Env) -> i128 {
+    e.storage()
+        .instance()
+        .get(&DataKey::TotalShares)
+        .unwrap_or(0)
 }
 
 // ── Keeper ───────────────────────────────────────────────────────────────────
 
-/// Instance storage, like the reserves above.
+/// Instance storage, like the share count above.
 pub fn set_keeper(e: &Env, keeper: &Address) {
     e.storage().instance().set(&DataKey::Keeper, keeper);
 }
@@ -156,7 +119,7 @@ pub fn get_keeper(e: &Env) -> Address {
 
 // ── Admin ────────────────────────────────────────────────────────────────────
 //
-// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// Admin storage lives in the `admin-sep` Administratable trait (see lib.rs),
 // under the SEP's canonical instance-storage key — there is no local Admin key.
 
 // ── Version ──────────────────────────────────────────────────────────────────
@@ -180,10 +143,6 @@ pub fn get_share_token(e: &Env) -> Address {
         .instance()
         .get(&DataKey::ShareToken)
         .expect("share token not set")
-}
-
-pub fn has_share_token(e: &Env) -> bool {
-    e.storage().instance().has(&DataKey::ShareToken)
 }
 
 // ── Keeper re-leverage rate-limit ────────────────────────────────────────────
@@ -232,7 +191,7 @@ pub fn get_swap_via(e: &Env) -> Option<Address> {
     e.storage().instance().get(&DataKey::SwapVia)
 }
 
-// ── Harvest settlement floor (audit M-4) ─────────────────────────────────────
+// ── Harvest settlement floor ─────────────────────────────────────────────────
 
 /// Minimum underlying owed back per `SCALAR_7` (1e7) of BLND handed to the swap
 /// account, in the underlying's own smallest units.
@@ -299,7 +258,7 @@ pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
     pending
 }
 
-// ── Locked harvest profit (audit finding 7) ──────────────────────────────────
+// ── Locked harvest profit ────────────────────────────────────────────────────
 
 /// Harvest profit held out of the share price: `amount` at ledger `from`,
 /// released linearly to nothing at ledger `until` (see `PROFIT_UNLOCK_LEDGERS`).

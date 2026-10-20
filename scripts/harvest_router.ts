@@ -21,7 +21,7 @@
  *             with --execute for the production harvest keeper service.
  *
  * Execution flow (per vault, --execute):
- *   1. `harvest_claim(keeper)` → BLND claimed into the strategy and approved to
+ *   1. `harvest_claim()` → BLND claimed into the strategy and approved to
  *      the swap account (which must be the keeper for the Broker path). The
  *      approval is short-lived (~5 min) and carries a settlement obligation.
  *   2. Re-quote Broker + Soroswap with the actual claimed amount → `decide`.
@@ -393,7 +393,7 @@ function brokerTrade(kp: Keypair, sellingClassic: string, buyingClassic: string,
 async function executeSoroswap(v: Vault, kp: Keypair, amountIn: bigint, amountOutMin: bigint): Promise<InvokeResult> {
   return invoke(
     kp, v.strategyId, "harvest_reinvest",
-    addr(kp.publicKey()), i128(amountIn), bool(true), i128(amountOutMin),
+    i128(amountIn), bool(true), i128(amountOutMin),
   );
 }
 
@@ -454,7 +454,7 @@ async function executeBroker(v: Vault, kp: Keypair, claimed: bigint): Promise<Br
   }
   const reinvest = await invoke(
     kp, v.strategyId, "harvest_reinvest",
-    addr(me), i128(bought), bool(false), i128(0n),
+    i128(bought), bool(false), i128(0n),
   );
   if (reinvest.status !== "success") {
     return { executedOut: 0n, reinvestHash: reinvest.hash, unsoldBlnd: unsold, error: `harvest_reinvest ${reinvest.status}` };
@@ -535,7 +535,7 @@ async function processVault(v: Vault): Promise<void> {
   }
 
   // 1. Claim BLND emissions (also approves the swap account for the Broker pull).
-  const claim = await invoke(kp, v.strategyId, "harvest_claim", addr(kp.publicKey()));
+  const claim = await invoke(kp, v.strategyId, "harvest_claim");
   if (claim.status !== "success") {
     console.error(`[${v.symbol}] harvest_claim ${claim.status} (tx ${claim.hash})`);
     return;

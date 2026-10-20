@@ -14,7 +14,7 @@ on-chain.
 ## 0. What gets listed
 
 Every Turbolong vault mints a **separate SEP-41 token** (the `vault_share`
-contract, wired into each strategy via `set_share_token` in
+contract, deployed by each strategy in its constructor — see
 `scripts/deploy_strategy_mainnet.ts`). A holder's share balance is their claim on
 the leveraged position. Listing that token on Aquarius gives a secondary exit:
 sell shares for USDC instead of calling `withdraw` (which unwinds the loop).
@@ -26,8 +26,8 @@ shows a "listing after mainnet" notice.
 
 ## 1. Prerequisites
 
-- [ ] T1 D1 done: 4 mainnet vaults deployed, each with its share token deployed
-      and `set_share_token` confirmed (`deployed-vaults.mainnet.json`).
+- [ ] T1 D1 done: 4 mainnet vaults deployed, each with the share token its
+      constructor deployed (`deployed-vaults.mainnet.json`).
 - [ ] Listing wallet funded with **AQUA** for the pool-creation fee:
       **300,000 AQUA per pool** (4 pools → 1,200,000 AQUA).
 - [ ] Listing wallet funded with seed liquidity: receipt tokens (obtained by

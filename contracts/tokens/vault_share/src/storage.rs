@@ -61,7 +61,7 @@ pub fn extend_instance(e: &Env) {
 
 // ── Admin / minter / metadata ────────────────────────────────────────────────
 //
-// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// Admin storage lives in the `admin-sep` Administratable trait (see lib.rs),
 // under the SEP's canonical instance-storage key — there is no local Admin key.
 
 pub fn set_minter(e: &Env, minter: &Address) {

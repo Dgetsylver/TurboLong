@@ -1,7 +1,7 @@
-use blend_contract_sdk::pool::{Client as BlendPoolClient, Request};
+use blend_contract_sdk::pool::{Client as BlendPoolClient, PoolError, Request};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
-use soroban_sdk::{token::TokenClient, vec, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, token::TokenClient, vec, Address, Env, Error, Vec};
 
 use crate::{
     constants::{
@@ -66,9 +66,9 @@ pub fn submit_lever_in(
     let strategy = e.current_contract_address();
     let (pre_b, pre_d) = get_strategy_positions(e, config);
 
-    let (_, l_factor) = get_pool_risk_factors(e, config);
+    let (_, _, c_factor, l_factor) = get_rates_and_factors(e, config);
     let (total_supply, total_borrow) =
-        compute_lever_in(initial_amount, config.c_factor, l_factor, config.target_hf)?;
+        compute_lever_in(initial_amount, c_factor, l_factor, config.target_hf)?;
 
     // Supply first, so the borrow is checked against the final state. A dust
     // amount whose borrow floors to zero is supplied without one.
@@ -136,9 +136,9 @@ pub fn submit_lever_in(
 /// rates (the two only coincide while the rates sit at 1.0) — and rounded
 /// against the withdrawer. The repay rounds *up*, so the pool burns exactly
 /// `d_tokens_to_remove`: none of the share's debt is left behind for the
-/// remaining holders, a full close needs no `i64::MAX` sweep, and a non-zero
-/// share can never round down to a zero-token burn. The withdraw rounds *down*,
-/// so it burns at most `b_tokens_to_remove`.
+/// remaining holders, a full close clears the whole debt, and a non-zero share
+/// can never round down to a zero-token burn. The withdraw rounds *down*, so it
+/// burns at most `b_tokens_to_remove`.
 ///
 /// Repay first, so the withdraw is checked against the final state. Netting
 /// means the pool pays out only `b − d` — the equity — and the strategy needs
@@ -148,14 +148,21 @@ pub fn submit_lever_in(
 /// caller burns the shares first, and an unwind that pays nothing would take
 /// them for nothing.
 ///
-/// Returns (b_tokens_removed, d_tokens_removed).
+/// **The last holders.** Blend refuses a withdraw that leaves a borrower with
+/// debt and less than the pool's `min_collateral` (`MinCollateralNotMet`), which
+/// an exit from a small enough vault would. Only then, the unwind closes the
+/// whole debt instead: the leaver also repays the rest of it and takes the
+/// collateral that repayment frees, rounded down. Blend checks no minimum on a
+/// borrower without debt, and the holders who stay keep their equity, unlevered.
+///
+/// Returns (b_tokens_removed, d_tokens_removed, underlying_paid).
 pub fn submit_unwind(
     e: &Env,
     b_tokens_to_remove: i128,
     d_tokens_to_remove: i128,
     to: &Address,
     config: &Config,
-) -> Result<(i128, i128), StrategyError> {
+) -> Result<(i128, i128, i128), StrategyError> {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let token_client = TokenClient::new(e, &config.asset);
     let strategy = e.current_contract_address();
@@ -164,32 +171,34 @@ pub fn submit_unwind(
     let pre_balance = token_client.balance(&strategy);
 
     let (b_rate, d_rate) = get_rates(e, config);
-    let d_underlying = d_tokens_to_remove
-        .fixed_mul_ceil(d_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-    let b_underlying = b_tokens_to_remove
-        .fixed_mul_floor(b_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-
-    if b_underlying <= d_underlying {
-        return Err(StrategyError::AmountBelowMinDust);
+    let requests = unwind_requests(
+        e,
+        config,
+        b_tokens_to_remove,
+        d_tokens_to_remove,
+        b_rate,
+        d_rate,
+    )?;
+    match pool_client.try_submit_with_allowance(&strategy, &strategy, &strategy, &requests) {
+        Ok(_) => {}
+        Err(Ok(error))
+            if error == Error::from_contract_error(PoolError::MinCollateralNotMet as u32)
+                && d_tokens_to_remove < pre_d =>
+        {
+            let freed_b = (pre_d - d_tokens_to_remove)
+                .fixed_mul_floor(d_rate, b_rate)
+                .ok_or(StrategyError::ArithmeticError)?;
+            let b_tokens = b_tokens_to_remove
+                .checked_add(freed_b)
+                .ok_or(StrategyError::UnderflowOverflow)?
+                .min(pre_b);
+            let requests = unwind_requests(e, config, b_tokens, pre_d, b_rate, d_rate)?;
+            pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
+        }
+        // Any other refusal is Blend's to report.
+        Err(Ok(error)) => panic_with_error!(e, error),
+        Err(Err(_)) => panic_with_error!(e, StrategyError::ExternalError),
     }
-
-    let mut requests: Vec<Request> = Vec::new(e);
-    if d_underlying > 0 {
-        requests.push_back(Request {
-            address: config.asset.clone(),
-            amount: d_underlying,
-            request_type: REQUEST_TYPE_REPAY,
-        });
-    }
-    requests.push_back(Request {
-        address: config.asset.clone(),
-        amount: b_underlying,
-        request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
-    });
-
-    pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
     // Transfer equity to `to`
     let post_balance = token_client.balance(&strategy);
@@ -211,7 +220,46 @@ pub fn submit_unwind(
         .checked_sub(end_d)
         .ok_or(StrategyError::UnderflowOverflow)?;
 
-    Ok((b_removed, d_removed))
+    Ok((b_removed, d_removed, equity))
+}
+
+/// The `[repay, withdraw_collateral]` requests that remove `b_tokens` and
+/// `d_tokens`, converted to underlying and rounded against the withdrawer as
+/// `submit_unwind` describes. Refused with `AmountBelowMinDust` when they would
+/// carry no equity out.
+fn unwind_requests(
+    e: &Env,
+    config: &Config,
+    b_tokens: i128,
+    d_tokens: i128,
+    b_rate: i128,
+    d_rate: i128,
+) -> Result<Vec<Request>, StrategyError> {
+    let d_underlying = d_tokens
+        .fixed_mul_ceil(d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let b_underlying = b_tokens
+        .fixed_mul_floor(b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+
+    if b_underlying <= d_underlying {
+        return Err(StrategyError::AmountBelowMinDust);
+    }
+
+    let mut requests: Vec<Request> = Vec::new(e);
+    if d_underlying > 0 {
+        requests.push_back(Request {
+            address: config.asset.clone(),
+            amount: d_underlying,
+            request_type: REQUEST_TYPE_REPAY,
+        });
+    }
+    requests.push_back(Request {
+        address: config.asset.clone(),
+        amount: b_underlying,
+        request_type: REQUEST_TYPE_WITHDRAW_COLLATERAL,
+    });
+    Ok(requests)
 }
 
 /// Deleverage by `repay_underlying`: repay that much debt and withdraw the same
@@ -273,8 +321,8 @@ pub fn submit_deleverage(
 /// checked against the final state. The order is not about funding — the two
 /// transfers net to zero, so the strategy needs no balance of its own either
 /// way. The pool health-checks the finished request set, and the caller
-/// (`releverage`) re-reads the position afterwards and reverts if the result is
-/// not where it asked for.
+/// (`releverage`) re-reads the position afterwards and reverts if its HF
+/// settled below `orange_hf`.
 ///
 /// Returns `(b_token_delta, d_token_delta)` — both positive on success.
 pub fn submit_releverage(
@@ -337,7 +385,7 @@ pub fn claim(e: &Env, config: &Config) -> i128 {
 /// balance to the underlying — through `swap_via` when the admin set one — and
 /// lever the proceeds in.
 ///
-/// **The swap always runs with a floor** (audits M-5, finding 1): the stricter
+/// **The swap always runs with a floor**: the stricter
 /// of the caller's `keeper_min` and the admin's `min_harvest_rate` priced over
 /// the BLND being swapped, so a keeper cannot undercut the admin on either
 /// route, and a swap with neither is refused rather than executed unprotected.
@@ -430,21 +478,29 @@ pub fn get_rates(e: &Env, config: &Config) -> (i128, i128) {
     (reserve.data.b_rate, reserve.data.d_rate)
 }
 
-/// Fetch `(b_rate, d_rate, l_factor)` for the configured asset in a single pool
-/// call — the inputs every health-factor computation needs.
+/// Fetch `(b_rate, d_rate, c_factor, l_factor)` for the configured asset in a
+/// single pool call — the inputs every health-factor and lever-in computation
+/// needs, and the only place they come from.
 ///
 /// `l_factor` is the pool's *liability* factor (1e7): Blend measures solvency as
 /// `B × c_factor` against `D / l_factor`, so omitting it makes the strategy's HF
-/// systematically optimistic relative to the number that governs liquidation. It
-/// is read live rather than cached at construction because Blend governance can
-/// re-parameterise a reserve (`queue_set_reserve`), and a stale copy would fail
-/// in exactly the unsafe direction.
-pub fn get_rates_and_l_factor(e: &Env, config: &Config) -> (i128, i128, i128) {
+/// systematically optimistic relative to the number that governs liquidation.
+///
+/// `c_factor` is the strategy's own, capped at the pool's. The constructor and
+/// `set_risk_params` check `c_factor <= pool c_factor` only when they run; if
+/// Blend governance later cuts the pool's below the strategy's, the cap keeps
+/// the HF a lower bound on Blend's own.
+///
+/// Both are read live because Blend governance can re-parameterise a reserve
+/// (`queue_set_reserve`), and a stale copy would fail in exactly the unsafe
+/// direction.
+pub fn get_rates_and_factors(e: &Env, config: &Config) -> (i128, i128, i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let reserve = pool_client.get_reserve(&config.asset);
     (
         reserve.data.b_rate,
         reserve.data.d_rate,
+        config.c_factor.min(reserve.config.c_factor as i128),
         reserve.config.l_factor as i128,
     )
 }

@@ -5,12 +5,12 @@
  * hardcoded copies), read `health_factor()`, and drive whichever side of the
  * position needs attention:
  *
- *   HF below the on-chain `orange_hf` → `rebalance_keeper(caller)`, the
+ *   HF below the on-chain `orange_hf` → `rebalance_keeper()`, the
  *     keeper-authorised entrypoint that repays just enough debt
  *     to restore HF and emits a `rebalance` event with before/after HF and the
  *     underlying repaid.
  *
- *   HF above it → `releverage(caller)`, which borrows against collateral the
+ *   HF above it → `releverage()`, which borrows against collateral the
  *     vault already holds to restore the leverage an earlier unwind removed.
  *     Without this the position is a ratchet: every unwind is permanent and
  *     holders keep earning the reduced yield (audit M-3). The keeper makes no
@@ -46,7 +46,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   rpc as SorobanRpc,
-  Address,
   BASE_FEE,
   Contract,
   Keypair,
@@ -185,12 +184,11 @@ async function readVaultState(v: Vault): Promise<VaultState> {
 async function simulateKeeperCall(
   v: Vault,
   method: string,
-  caller: string,
 ): Promise<{ ok: boolean; result?: number; error?: string }> {
   try {
     const acc = await server.getAccount(SIM_ACCOUNT);
     const tx = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
-      .addOperation(new Contract(v.strategyId).call(method, new Address(caller).toScVal()))
+      .addOperation(new Contract(v.strategyId).call(method))
       .setTimeout(30)
       .build();
     const sim = await server.simulateTransaction(tx);
@@ -216,7 +214,7 @@ async function executeKeeperCall(
 ): Promise<{ tx: string; result: number | null; status: string }> {
   const acc = await server.getAccount(kp.publicKey());
   const built = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
-    .addOperation(new Contract(v.strategyId).call(method, new Address(kp.publicKey()).toScVal()))
+    .addOperation(new Contract(v.strategyId).call(method))
     .setTimeout(120)
     .build();
   const prepared = await server.prepareTransaction(built);
@@ -267,7 +265,7 @@ async function processVault(v: Vault): Promise<void> {
   // urgent one and always takes precedence.
   if (state.hasDebt && state.hf < state.orangeHf) {
     if (!EXECUTE) {
-      const sim = await simulateKeeperCall(v, "rebalance_keeper", SIM_ACCOUNT);
+      const sim = await simulateKeeperCall(v, "rebalance_keeper");
       logEvidence({ ...base, action: "dry_run", would_rebalance: true, sim_ok: sim.ok, sim_error: sim.error ?? null });
       return;
     }
@@ -300,7 +298,7 @@ async function processVault(v: Vault): Promise<void> {
     return;
   }
 
-  const sim = await simulateKeeperCall(v, "releverage", EXECUTE ? keeper!.publicKey() : SIM_ACCOUNT);
+  const sim = await simulateKeeperCall(v, "releverage");
   if (!sim.ok) {
     // Expected and harmless in steady state: `DeadlineExpired` inside the
     // re-leverage cooldown, or a pre-M-3 deployment with no such entrypoint.

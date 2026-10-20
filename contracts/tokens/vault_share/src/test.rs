@@ -70,6 +70,19 @@ fn test_mint_requires_minter_auth() {
 }
 
 #[test]
+fn test_mint_past_i128_max_is_an_overflow() {
+    let f = setup();
+    f.e.mock_all_auths();
+    let a = Address::generate(&f.e);
+    let b = Address::generate(&f.e);
+    f.client.mint(&a, &i128::MAX);
+    // The holder's balance would overflow…
+    assert_eq!(f.client.try_mint(&a, &1), Err(Ok(TokenError::Overflow)));
+    // …and so would the supply, whoever the shares are for.
+    assert_eq!(f.client.try_mint(&b, &1), Err(Ok(TokenError::Overflow)));
+}
+
+#[test]
 fn test_transfer() {
     let f = setup();
     f.e.mock_all_auths();
