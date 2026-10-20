@@ -30,7 +30,7 @@ admin is set at construction (`init_args[9]`). A `version()` counter starts at
 2. Build the release WASM:
    ```
    cd contracts/strategies/blend_leverage
-   cargo build --target wasm32v1-none --release
+   cargo build --locked --target wasm32v1-none --release
    ```
 3. Confirm the admin key is available in the signer (1Password / hardware) and
    matches `admin()` on the live contract.

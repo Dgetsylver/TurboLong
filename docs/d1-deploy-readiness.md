@@ -13,7 +13,7 @@
 - **WASMs built** at the exact paths the script reads:
   - `contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm`
   - `contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm`
-  - (rebuild: `cd <crate> && cargo build --target wasm32v1-none --release`)
+  - (rebuild: `cd <crate> && cargo build --locked --target wasm32v1-none --release`)
 - **Config verified against LIVE mainnet** (Etherfuse pool `CDMAVJPF…`, status=1
   active; Soroswap router `CAG5LRYQ…`). Per-asset strategy `c_factor` sits safely
   below the pool's current value (buffer for HF):

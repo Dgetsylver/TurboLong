@@ -36,10 +36,20 @@ wrangler secret put KEEPER_INGEST_KEY   # generate a random token; the keeper se
 
 ## 2. Build the contract WASMs
 
+From a clean checkout of the release commit. `rust-toolchain.toml` selects the
+pinned compiler and `--locked` the committed `Cargo.lock`, so the build is
+byte-identical to any other build of that commit:
+
 ```bash
-(cd contracts/strategies/blend_leverage && cargo build --target wasm32v1-none --release)
-(cd contracts/tokens/vault_share        && cargo build --target wasm32v1-none --release)
+(cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+(cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
+shasum -a 256 contracts/*/*/target/wasm32v1-none/release/*.wasm
 ```
+
+The hashes must match the `Wasm hash` step of the `Contracts` CI run for the
+same commit; record them. Anyone can later check a deployed contract against
+that commit by rebuilding it and comparing with the wasm on-chain
+(`stellar contract fetch --id <C...> --network mainnet --out-file x.wasm`).
 
 ## 3. Deploy the 4 vaults (DRY-RUN, then live)
 

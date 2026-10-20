@@ -24,8 +24,8 @@
  *   DRY_RUN=1          simulate only, do not submit
  *
  * Pre-req: build both wasms first —
- *   (cd contracts/strategies/blend_leverage && cargo build --target wasm32v1-none --release)
- *   (cd contracts/tokens/vault_share        && cargo build --target wasm32v1-none --release)
+ *   (cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+ *   (cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
  */
 import {
   Address,

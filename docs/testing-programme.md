@@ -47,7 +47,7 @@ The fund-holding logic. **96 tests** across:
 
 **Run:** `cd contracts/strategies/blend_leverage && cargo test`;
 `cd contracts/tokens/vault_share && cargo test`.
-**Gate:** `contracts.yml` runs `cargo test` + `cargo build --target wasm32v1-none --release`; clippy `-D warnings` + `cargo fmt --check` enforced.
+**Gate:** `contracts.yml` runs `cargo test --locked` + `cargo build --locked --target wasm32v1-none --release` under the compiler pinned in `rust-toolchain.toml`; clippy `-D warnings` + `cargo fmt --check` enforced.
 
 ## Layer 2 — Rate-model parity (TS ↔ Rust) — *primary*
 
@@ -120,7 +120,7 @@ Executed at/after deploy; evidence captured for the SCF completion report.
 
 - [ ] `cargo test` (all 80 contract tests) green.
 - [ ] `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` clean.
-- [ ] `cargo build --target wasm32v1-none --release` produces the final WASM.
+- [ ] `cargo build --locked --target wasm32v1-none --release` produces the final WASM, its hash matching CI's `Wasm hash`.
 - [ ] Parity suite green (`rate_calc` ↔ `projectRates`, ≥20 fixtures).
 - [ ] `npm run lint` + `npm run build` clean (frontend + alerts).
 - [ ] Playwright e2e green for 5 wallets + Ledger × {classic, Soroban}.
