@@ -1,0 +1,42 @@
+{
+  "$comment": "Machine-readable task catalogue for Milestone 4 user testing. Human-readable task cards: facilitator-guide.md. Read by scripts/user_testing_report.ts — change IDs here and in the guide together.",
+  "version": 1,
+  "targets": {
+    "sessions": 12,
+    "latamShare": 0.6,
+    "defiNativeShare": 0.6,
+    "minPerLanguage": { "es": 4, "pt-BR": 3 },
+    "minMobileSessions": 3
+  },
+  "cohorts": ["latam", "defi-native"],
+  "languages": ["en", "es", "pt-BR"],
+  "phases": [
+    { "id": "onboard", "title": "Onboard" },
+    { "id": "deposit", "title": "Deposit" },
+    { "id": "monitor", "title": "Monitor" },
+    { "id": "exit", "title": "Exit" }
+  ],
+  "tasks": [
+    { "id": "O1", "phase": "onboard", "title": "Connect the test wallet on testnet", "core": true },
+    { "id": "O2", "phase": "onboard", "title": "Switch the app to their language", "core": false },
+    { "id": "D1", "phase": "deposit", "title": "Find the best leveraged XLM yield", "core": false },
+    { "id": "D2", "phase": "deposit", "title": "Open a leveraged XLM position (1,000 XLM)", "core": true },
+    { "id": "D3", "phase": "deposit", "title": "Deposit 500 XLM into the managed vault", "core": true },
+    { "id": "M1", "phase": "monitor", "title": "Read value, earnings and safety of the position", "core": true },
+    { "id": "M2", "phase": "monitor", "title": "Check how healthy the vault is", "core": true },
+    { "id": "M3", "phase": "monitor", "title": "Set up a near-liquidation alert", "core": true },
+    { "id": "M4", "phase": "monitor", "title": "Make the position safer without closing", "core": false },
+    { "id": "M5", "phase": "monitor", "title": "Check whether Turbolong itself is down", "core": false },
+    { "id": "X1", "phase": "exit", "title": "Take 300 XLM out, keep the position open", "core": true },
+    { "id": "X2", "phase": "exit", "title": "Close the leveraged position fully", "core": true },
+    { "id": "X3", "phase": "exit", "title": "Withdraw everything from the vault", "core": true }
+  ],
+  "comprehension": [
+    { "id": "C1", "phase": "deposit", "title": "What Account Health means and what happens at 1.0" },
+    { "id": "C2", "phase": "deposit", "title": "What could make this position lose money" },
+    { "id": "C3", "phase": "monitor", "title": "Who protects the vault, and how" },
+    { "id": "C4", "phase": "monitor", "title": "What the alert is actually watching" },
+    { "id": "C5", "phase": "exit", "title": "What happened to leverage and health after the partial withdrawal" },
+    { "id": "C6", "phase": "exit", "title": "What is lost by closing right now" }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "P02", "date": "2026-11-04", "status": "completed", "facilitator": "BB", "build": "deaff57",
+  "language": "pt-BR", "cohorts": ["latam"], "country": "BR", "device": "mobile", "wallet": "albedo", "network": "testnet",
+  "tasks": [
+    { "id": "O1", "score": 0, "timeSec": 300, "seq": 2, "issues": [9001], "notes": "walked through after limit" },
+    { "id": "O2", "score": null, "skipReason": "already in language" },
+    { "id": "D1", "score": null, "skipReason": "time" },
+    { "id": "D2", "score": 1, "timeSec": 420, "seq": 3, "assists": 1, "issues": [9004] },
+    { "id": "D3", "score": 2, "timeSec": 130, "seq": 5 },
+    { "id": "M1", "score": 1, "timeSec": 200, "seq": 4, "notes": "read base supply APY as earnings", "issues": [9004] },
+    { "id": "M2", "score": 2, "timeSec": 90, "seq": 5 },
+    { "id": "M3", "score": 1, "timeSec": 280, "seq": 3, "assists": 1, "issues": [9002] },
+    { "id": "M4", "score": null, "skipReason": "time" },
+    { "id": "M5", "score": null, "skipReason": "time" },
+    { "id": "X1", "score": 2, "timeSec": 150, "seq": 5 },
+    { "id": "X2", "score": 2, "timeSec": 60, "seq": 6 },
+    { "id": "X3", "score": 2, "timeSec": 80, "seq": 6 }
+  ],
+  "comprehension": [
+    { "id": "C1", "result": "partial" }, { "id": "C2", "result": "incorrect" }, { "id": "C3", "result": "incorrect" },
+    { "id": "C4", "result": "incorrect" }, { "id": "C5", "result": "partial" }, { "id": "C6", "result": "incorrect" }
+  ],
+  "sus": [3, 3, 3, 4, 3, 3, 3, 3, 3, 4], "confidence": 3, "issues": []
+}

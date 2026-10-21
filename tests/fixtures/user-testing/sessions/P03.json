@@ -1,0 +1,24 @@
+{
+  "id": "P03", "date": "2026-11-05", "status": "completed", "facilitator": "AA", "build": "deaff57",
+  "language": "en", "cohorts": ["defi-native"], "country": "DE", "device": "desktop", "wallet": "xbull", "network": "testnet",
+  "tasks": [
+    { "id": "O1", "score": 2, "timeSec": 110, "seq": 6 },
+    { "id": "O2", "score": null, "skipReason": "already in language" },
+    { "id": "D1", "score": 2, "timeSec": 90, "seq": 6 },
+    { "id": "D2", "score": 2, "timeSec": 200, "seq": 6 },
+    { "id": "D3", "score": 2, "timeSec": 70, "seq": 7 },
+    { "id": "M1", "score": 2, "timeSec": 50, "seq": 7 },
+    { "id": "M2", "score": 2, "timeSec": 40, "seq": 7 },
+    { "id": "M3", "score": 2, "timeSec": 140, "seq": 5 },
+    { "id": "M4", "score": 2, "timeSec": 100, "seq": 6 },
+    { "id": "M5", "score": 0, "timeSec": 120, "seq": 3, "issues": [9001], "notes": "looked for a status link on Dashboard" },
+    { "id": "X1", "score": 2, "timeSec": 90, "seq": 6 },
+    { "id": "X2", "score": 2, "timeSec": 40, "seq": 7 },
+    { "id": "X3", "score": 2, "timeSec": 60, "seq": 6 }
+  ],
+  "comprehension": [
+    { "id": "C1", "result": "correct" }, { "id": "C2", "result": "correct" }, { "id": "C3", "result": "correct" },
+    { "id": "C4", "result": "partial" }, { "id": "C5", "result": "correct" }, { "id": "C6", "result": "correct" }
+  ],
+  "sus": [4, 1, 5, 1, 4, 2, 5, 1, 5, 2], "confidence": 6, "issues": []
+}
