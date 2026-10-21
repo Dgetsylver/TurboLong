@@ -10,7 +10,8 @@
  *   GET  /vapid-public-key       — VAPID public key for web push
  *   POST /push/subscribe         — register a web-push subscription
  *   GET  /push/unsubscribe?token= — remove web-push subscription
- *   GET  /snapshots              — paginated rate time-series
+ *   GET  /snapshots              — paginated rate time-series, incl. the
+ *                                  Aquarius dex_rate per tick (nullable)
  *                                  (?pool_id=&asset=&limit=&before=)
  *   GET  /swap-routes            — Broker-vs-Soroswap A/B report
  *                                  (?network=&strategy_id=&limit=)
@@ -21,20 +22,40 @@
  *                                  (secret: STELLAR_BROKER_PARTNER_KEY)
  *
  * Cron (every 15 min):
- *   Fetch pool reserve rates → write a rate_snapshots row → APY-negative alerts
- *   → HF / liquidation-imminent alerts → prune snapshots past 365 days.
+ *   Fetch pool reserve rates + one Aquarius DEX rate per distinct asset → write
+ *   a rate_snapshots row → APY-negative alerts → HF / liquidation-imminent
+ *   alerts → prune snapshots past 365 days.
+ *
+ * Alerts are edge-triggered: a subscription gets one email (and one push) when
+ * the condition is first breached, then stays latched (`alert_active`) until
+ * the metric recovers past the re-arm margin. A position that stays underwater
+ * for a week produces one email, not one per tick or per day.
  */
 
 import { POOLS, LEVERAGE_BRACKETS, POOL_NAMES, fetchReserveRates, computeNetApy, computeHealthFactor, type ReserveRates } from "./stellar.ts";
 import { sendVerificationEmail, sendApyAlert, sendHfAlert } from "./email.ts";
+import { aquariusPrice } from "./aquarius.ts";
 import { sendApyPush } from "./push.ts";
 
 /** Liquidation-imminent HF threshold. */
 const LIQUIDATION_HF = 1.05;
-/** Minimum hours between repeat HF/liquidation alerts for a subscription. */
-const HF_ALERT_DEBOUNCE_HOURS = 6;
 /** Snapshot retention window. */
 const SNAPSHOT_RETENTION_DAYS = 365;
+
+// ── Alert latching ───────────────────────────────────────────────────────────
+// Alerts are edge-triggered: one email (and one push) per breach episode, not
+// one per cron tick. A subscription latches (`alert_active = 1`) when it fires
+// and only re-arms once the metric recovers past a margin — the margin is
+// hysteresis, so a value hovering right at the threshold can't mail the user
+// on every flip. MIN_REALERT_HOURS is a floor on top of that: even a genuine
+// recover-then-breach cycle can't produce two emails inside the hour.
+
+/** Net APY (percentage points) a bracket must regain before APY alerts re-arm. */
+const APY_REARM_MARGIN_PCT = 0.25;
+/** Health factor a position must regain above its threshold before HF alerts re-arm. */
+const HF_REARM_MARGIN = 0.02;
+/** Floor between two sends for the same subscription, across episodes. */
+const MIN_REALERT_HOURS = 1;
 
 interface Env {
   DB: D1Database;
@@ -175,7 +196,8 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
       INSERT INTO subscriptions (email, pool_id, asset_symbol, leverage_bracket, verify_token, unsub_token, alert_type, hf_threshold)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
       ON CONFLICT(email, pool_id, asset_symbol, leverage_bracket, alert_type) DO UPDATE
-        SET verify_token = ?5, unsub_token = ?6, hf_threshold = ?8, verified = 0
+        SET verify_token = ?5, unsub_token = ?6, hf_threshold = ?8, verified = 0,
+            alert_active = 0, last_alerted_at = NULL, last_fired_at = NULL
     `).bind(email, pool_id, asset_symbol, target.lev, verifyToken, unsubToken, alertType, hfThreshold).run();
   } catch (e: any) {
     console.error("DB insert failed:", e);
@@ -221,7 +243,8 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 <head><meta charset="utf-8"><title>Verified</title></head>
 <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 60px 20px;">
   <h2 style="color: #2DE8A3;">Subscription Verified!</h2>
-  <p>You'll receive an alert when your position's net APY turns negative.</p>
+  <p>You'll receive an alert when your position's net APY turns negative — once per
+     episode, not repeatedly. We'll alert you again after rates recover and turn negative anew.</p>
 </body>
 </html>`);
 }
@@ -287,7 +310,7 @@ async function handlePushSubscribe(request: Request, env: Env): Promise<Response
       INSERT INTO push_subscriptions (endpoint, p256dh, auth, pool_id, asset_symbol, leverage_bracket, unsub_token)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
       ON CONFLICT(endpoint, pool_id, asset_symbol, leverage_bracket) DO UPDATE
-        SET p256dh = ?2, auth = ?3, unsub_token = ?7, last_alerted_at = NULL
+        SET p256dh = ?2, auth = ?3, unsub_token = ?7, last_alerted_at = NULL, alert_active = 0
     `).bind(endpoint, p256dh, auth, pool_id, asset_symbol, target.lev, unsubToken).run();
   } catch (e: any) {
     console.error("Push DB insert failed:", e);
@@ -346,7 +369,8 @@ async function alertEmailSubscribers(
       AND leverage_bracket = ?3
       AND alert_type = 'apy'
       AND verified = 1
-      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
+      AND alert_active = 0
+      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-${MIN_REALERT_HOURS} hours'))
   `).bind(pool.id, asset.symbol, bracket).all();
 
   if (!subs.results?.length) return;
@@ -372,7 +396,7 @@ async function alertEmailSubscribers(
 
     if (result.ok) {
       await env.DB.prepare(
-        "UPDATE subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+        "UPDATE subscriptions SET last_alerted_at = datetime('now'), alert_active = 1 WHERE id = ?1"
       ).bind(sub.id).run();
     } else {
       console.error(`[cron] Failed to send email alert to ${sub.email}:`, result.error);
@@ -395,7 +419,8 @@ async function alertPushSubscribers(
     WHERE pool_id = ?1
       AND asset_symbol = ?2
       AND leverage_bracket = ?3
-      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-24 hours'))
+      AND alert_active = 0
+      AND (last_alerted_at IS NULL OR last_alerted_at < datetime('now', '-${MIN_REALERT_HOURS} hours'))
   `).bind(pool.id, asset.symbol, bracket).all();
 
   if (!subs.results?.length) return;
@@ -421,7 +446,7 @@ async function alertPushSubscribers(
 
     if (result.ok) {
       await env.DB.prepare(
-        "UPDATE push_subscriptions SET last_alerted_at = datetime('now') WHERE id = ?1"
+        "UPDATE push_subscriptions SET last_alerted_at = datetime('now'), alert_active = 1 WHERE id = ?1"
       ).bind(sub.id).run();
     } else if (result.gone) {
       await env.DB.prepare("DELETE FROM push_subscriptions WHERE id = ?1").bind(sub.id).run();
@@ -432,24 +457,113 @@ async function alertPushSubscribers(
   }
 }
 
+/**
+ * Re-arm APY subscribers on every bracket whose net APY has recovered past the
+ * margin. Until this runs, a latched subscription stays silent — it is the only
+ * path back to "will alert again". Batched per asset: the common case is that
+ * nothing is latched, and this runs every tick for every asset.
+ */
+async function rearmApySubscribers(
+  env: Env,
+  pool: { id: string; name: string },
+  asset: { symbol: string },
+  brackets: number[],
+): Promise<void> {
+  if (!brackets.length) return;
+  const levList = brackets.map((_, i) => `?${i + 3}`).join(", ");
+
+  try {
+    const [email, push] = await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE subscriptions SET alert_active = 0
+        WHERE pool_id = ?1 AND asset_symbol = ?2 AND leverage_bracket IN (${levList})
+          AND alert_type = 'apy' AND alert_active = 1
+      `).bind(pool.id, asset.symbol, ...brackets),
+      env.DB.prepare(`
+        UPDATE push_subscriptions SET alert_active = 0
+        WHERE pool_id = ?1 AND asset_symbol = ?2 AND leverage_bracket IN (${levList})
+          AND alert_active = 1
+      `).bind(pool.id, asset.symbol, ...brackets),
+    ]);
+
+    const cleared = (email.meta.changes ?? 0) + (push.meta.changes ?? 0);
+    if (cleared) {
+      console.log(`[cron] Re-armed ${cleared} APY subscription(s) for ${asset.symbol} on ${pool.name} at ${brackets.join("x, ")}x`);
+    }
+  } catch (e) {
+    console.error(`[cron] APY re-arm failed for ${asset.symbol} on ${pool.name}:`, e);
+  }
+}
+
 /** Persist a rate snapshot for the time-series endpoint + delta arrows. */
-async function writeSnapshot(env: Env, pool: { id: string }, asset: { symbol: string }, rates: ReserveRates): Promise<void> {
+async function writeSnapshot(
+  env: Env,
+  pool: { id: string },
+  asset: { symbol: string },
+  rates: ReserveRates,
+  dexRate: number | null,
+): Promise<void> {
   try {
     await env.DB.prepare(`
       INSERT INTO rate_snapshots
-        (pool_id, asset_symbol, net_supply_apr, net_borrow_cost, interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        (pool_id, asset_symbol, net_supply_apr, net_borrow_cost, interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor, dex_rate)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
     `).bind(
       pool.id, asset.symbol, rates.netSupplyApr, rates.netBorrowCost,
       rates.interestSupplyApr, rates.interestBorrowApr, rates.blndSupplyApr,
-      rates.blndBorrowApr, rates.util, rates.cFactor,
+      rates.blndBorrowApr, rates.util, rates.cFactor, dexRate,
     ).run();
   } catch (e) {
     console.error(`[cron] snapshot insert failed for ${asset.symbol}:`, e);
   }
 }
 
-/** Fire HF / liquidation-imminent alerts for verified subscribers. */
+/**
+ * Aquarius DEX rates for one cron tick, memoised by asset contract id.
+ *
+ * The rate is a property of the asset, not of the pool, but the same asset
+ * appears in several pools (XLM is in all three). Quoting per pool/asset would
+ * fire the same request 3× a tick and could even write two different prices for
+ * the same asset in the same tick. This quotes each distinct asset once and
+ * reuses the answer across pools, so a tick costs one Aquarius call per unique
+ * asset (9) rather than one per pool/asset row (16), and every row for that
+ * asset carries an identical rate.
+ *
+ * A null (no route / unreachable) is cached too — the point of the tick is one
+ * attempt per asset, and re-trying inside the same tick would just multiply
+ * load on an API that already failed.
+ *
+ * `prefetch` starts every asset's quote at the top of the tick WITHOUT awaiting
+ * them, which is what keeps the DEX rate off the critical path: HF and
+ * liquidation emails must not queue behind a decorative price lookup. The
+ * requests fly while the tick does its Soroban RPC work, and the `await` at
+ * insert time then resolves against an already-settled promise. Awaiting each
+ * quote inline instead would add up to (9 assets × 8s timeout) ≈ 72s to the
+ * tick, all of it in front of the alerting.
+ *
+ * Safe to leave unawaited: aquariusPrice never rejects (it resolves null on
+ * timeout/error), so no unhandled rejection can escape.
+ */
+function makeDexRateCache(): {
+  get: (assetId: string) => Promise<number | null>;
+  prefetch: (assetIds: readonly string[]) => void;
+} {
+  const pending = new Map<string, Promise<number | null>>();
+  const get = (assetId: string): Promise<number | null> => {
+    const hit = pending.get(assetId);
+    if (hit) return hit;
+    const p = aquariusPrice(assetId);
+    pending.set(assetId, p);
+    return p;
+  };
+  return { get, prefetch: (assetIds) => { for (const id of assetIds) void get(id); } };
+}
+
+/**
+ * Fire HF / liquidation-imminent alerts for verified subscribers — once per
+ * episode. A row that already alerted stays latched until its health factor
+ * climbs back above `threshold + HF_REARM_MARGIN`.
+ */
 async function alertHfSubscribers(
   env: Env,
   pool: { id: string; name: string },
@@ -460,7 +574,7 @@ async function alertHfSubscribers(
   let rows: any;
   try {
     rows = await env.DB.prepare(`
-      SELECT id, email, leverage_bracket, alert_type, hf_threshold, unsub_token, last_fired_at
+      SELECT id, email, leverage_bracket, alert_type, hf_threshold, unsub_token, last_fired_at, alert_active
       FROM subscriptions
       WHERE verified = 1 AND pool_id = ?1 AND asset_symbol = ?2 AND alert_type IN ('hf','liquidation')
     `).bind(pool.id, asset.symbol).all();
@@ -475,12 +589,25 @@ async function alertHfSubscribers(
     const hf = computeHealthFactor(rates, lev);
     const liquidation = row.alert_type === "liquidation";
     const threshold = liquidation ? LIQUIDATION_HF : Number(row.hf_threshold);
-    if (!Number.isFinite(threshold) || hf >= threshold) continue;
+    if (!Number.isFinite(threshold)) continue;
 
-    // Debounce.
+    if (hf >= threshold) {
+      // Recovered past the margin → re-arm for the next episode. In the band
+      // between threshold and margin we leave the latch alone (hysteresis).
+      if (row.alert_active && hf >= threshold + HF_REARM_MARGIN) {
+        await env.DB.prepare(`UPDATE subscriptions SET alert_active = 0 WHERE id = ?1`).bind(row.id).run();
+        console.log(`[cron] Re-armed HF subscription ${row.id} for ${asset.symbol}@${lev}x (HF ${hf.toFixed(3)})`);
+      }
+      continue;
+    }
+
+    // Breached — but this episode has already been mailed.
+    if (row.alert_active) continue;
+
+    // Floor between sends, so a fast recover/re-breach cycle can't double up.
     if (row.last_fired_at) {
       const lastMs = Date.parse((row.last_fired_at as string).replace(" ", "T") + "Z");
-      if (Number.isFinite(lastMs) && nowMs - lastMs < HF_ALERT_DEBOUNCE_HOURS * 3600_000) continue;
+      if (Number.isFinite(lastMs) && nowMs - lastMs < MIN_REALERT_HOURS * 3600_000) continue;
     }
 
     const result = await sendHfAlert(
@@ -498,7 +625,9 @@ async function alertHfSubscribers(
       },
     );
     if (result.ok) {
-      await env.DB.prepare(`UPDATE subscriptions SET last_fired_at = datetime('now') WHERE id = ?1`).bind(row.id).run();
+      await env.DB.prepare(
+        `UPDATE subscriptions SET last_fired_at = datetime('now'), alert_active = 1 WHERE id = ?1`,
+      ).bind(row.id).run();
     } else {
       console.error(`[cron] Failed to send HF alert to ${row.email}:`, result.error);
     }
@@ -516,36 +645,80 @@ async function pruneSnapshots(env: Env): Promise<void> {
   }
 }
 
+/** Total pool/asset rows one tick is responsible for. */
+const CRON_ROWS = POOLS.reduce((n, p) => n + p.assets.length, 0);
+
+/**
+ * Which row of the pool/asset loop gets its BLND emissions refreshed this tick.
+ *
+ * A Worker invocation gets 50 subrequests. Reading emissions for every row costs
+ * 4 reads each (2 emissions + the oracle price they need + BLND spot) and blew
+ * that budget: the tick died after 10 of 16 rows and the remaining 6 silently
+ * got no snapshot *and* no HF/liquidation alert check. Refreshing one row per
+ * tick keeps the steady-state cost at 1 read per asset and still sweeps every
+ * row every CRON_ROWS ticks (16 rows = 4 hours).
+ *
+ * Derived from the clock rather than stored state because the Worker is
+ * stateless between invocations, and an approximate rotation is all this needs —
+ * the guarantee that matters is that no asset goes unchecked indefinitely, not
+ * that the order survives a deploy.
+ */
+function emissionsRowForTick(now = Date.now()): number {
+  return Math.floor(now / 900_000) % CRON_ROWS;
+}
+
 async function handleCron(env: Env, requestBase?: string): Promise<void> {
   console.log("[cron] rate snapshot + alert check starting...");
   const base = requestBase ?? "https://turbolong-alerts.turbolong.workers.dev";
+  // One Aquarius quote per distinct asset for this tick, shared across pools.
+  // Kick them all off now so they resolve during the RPC work below — nothing
+  // in the alerting path waits on Aquarius. See makeDexRateCache.
+  const dexRates = makeDexRateCache();
+  dexRates.prefetch([...new Set(POOLS.flatMap((p) => p.assets.map((a) => a.id)))]);
+
+  const emissionsRow = emissionsRowForTick();
+  const skipped: string[] = [];
+  let row = -1;
 
   for (const pool of POOLS) {
     for (const asset of pool.assets) {
+      row++;
       let rates: ReserveRates | null = null;
       try {
-        rates = await fetchReserveRates(pool, asset);
+        rates = await fetchReserveRates(pool, asset, { withEmissions: row === emissionsRow });
       } catch (e) {
         console.error(`[cron] Failed to fetch rates for ${asset.symbol} on ${pool.name}:`, e);
+        skipped.push(`${pool.name}/${asset.symbol}`);
         continue;
       }
 
       if (!rates) {
         console.warn(`[cron] No rates returned for ${asset.symbol} on ${pool.name}`);
+        skipped.push(`${pool.name}/${asset.symbol}`);
         continue;
       }
 
-      // Record the snapshot every tick (15 min).
-      await writeSnapshot(env, pool, asset, rates);
+      // Record the snapshot every tick (15 min). The DEX rate is best-effort:
+      // aquariusPrice never throws, so an Aquarius outage writes NULL and the
+      // pool rates still land. Prefetched above, so this await is normally
+      // already settled.
+      const dexRate = await dexRates.get(asset.id);
+      await writeSnapshot(env, pool, asset, rates, dexRate);
 
-      // APY-negative alerts.
+      // APY-negative alerts — one per episode; recovery past the margin
+      // re-arms the subscription for the next one.
+      const recovered: number[] = [];
       for (const bracket of LEVERAGE_BRACKETS) {
         const netApy = computeNetApy(rates, bracket);
-        if (netApy >= 0) continue;
-        console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
-        await alertEmailSubscribers(env, pool, asset, bracket, netApy, rates, base);
-        await alertPushSubscribers(env, pool, asset, bracket, netApy);
+        if (netApy < 0) {
+          console.log(`[cron] Negative APY: ${asset.symbol} at ${bracket}x on ${pool.name} = ${netApy.toFixed(2)}%`);
+          await alertEmailSubscribers(env, pool, asset, bracket, netApy, rates, base);
+          await alertPushSubscribers(env, pool, asset, bracket, netApy);
+        } else if (netApy >= APY_REARM_MARGIN_PCT) {
+          recovered.push(bracket);
+        }
       }
+      await rearmApySubscribers(env, pool, asset, recovered);
 
       // Health-factor + liquidation-imminent alerts.
       await alertHfSubscribers(env, pool, asset, rates, base);
@@ -553,7 +726,21 @@ async function handleCron(env: Env, requestBase?: string): Promise<void> {
   }
 
   await pruneSnapshots(env);
-  console.log("[cron] rate snapshot + alert check complete.");
+
+  // A partial tick used to look exactly like a healthy one: the per-asset catch
+  // swallows the failure, the loop moves on and this handler still logs
+  // "complete" and returns outcome=ok. That hid a subrequest-budget overrun for
+  // ~2 weeks, during which 4-6 pool/assets got no snapshot AND no HF or
+  // liquidation alert check. Coverage is now stated on every tick, and anything
+  // short of full coverage is an error, not a shrug.
+  const covered = CRON_ROWS - skipped.length;
+  if (skipped.length > 0) {
+    console.error(
+      `[cron] INCOMPLETE: covered ${covered}/${CRON_ROWS} pool/assets. ` +
+      `Got no snapshot and no HF/liquidation alert check: ${skipped.join(", ")}`,
+    );
+  }
+  console.log(`[cron] rate snapshot + alert check complete (${covered}/${CRON_ROWS} pool/assets).`);
 }
 
 /**
@@ -577,7 +764,8 @@ async function handleSnapshots(request: Request, env: Env): Promise<Response> {
   try {
     const rows = await env.DB.prepare(
       `SELECT id, pool_id, asset_symbol, recorded_at, net_supply_apr, net_borrow_cost,
-              interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor
+              interest_supply_apr, interest_borrow_apr, blnd_supply_apr, blnd_borrow_apr, util, c_factor,
+              dex_rate
        FROM rate_snapshots ${whereSql}
        ORDER BY id DESC LIMIT ?${binds.length + 1}`,
     ).bind(...binds, limit).all();

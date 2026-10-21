@@ -8,8 +8,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      # The compiler pinned in rust-toolchain.toml.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup toolchain install && rustc --version
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

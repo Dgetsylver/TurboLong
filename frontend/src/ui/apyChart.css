@@ -1,0 +1,78 @@
+/* ============================================================================
+   Turbolong — ApyChart
+   Full-size APY history line + area. Pairs with apyChart.ts.
+   ============================================================================ */
+
+.tl-apyc {
+  --tl-apyc-color: var(--tl-primary);
+  width: 100%;
+}
+
+.tl-apyc__body {
+  display: flex;
+  align-items: stretch;
+  gap: var(--tl-space-2);
+}
+
+.tl-apyc__svg {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 96px;
+  overflow: visible;
+}
+
+.tl-apyc__grid {
+  stroke: var(--tl-border);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.tl-apyc__area {
+  fill: var(--tl-apyc-color);
+  opacity: .1;
+  stroke: none;
+}
+
+.tl-apyc__line {
+  fill: none;
+  stroke: var(--tl-apyc-color);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  /* preserveAspectRatio="none" stretches the viewBox; keep the stroke even. */
+  vector-effect: non-scaling-stroke;
+}
+
+.tl-apyc__dot {
+  fill: var(--tl-apyc-color);
+  vector-effect: non-scaling-stroke;
+}
+
+/* Min/max labels, pinned to the gridlines they annotate */
+.tl-apyc__scale {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-family: var(--tl-font-mono);
+  font-feature-settings: "tnum" 1;
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+  white-space: nowrap;
+}
+
+.tl-apyc__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--tl-font-mono);
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+}
+
+.tl-apyc--empty {
+  font-size: var(--tl-text-xs);
+  color: var(--tl-text-3);
+  padding: var(--tl-space-4) 0;
+  text-align: center;
+}

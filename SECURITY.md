@@ -42,7 +42,7 @@ within **7 business days**.
 
 - Third-party Blend Protocol contracts (report those to Blend directly)
 - Reflector oracle contracts
-- Known, already-reported issues documented in `BLEND-BUG-BOUNTY-REPORT.md`
+- Known, already-reported issues documented in `docs/blend-bug-bounty-report.md`
 - Theoretical issues with no working proof-of-concept
 - Issues in dependencies that are not exploitable in this codebase
 - Social-engineering attacks against the team
@@ -58,7 +58,7 @@ Classification System v2.3** adapted for Stellar / Soroban smart contracts.
 | Severity | Description | Payout (USDC) |
 |---|---|---|
 | **Critical** | Direct theft or permanent freeze of ≥ $50k user funds; smart-contract-level remote code execution | $5,000 – $15,000 |
-| **High** | Loss or freeze of < $50k user funds; utilization-rate manipulation (similar to Finding 1 in BLEND-BUG-BOUNTY-REPORT.md) | $1,000 – $5,000 |
+| **High** | Loss or freeze of < $50k user funds; utilization-rate manipulation (similar to Finding 1 in docs/blend-bug-bounty-report.md) | $1,000 – $5,000 |
 | **Medium** | Temporary freeze; governance / TVL manipulation; oracle price walking that requires sustained cost | $200 – $1,000 |
 | **Low** | Best-practice violations; non-exploitable logic errors; front-end XSS with no fund access | $50 – $200 |
 | **Informational** | Code quality, suggestions, gas optimisations with no security impact | Acknowledgement only |

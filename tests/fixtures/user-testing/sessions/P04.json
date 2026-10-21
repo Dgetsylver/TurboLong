@@ -1,0 +1,10 @@
+{
+  "id": "P04", "date": "2026-11-05", "status": "partial", "facilitator": "BB", "build": "deaff57",
+  "language": "es", "cohorts": ["latam", "defi-native"], "country": "MX", "device": "mobile", "wallet": "albedo", "network": "testnet",
+  "tasks": [
+    { "id": "O1", "score": 2, "timeSec": 150, "seq": 5 },
+    { "id": "D2", "score": 2, "timeSec": 260, "seq": 5 }
+  ],
+  "comprehension": [{ "id": "C1", "result": "correct" }, { "id": "C2", "result": "partial" }],
+  "sus": null, "confidence": null, "issues": []
+}

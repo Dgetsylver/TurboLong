@@ -2,7 +2,8 @@
  * Deploy the Turbolong BlendLeverage vaults to Stellar TESTNET — the full-flow
  * rehearsal for the mainnet D1 deploy. Mirrors deploy_strategy_mainnet.ts so the
  * testnet run exercises the exact same path (install both WASMs → per asset:
- * deploy strategy + deploy vault_share token + set_share_token + set_swap_account)
+ * deploy strategy, which deploys its own vault_share token + set_swap_account
+ * + set_min_harvest_rate)
  * before any real funds are touched on mainnet.
  *
  * The testnet Blend pool exposes 4 reserves: XLM (native), USDC, CETES, TESOURO.
@@ -19,8 +20,8 @@
  *   DRY_RUN=1          simulate the first WASM install only, submit nothing
  *
  * Pre-req: build both wasms first —
- *   (cd contracts/strategies/blend_leverage && cargo build --target wasm32v1-none --release)
- *   (cd contracts/tokens/vault_share        && cargo build --target wasm32v1-none --release)
+ *   (cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+ *   (cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
  */
 import {
   Address,
@@ -63,22 +64,31 @@ const BLND = "CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF";   // te
 const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD"; // Soroswap testnet router
 
 // Per-asset config. Strategy `c_factor` sits below the pool's live c_factor
-// (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. Loops/min_hf/
-// orange_hf mirror the mainnet readiness table where the asset matches.
+// (XLM/USDC/CETES = 0.98, TESOURO = 0.90) to leave an HF buffer. target_hf/
+// min_hf/orange_hf mirror the mainnet readiness table where the asset matches.
 const REWARD_THRESHOLD = 10_000_000n; // 1 BLND @ 7dp (low, so harvest triggers easily on testnet)
+const MIN_HARVEST_RATE = 1_000n;      // 0.0001 underlying per BLND — nominal, testnet only
 interface AssetCfg {
   symbol: string;
   asset: string;
   cFactor: bigint;   // 1e7
-  targetLoops: number;
+  targetHf: bigint;  // 1e7
   minHf: bigint;     // 1e7
   orangeHf: bigint;  // 1e7
 }
+// Same target HFs as mainnet, so a testnet rehearsal runs the same safety
+// margins; the leverage they make differs with each pool's `l_factor`. The
+// constructor refuses a target less than 0.02 above `orange_hf`, so no deposit
+// can open inside the rebalance band.
+//
+// The already-deployed testnet vaults in deployed-vaults.testnet.json predate
+// `target_hf` and cannot be upgraded in place to this version (their stored
+// config has `target_loops`); redeploy them.
 const ASSETS: AssetCfg[] = [
-  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetLoops: 4, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
-  { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetLoops: 2, minHf: 11_000_000n, orangeHf: 12_000_000n },
-  { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetLoops: 3, minHf: 10_500_000n, orangeHf: 11_500_000n },
+  { symbol: "USDC",    asset: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA", cFactor: 9_000_000n, targetHf: 11_300_000n, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "CETES",   asset: "CC72F57YTPX76HAA64JQOEGHQAPSADQWSY5DWVBR66JINPFDLNCQYHIC", cFactor: 7_500_000n, targetHf: 11_200_000n, minHf: 10_500_000n, orangeHf: 11_000_000n },
+  { symbol: "XLM",     asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", cFactor: 7_000_000n, targetHf: 12_200_000n, minHf: 11_000_000n, orangeHf: 12_000_000n },
+  { symbol: "TESOURO", asset: "CCKA3OUWLZPX3YT335UNHIFMKSYA37M66VKGD5XZOX4BA4IKTYP4WBEE", cFactor: 8_000_000n, targetHf: 11_700_000n, minHf: 10_500_000n, orangeHf: 11_500_000n },
 ];
 
 const STRATEGY_WASM = path.resolve(here, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
@@ -148,6 +158,20 @@ async function invoke(contractId: string, method: string, args: xdr.ScVal[], lab
   await signSubmit(tx, label);
 }
 
+async function read(contractId: string, method: string): Promise<xdr.ScVal> {
+  const acc = await server.getAccount(deployer);
+  const tx = new TransactionBuilder(acc, { fee: "100", networkPassphrase: PASSPHRASE })
+    .setTimeout(30)
+    .addOperation(new Contract(contractId).call(method))
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim) || !sim.result) {
+    const err = SorobanRpc.Api.isSimulationError(sim) ? sim.error : "no result";
+    throw new Error(`${method} simulation failed: ${err}`);
+  }
+  return sim.result.retval;
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -163,7 +187,7 @@ async function main() {
   // configuration that was ACTUALLY deployed (human floats, not 1e7 ints).
   const out: Record<
     string,
-    { strategy: string; token: string; cFactor: number; targetLoops: number; minHf: number; orangeHf: number }
+    { strategy: string; token: string; cFactor: number; targetHf: number; minHf: number; orangeHf: number }
   > = {};
 
   for (const a of ASSETS) {
@@ -175,35 +199,40 @@ async function main() {
       nativeToScVal(REWARD_THRESHOLD, { type: "i128" }),   // [3] reward_threshold
       addr(KEEPER),                                        // [4] keeper
       nativeToScVal(a.cFactor, { type: "i128" }),          // [5] c_factor
-      nativeToScVal(a.targetLoops, { type: "u32" }),       // [6] target_loops
+      nativeToScVal(a.targetHf, { type: "i128" }),         // [6] target_hf
       nativeToScVal(a.minHf, { type: "i128" }),            // [7] min_hf
       nativeToScVal(a.orangeHf, { type: "i128" }),         // [8] orange_hf
       addr(ADMIN),                                         // [9] admin
+      xdr.ScVal.scvBytes(Buffer.from(tokenHash, "hex")),   // [10] share_token_wasm
+      nativeToScVal(`BlendLeverage ${a.symbol} Share`, { type: "string" }), // [11] share_name
+      nativeToScVal(`blv${a.symbol}`, { type: "string" }), // [12] share_symbol
     ]);
     const strategy = await deploy(strategyHash, [addr(a.asset), initArgs], `${a.symbol} strategy`);
     console.log(`  strategy=${strategy}`);
 
-    const token = await deploy(
-      tokenHash,
-      [
-        addr(ADMIN),                                              // admin
-        addr(strategy),                                           // minter = strategy
-        nativeToScVal(7, { type: "u32" }),                        // decimals
-        nativeToScVal(`BlendLeverage ${a.symbol} Share`, { type: "string" }),
-        nativeToScVal(`blv${a.symbol}`, { type: "string" }),
-      ],
-      `${a.symbol} token`,
-    );
+    // The strategy deployed its share token in its constructor, as the
+    // token's admin and minter.
+    const token = Address.fromScVal(await read(strategy, "share_token")).toString();
     console.log(`  token=${token}`);
 
-    await invoke(strategy, "set_share_token", [addr(token)], `${a.symbol} set_share_token`);
     await invoke(strategy, "set_swap_account", [addr(KEEPER)], `${a.symbol} set_swap_account`);
+    // Harvest floor: the Broker settlement floor (audit M-4) and the trait
+    // harvest's default `amount_out_min` (audit M-5). Testnet BLND has no
+    // meaningful price, so this is a nominal non-zero rate that opens both
+    // paths for end-to-end keeper testing; mainnet derives it from live prices
+    // (MIN_HARVEST_RATE_* in deploy_strategy_mainnet.ts).
+    await invoke(
+      strategy,
+      "set_min_harvest_rate",
+      [nativeToScVal(MIN_HARVEST_RATE, { type: "i128" })],
+      `${a.symbol} set_min_harvest_rate`,
+    );
 
     out[a.symbol] = {
       strategy,
       token,
       cFactor: Number(a.cFactor) / 1e7,
-      targetLoops: a.targetLoops,
+      targetHf: Number(a.targetHf) / 1e7,
       minHf: Number(a.minHf) / 1e7,
       orangeHf: Number(a.orangeHf) / 1e7,
     };

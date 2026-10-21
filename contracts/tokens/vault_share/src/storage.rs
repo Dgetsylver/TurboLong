@@ -7,7 +7,7 @@ const DAY: u32 = 17_280; // ledgers per day (~5s)
 const INSTANCE_BUMP: u32 = 30 * DAY;
 const INSTANCE_THRESHOLD: u32 = INSTANCE_BUMP - DAY;
 
-// Balances/allowances live in persistent storage with a generous TTL window.
+// Balances: persistent storage, generous TTL. Allowances: temporary (set_allowance).
 const PERSIST_BUMP: u32 = 120 * DAY;
 const PERSIST_THRESHOLD: u32 = PERSIST_BUMP - 20 * DAY;
 
@@ -61,7 +61,7 @@ pub fn extend_instance(e: &Env) {
 
 // ── Admin / minter / metadata ────────────────────────────────────────────────
 //
-// Admin storage now lives in the `admin-sep` Administratable trait (see lib.rs),
+// Admin storage lives in the `admin-sep` Administratable trait (see lib.rs),
 // under the SEP's canonical instance-storage key — there is no local Admin key.
 
 pub fn set_minter(e: &Env, minter: &Address) {

@@ -85,6 +85,8 @@ export async function sendApyAlert(
 
   <p style="line-height: 1.6; color: #555;">Your position is losing money to interest costs. Consider closing or reducing leverage.</p>
 
+  <p style="font-size: 13px; color: #888; line-height: 1.6;">This is the only email you'll get for this episode — we won't repeat it while the APY stays negative, and we'll alert you again if it recovers and turns negative later.</p>
+
   <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
 
   <p style="font-size: 12px; color: #aaa; margin-top: 32px;">
@@ -137,6 +139,8 @@ export async function sendHfAlert(
   <p style="line-height: 1.6; color: #555;">${liquidation
     ? "Your position is close to liquidation. Add collateral, repay debt, or reduce leverage now."
     : "Your position’s health factor has dropped below your threshold. Consider reducing leverage."}</p>
+
+  <p style="font-size: 13px; color: #888; line-height: 1.6;">This is the only email you'll get for this episode — we won't repeat it while the health factor stays below your threshold, and we'll alert you again if it recovers and drops back.</p>
 
   <a href="${appUrl}" style="display: inline-block; margin: 16px 0; padding: 12px 28px; background: #2DE8A3; color: #0B0E14; text-decoration: none; border-radius: 8px; font-weight: 600;">Open Turbolong</a>
 

@@ -4,23 +4,91 @@ pub const SCALAR_7: i128 = 10_000_000;
 /// 1 with 12 decimal places — Blend b_rate / d_rate scalar
 pub const SCALAR_12: i128 = 1_000_000_000_000;
 
-/// Maximum pool utilization at which new deposits are allowed.
-/// Above this, d-tokens become illiquid — liquidators can't redeem them.
-pub const MAX_SAFE_UTILIZATION: i128 = 9_500_000; // 0.95 in 1e7
-
-/// Maximum allowed borrow-supply APR spread (percentage points × 1e7).
-/// Abnormally high spreads may indicate rate manipulation.
-/// Reserved for future rate-spread guard in check_deposit_safety.
-#[allow(dead_code)]
-pub const MAX_RATE_SPREAD: i128 = 15_000_000; // 15% in 1e7
-
 /// Inflation attack protection: first depositor lockup
 pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 
-/// Minimum ledgers between keeper-triggered rebalances (~5 minutes at ~5s/
-/// ledger). Rate-limits the automation; the permissionless `rebalance` is
-/// unaffected (anyone can always protect a position).
-pub const REBALANCE_COOLDOWN_LEDGERS: u32 = 60;
+/// Most decimals the underlying may have (asserted at construction).
+///
+/// The share math multiplies shares by equity, and withdraw sizing shares by
+/// collateral, in i128 — and the first deposit mints one share per underlying
+/// unit. The tighter of the two overflows once equity passes about
+/// √(i128::MAX / leverage) units: ~6.5e18 at 4×, which is ~650 billion tokens
+/// at 7 decimals (every Stellar classic asset) but ~6.5 tokens at 18. A
+/// higher-decimals asset would need 256-bit intermediates (`SorobanFixedPoint`)
+/// in the share math first.
+pub const MAX_ASSET_DECIMALS: u32 = 7;
+
+/// Ledgers over which each harvest's profit is released into the share price
+/// (~1 day at ~5s/ledger).
+///
+/// A harvest levers BLND emissions into the position in one step. Priced in at
+/// once, all of it would go to whoever holds shares at that ledger: a deposit
+/// just before a harvest and a withdraw just after would collect emissions
+/// earned before the deposit, and `harvest_claim` announces the amount minutes
+/// ahead. Released linearly instead, a position collects only what is released
+/// while it is in, the same as holding.
+///
+/// The cost falls on exits: a holder who leaves forgoes the part of recent
+/// harvests not yet released — about half a window of yield with hourly
+/// harvests — which stays with the holders it is still being released to. A
+/// longer window also spreads a delayed harvest's backlog more thinly.
+pub const PROFIT_UNLOCK_LEDGERS: u32 = 17_280;
+
+/// Minimum ledgers between keeper re-leverages (~1 day at ~5s/ledger).
+///
+/// Only this direction is rate-limited: deleveraging is an emergency and must
+/// stay responsive, while adding leverage back is maintenance that is never
+/// urgent. The cap on *how much* leverage
+/// `releverage` can add is a level, not a rate (see `RELEVERAGE_HF_BUFFER`), so
+/// repeated calls converge rather than compound — this cooldown is about not
+/// churning the position through the pool (and the rounding each submit costs)
+/// rather than about bounding a compromised keeper.
+pub const RELEVERAGE_COOLDOWN_LEDGERS: u32 = 17_280;
+
+/// Hysteresis band above `orange_hf`, 1e7-scaled, for the re-leverage path.
+///
+/// `releverage` never targets a health factor below `orange_hf + this`, and only
+/// fires when the current HF clears that target by the same margin. Without the
+/// band a re-leverage would land the position exactly on the rebalance trigger,
+/// and the next interest accrual would hand it straight back to `rebalance` —
+/// leverage ping-ponging every cooldown for nothing but fees.
+///
+/// 0.02 sized against the decay it has to outlast: HF decays at roughly the
+/// borrow/supply spread (`d(ln HF)/dt ≈ r_supply − r_borrow`), so at a 4-point
+/// spread a 1.15 → 1.17 band is ~5 months of drift, and the position spends that
+/// whole time levered rather than oscillating.
+pub const RELEVERAGE_HF_BUFFER: i128 = 200_000; // 0.02 in 1e7
+
+/// Landing margin above `orange_hf`, 1e7-scaled, for the rebalance path.
+///
+/// `rebalance` fires once HF drops below `orange_hf`, but it unwinds to
+/// `orange_hf + this` rather than to the trigger itself. The unwind is a single
+/// exact repay that lands on its target to within a few 1e-7, and a position
+/// parked exactly on the trigger is back under it after a few minutes of
+/// interest — without the band the keeper would rebalance on every pass, a
+/// sliver of debt at a time.
+///
+/// 0.01 buys roughly 2.5–5 months of drift at a 2–4 point borrow/supply spread
+/// (the decay estimate under `RELEVERAGE_HF_BUFFER`) for about 3% of leverage at
+/// c = 0.90. It must stay below `2 × RELEVERAGE_HF_BUFFER`: `releverage` only acts
+/// once HF clears `orange_hf` by that much, so a narrower band can never hand a
+/// freshly rebalanced position straight back to it.
+pub const REBALANCE_HF_BUFFER: i128 = 100_000; // 0.01 in 1e7
+
+const _: () = assert!(REBALANCE_HF_BUFFER < 2 * RELEVERAGE_HF_BUFFER);
+
+/// Ledgers a claim's BLND approval to the swap account stays live (~5 minutes
+/// at ~5s/ledger).
+///
+/// The approval exists for exactly one purpose: to let the off-chain Broker
+/// pull the just-claimed BLND in the transaction that follows `harvest_claim`.
+/// Five minutes is the operational envelope of the claim → swap → settle
+/// round trip; anything longer is allowance the flow never uses.
+///
+/// The expiry is a backstop, not the control: `harvest_reinvest` revokes the
+/// allowance when it settles, and `harvest_claim` revokes any stale one before
+/// granting a fresh one. What the expiry bounds is the case where neither runs.
+pub const HARVEST_APPROVAL_LEDGERS: u32 = 60;
 
 /// Blend v2 request type constants
 pub const REQUEST_TYPE_SUPPLY_COLLATERAL: u32 = 2;

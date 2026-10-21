@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   hf_threshold REAL,
   -- Last time any alert fired for this row (debounce).
   last_fired_at TEXT,
+  -- 1 while the alert condition is still breached and the one email for this
+  -- episode has already gone out. Cleared once the metric recovers past the
+  -- re-arm margin, which is what allows the next episode to alert again.
+  alert_active INTEGER NOT NULL DEFAULT 0,
   UNIQUE(email, pool_id, asset_symbol, leverage_bracket, alert_type)
 );
 
@@ -37,6 +41,8 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   unsub_token TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   last_alerted_at TEXT,
+  -- See subscriptions.alert_active — same one-push-per-episode latch.
+  alert_active INTEGER NOT NULL DEFAULT 0,
   UNIQUE(endpoint, pool_id, asset_symbol, leverage_bracket)
 );
 
@@ -58,7 +64,12 @@ CREATE TABLE IF NOT EXISTS rate_snapshots (
   blnd_supply_apr REAL NOT NULL,
   blnd_borrow_apr REAL NOT NULL,
   util REAL NOT NULL,
-  c_factor REAL NOT NULL
+  c_factor REAL NOT NULL,
+  -- Aquarius best-route price of this asset in USDC (USDC per 1 unit), probed
+  -- once per asset per tick. NULL = Aquarius had no route or was unreachable at
+  -- that tick, which is why the column is nullable: a gap in the series is the
+  -- truth, a carried-forward price is not. Drives the 24h/7d DEX-rate arrows.
+  dex_rate REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_pool_asset_time

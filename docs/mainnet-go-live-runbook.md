@@ -7,8 +7,16 @@ keep keys in a secrets manager (`op run`), never inlined or committed.
 Prerequisites you provide:
 - `KEEPER_PUBKEY` — funded mainnet account (XLM for fees) that runs harvest +
   rebalance + pulls BLND for Broker swaps.
-- `ADMIN_PUBKEY` — admin (controls upgrades + `set_share_token`/`set_swap_account`);
-  ideally multisig/hardware.
+- `ADMIN_PUBKEY` — admin (controls upgrades + `set_swap_account`/
+  `set_min_harvest_rate`); ideally multisig/hardware.
+- `MIN_HARVEST_RATE_<SYMBOL>` — harvest floor, one per asset: minimum underlying
+  stroops owed per 1e7 BLND stroops. It is the Broker path's settlement floor
+  (audit M-4) and the trait `harvest`'s default slippage bound (audit M-5).
+  Derive from live prices at deploy time —
+  `floor((BLND_price / underlying_price) × 1e7 × (1 − haircut))`, haircut ~50% —
+  and re-check it before deploying. Omit an asset and its Broker path stays
+  closed and its trait `harvest` requires the keeper to pass an explicit
+  `amount_out_min`; it is admin-settable afterwards.
 - `DEPLOY_SECRET_KEY` — deployer secret (pays deploy fees), via `op run`.
 - Sign-off on the per-asset config in `scripts/deploy_strategy_mainnet.ts`.
 
@@ -28,10 +36,20 @@ wrangler secret put KEEPER_INGEST_KEY   # generate a random token; the keeper se
 
 ## 2. Build the contract WASMs
 
+From a clean checkout of the release commit. `rust-toolchain.toml` selects the
+pinned compiler and `--locked` the committed `Cargo.lock`, so the build is
+byte-identical to any other build of that commit:
+
 ```bash
-(cd contracts/strategies/blend_leverage && cargo build --target wasm32v1-none --release)
-(cd contracts/tokens/vault_share        && cargo build --target wasm32v1-none --release)
+(cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+(cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
+shasum -a 256 contracts/*/*/target/wasm32v1-none/release/*.wasm
 ```
+
+The hashes must match the `Wasm hash` step of the `Contracts` CI run for the
+same commit; record them. Anyone can later check a deployed contract against
+that commit by rebuilding it and comparing with the wasm on-chain
+(`stellar contract fetch --id <C...> --network mainnet --out-file x.wasm`).
 
 ## 3. Deploy the 4 vaults (DRY-RUN, then live)
 
@@ -51,7 +69,25 @@ op run -- env \
 ```
 
 Writes `deployed-vaults.mainnet.json` with `{strategy, token}` per asset. It also
-runs `set_share_token` + `set_swap_account` for each.
+runs `set_swap_account` for each (the share token comes from the strategy's
+constructor), plus
+`set_min_harvest_rate` for every asset with a `MIN_HARVEST_RATE_<SYMBOL>` set —
+watch the log for `⚠ <SYMBOL>: … Broker harvest path left CLOSED`, which means
+that vault harvests via Soroswap only — and only with a keeper-supplied
+`amount_out_min` — until an admin sets the rate.
+
+**Then open each vault**, before the frontend points at it. Until the keeper or
+the admin has made a vault's first deposit, every other deposit is refused with
+`NotAuthorized` (`#418`). That deposit gives up `FIRST_DEPOSIT_LOCKUP` (1,000)
+of its shares, which stay locked in the vault for good; the rest of the
+depositor's shares can be withdrawn like anyone's. A small amount is enough, as
+long as its levered collateral clears the pool's `min_collateral` ($5 on the
+Etherfuse pool), which Blend checks on every borrow; a few dollars' worth does:
+
+```bash
+stellar contract invoke --id <STRATEGY> --source-account <KEEPER> --network mainnet \
+  -- deposit --amount <AMOUNT> --from <KEEPER_ADDRESS>
+```
 
 ## 4. Wire the frontend
 
@@ -82,9 +118,15 @@ Get the DeFindex team to co-sign the deployments.
   (DRY-RUN: reads on-chain `config()` thresholds + `health_factor()`, simulates
   only). Then run the live service:
   `op run -- env NETWORK=mainnet VAULTS_JSON=… npx tsx rebalance_keeper.ts --execute --loop`
-  — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, respects
-  the 60-ledger on-chain cooldown, and appends every probe/rebalance (before/after
-  HF, loops unwound, tx hash) to `docs/evidence/rebalance-keeper-log.jsonl`.
+  — it fires `rebalance_keeper` only when HF < the on-chain `orange_hf`, and
+  appends every probe/rebalance (before/after HF, underlying repaid, tx hash) to
+  `docs/evidence/rebalance-keeper-log.jsonl`.
+  Above `orange_hf` the same pass drives the other direction: it simulates
+  `releverage` and submits only when the contract says it would restore leverage
+  an earlier unwind removed (audit M-3), logged as `action: "releverage"` with the
+  underlying borrowed. The contract owns the target (`target_hf`, which it keeps
+  at least 0.02 above `orange_hf`) and the ~1-day cooldown, so the keeper needs
+  no extra configuration for it.
   For a permanent deployment, use the hardened systemd unit + env template in
   `scripts/deploy/` (`rebalance-keeper.service`, `rebalance-keeper.env.example`).
 - Accumulate ≥50 executed mainnet harvests → the `GET /swap-routes` report is the
@@ -98,3 +140,30 @@ Get the DeFindex team to co-sign the deployments.
 - File the SCF Tranche-1 completion report with the on-chain artifacts (4 vault IDs,
   deposit→loop→withdraw tx hashes, token addresses, test reports) and notify SCF of
   the revised completion dates.
+
+## 8. De-risk a vault
+
+When BLND emissions no longer pay for the borrowing (the borrow rate above the
+supply rate, times the leverage), leverage loses holders money. The vault has no
+separate supply-only mode; take it almost unlevered with the controls it has:
+
+1. **Admin:** raise `target_hf` to 100, keeping the other risk parameters
+   (`config()` returns the current ones). At HF 100 the debt is about 1% of the
+   collateral.
+   ```bash
+   stellar contract invoke --id <STRATEGY> --source-account <ADMIN> --network mainnet \
+     -- set_risk_params --c_factor <C> --target_hf 1000000000 --min_hf <MIN> --orange_hf <ORANGE>
+   ```
+2. **Keeper:** unwind the existing position to it.
+   ```bash
+   stellar contract invoke --id <STRATEGY> --source-account <KEEPER> --network mainnet \
+     -- partial_unwind --target_hf 1000000000
+   ```
+
+From then on deposits land at HF 100 and `releverage` keeps the vault there. To
+lever back up, set `target_hf` back; the keeper's next `releverage` restores it.
+
+Deposits still borrow that 1%, so they fail while Blend will not lend (the
+reserve at its `max_util`, or borrowing frozen). Withdrawals are unaffected.
+`test_the_admin_and_the_keeper_can_take_a_vault_almost_unlevered` runs this
+procedure.

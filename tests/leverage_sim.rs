@@ -1,7 +1,7 @@
 use blend_contract_sdk::pool;
 use soroban_ledger_snapshot_source_tx::{Network, TxSnapshotSource};
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
     Address, Env, Vec,
 };
@@ -14,6 +14,32 @@ const USER_ADDR: &str = "GBHD3V2XKX6DXHYZDSHA2UYZTO4MKB2R6QNSCDT4XEKNGTLPXT7A36E
 
 /// Stellar mainnet ledger to fork from (fetched 2026-03-11)
 const MAINNET_LEDGER: u32 = 61_605_613;
+
+/// Close time of `MAINNET_LEDGER`, 2026-03-11T17:05:09Z (from Horizon).
+const MAINNET_LEDGER_CLOSE_TIME: u64 = 1_773_248_709;
+
+/// An `Env` forked from mainnet at `MAINNET_LEDGER`.
+///
+/// The snapshot source supplies the ledger's entries but not the ledger
+/// itself, which would default to sequence 0 at timestamp 0: before the pool's
+/// reserves were last updated, so Blend's interest accrual would underflow.
+///
+/// The tests that fork are `#[ignore]`d. `tests-snapshot-source/` caches only
+/// some of the entries they read, and for a ledger this old a missing entry
+/// can only come from the history archive's bucket list: a download of several
+/// GB, cached under the OS cache directory (`org.stellar.soroban-sdk`). On a
+/// machine with the space, run `cargo test --test leverage_sim -- --ignored`
+/// once and commit the new `tests-snapshot-source/` entries; the tests then
+/// run offline and need not be ignored.
+fn fork_mainnet() -> Env {
+    let source = TxSnapshotSource::new(Network::mainnet(None), MAINNET_LEDGER, None);
+    let env = Env::from_ledger_snapshot(source);
+    env.ledger().with_mut(|li| {
+        li.sequence_number = MAINNET_LEDGER;
+        li.timestamp = MAINNET_LEDGER_CLOSE_TIME;
+    });
+    env
+}
 
 /// All Blend v2 config/rate values are scaled by 1e7
 const SCALAR: f64 = 1e7;
@@ -86,6 +112,7 @@ fn leverage(n: usize, c: f64) -> f64 {
 }
 
 #[test]
+#[ignore = "forks mainnet; needs a multi-GB history archive download (see fork_mainnet)"]
 fn simulate_usdc_leverage() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
@@ -96,8 +123,7 @@ fn simulate_usdc_leverage() {
     println!("\n[1/4] Forking mainnet at ledger {}…", MAINNET_LEDGER);
     println!("      (first run fetches from Stellar RPC and caches locally)");
 
-    let source = TxSnapshotSource::new(Network::mainnet(None), MAINNET_LEDGER, None);
-    let env = Env::from_ledger_snapshot(source);
+    let env = fork_mainnet();
 
     // ── 2. Connect to pool ────────────────────────────────────────────────────
     let pool_addr = Address::from_str(&env, POOL_ID);
@@ -460,6 +486,7 @@ fn simulate_usdc_leverage() {
 // back to underlying USDC using the reserve's current d_rate / b_rate.
 //
 #[test]
+#[ignore = "forks mainnet; needs a multi-GB history archive download (see fork_mainnet)"]
 fn execute_leverage_loop() {
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
@@ -468,8 +495,7 @@ fn execute_leverage_loop() {
 
     // ── 1. Fork Stellar mainnet ───────────────────────────────────────────────
     println!("\n[1/4] Forking mainnet at ledger {}…", MAINNET_LEDGER);
-    let source = TxSnapshotSource::new(Network::mainnet(None), MAINNET_LEDGER, None);
-    let env = Env::from_ledger_snapshot(source);
+    let env = fork_mainnet();
     env.mock_all_auths(); // bypass auth for supply/borrow/mint
 
     // ── 2. Identify USDC reserve ──────────────────────────────────────────────
@@ -521,7 +547,7 @@ fn execute_leverage_loop() {
 
     // ── 4. Execute leverage loops ─────────────────────────────────────────────
     //
-    // How many loops to run (13 keeps HF ≥ 1.05 at c=0.95, see doc.md).
+    // How many loops to run (13 keeps HF ≥ 1.05 at c=0.95, see docs/leverage-model.md).
     // The last loop in the table (loop 13) still borrows; loop 14 just
     // supplies the proceeds without borrowing to illustrate the final state.
     //

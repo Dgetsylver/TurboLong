@@ -8,11 +8,58 @@
  * No npm SDK exists — plain HTTP + @stellar/stellar-sdk is the supported path.
  */
 
-export const AQUARIUS_API =
-  (import.meta.env.VITE_AQUARIUS_API as string | undefined) ?? "https://amm-api.aqua.network/api/external/v1";
+import { getActiveNetwork, type NetworkMode } from "./blend.ts";
 
-/** Mainnet Aquarius router contract (on-chain fallback / execution). */
-export const AQUARIUS_ROUTER = "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK";
+export interface AquariusEndpoints {
+  /** Base URL of the Aquarius AMM REST API (find-path lives under it). */
+  api: string;
+  /** Aquarius router contract — quotes resolve to it and swaps execute on it. */
+  router: string;
+}
+
+/**
+ * Aquarius runs a separate deployment per network, and they share no state: the
+ * mainnet API 400s on a testnet contract ID (`Object with address=… does not
+ * exist`) rather than returning "no route". Sending testnet addresses to the
+ * mainnet endpoint therefore renders every pair as untradeable — which is what
+ * happened before these were network-scoped.
+ *
+ * Both deployments expose an `external/v1` and an `external/v2` find-path that
+ * return byte-identical payloads on the pairs we quote. We stay on v1: it is
+ * what the T3.1 mainnet acceptance evidence was generated against
+ * (`docs/evidence/aquarius-rate-report.md`), and v2 buys us nothing today.
+ */
+const AQUARIUS_ENDPOINTS: Record<NetworkMode, AquariusEndpoints> = {
+  mainnet: {
+    api: "https://amm-api.aqua.network/api/external/v1",
+    router: "CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK",
+  },
+  testnet: {
+    // Aquarius rotates the testnet router on network resets. This one is
+    // documented (Feb 2026) as stable across resets, and is verified live — the
+    // pre-2026 address in older docs (CDGX6Q3Z…) is dead. Re-verify with
+    // `stellar contract info interface --id … --network testnet` before a
+    // listing run; see docs/aquarius-listing-runbook.md.
+    api: "https://amm-api-testnet.aqua.network/api/external/v1",
+    router: "CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD",
+  },
+};
+
+/** Aquarius API + router for the currently selected network. */
+export function aquariusEndpoints(): AquariusEndpoints {
+  const net = getActiveNetwork();
+  const base = AQUARIUS_ENDPOINTS[net];
+  // The env override stays mainnet-only: it exists to point the app at a
+  // proxy/mirror of the production API, and applying it on testnet too would
+  // silently send testnet addresses to a mainnet-shaped override.
+  const override = import.meta.env.VITE_AQUARIUS_API as string | undefined;
+  return net === "mainnet" && override ? { ...base, api: override } : base;
+}
+
+/** Aquarius router contract for the active network (execution + on-chain reads). */
+export function aquariusRouter(): string {
+  return aquariusEndpoints().router;
+}
 
 export interface AquariusQuote {
   /** Best output amount, in stroops (7-dp). */
@@ -28,19 +75,40 @@ export interface AquariusQuote {
 }
 
 /**
- * Best-rate (strict-send) quote: how much `tokenOut` you get for `amountIn` of
- * `tokenIn`. Token addresses are Soroban contract IDs (SAC for classic assets).
- * Returns null when Aquarius is unreachable or has no feasible route (caller
- * falls back to its other source / hides the Aquarius figure).
+ * Why a quote is missing. Callers render these differently: `no_route` is a
+ * property of the pair (Aquarius answered, there is just no path), while
+ * `unreachable` means the API itself is down and the caller should say so
+ * rather than implying the pair is untradeable. See
+ * `docs/aquarius-rate-fallback.md`.
  */
-export async function aquariusBestRate(
+export type AquariusStatus = "ok" | "no_route" | "unreachable";
+
+export interface AquariusQuoteResult {
+  quote: AquariusQuote | null;
+  status: AquariusStatus;
+}
+
+/** `amount` comes back as a JSON number on live mainnet and as a string in
+ *  some deployments — normalise both to stroops without going through float. */
+function toStroops(v: unknown): bigint | null {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return Number.isInteger(v) ? BigInt(v) : BigInt(Math.round(v));
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) return BigInt(v.trim());
+  return null;
+}
+
+/**
+ * Best-rate (strict-send) quote with an explicit reason when there is none.
+ * Token addresses are Soroban contract IDs (SAC for classic assets).
+ */
+export async function aquariusBestRateResult(
   tokenInId: string,
   tokenOutId: string,
   amountInStroops: bigint,
-): Promise<AquariusQuote | null> {
-  if (tokenInId === tokenOutId || amountInStroops <= 0n) return null;
+): Promise<AquariusQuoteResult> {
+  if (tokenInId === tokenOutId || amountInStroops <= 0n) return { quote: null, status: "no_route" };
   try {
-    const res = await fetch(`${AQUARIUS_API}/find-path/`, {
+    const res = await fetch(`${aquariusEndpoints().api}/find-path/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -50,32 +118,128 @@ export async function aquariusBestRate(
       }),
       signal: AbortSignal.timeout(6000),
     });
-    if (!res.ok) return null;
+    // 4xx = Aquarius answered and refused this pair; 5xx = the service is sick.
+    if (!res.ok) return { quote: null, status: res.status >= 500 ? "unreachable" : "no_route" };
     const d = (await res.json()) as Record<string, unknown>;
-    if (!d.success || d.amount == null) return null;
+    const amountOut = toStroops(d.amount);
+    if (!d.success || amountOut == null) return { quote: null, status: "no_route" };
     return {
-      amountOut: BigInt(d.amount as string),
-      amountWithFee: BigInt((d.amount_with_fee as string) ?? (d.amount as string)),
-      pools: (d.pools as string[]) ?? [],
-      tokens: (d.tokens as string[]) ?? [],
-      swapChainXdr: (d.swap_chain_xdr as string) ?? "",
+      quote: {
+        amountOut,
+        amountWithFee: toStroops(d.amount_with_fee) ?? amountOut,
+        pools: (d.pools as string[]) ?? [],
+        tokens: (d.tokens as string[]) ?? [],
+        swapChainXdr: (d.swap_chain_xdr as string) ?? "",
+      },
+      status: "ok",
     };
   } catch {
-    return null;
+    // Network error, DNS failure, CORS block or the 6s AbortSignal timeout.
+    return { quote: null, status: "unreachable" };
   }
 }
 
 /**
- * Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), or
- * null. Quotes a 1-unit (1e7 stroops) trade by default — adjust `probe` for
- * depth-sensitive pricing.
+ * Best-rate (strict-send) quote: how much `tokenOut` you get for `amountIn` of
+ * `tokenIn`. Returns null when Aquarius is unreachable or has no feasible route
+ * (caller falls back to its other source / hides the Aquarius figure). Use
+ * `aquariusBestRateResult` when you need to tell those two cases apart.
  */
+export async function aquariusBestRate(
+  tokenInId: string,
+  tokenOutId: string,
+  amountInStroops: bigint,
+): Promise<AquariusQuote | null> {
+  return (await aquariusBestRateResult(tokenInId, tokenOutId, amountInStroops)).quote;
+}
+
+/**
+ * Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), with
+ * the reason attached when there is no price. Quotes a 1-unit (1e7 stroops)
+ * trade by default — adjust `probeStroops` for depth-sensitive pricing.
+ */
+export async function aquariusPriceResult(
+  tokenInId: string,
+  tokenOutId: string,
+  probeStroops = 10_000_000n,
+): Promise<{ price: number | null; status: AquariusStatus }> {
+  const { quote, status } = await aquariusBestRateResult(tokenInId, tokenOutId, probeStroops);
+  if (!quote) return { price: null, status };
+  return { price: Number(quote.amountOut) / Number(probeStroops), status: "ok" };
+}
+
+/** Effective price of `tokenIn` in `tokenOut` from Aquarius (out per 1 in), or null. */
 export async function aquariusPrice(
   tokenInId: string,
   tokenOutId: string,
   probeStroops = 10_000_000n,
 ): Promise<number | null> {
-  const q = await aquariusBestRate(tokenInId, tokenOutId, probeStroops);
-  if (!q) return null;
-  return Number(q.amountOut) / Number(probeStroops);
+  return (await aquariusPriceResult(tokenInId, tokenOutId, probeStroops)).price;
+}
+
+/**
+ * Trade size, in units of the *output* asset (USDC), that the Compare view's
+ * "Best Rate" badge measures price impact at.
+ *
+ * A fixed notional, not a fixed unit count: 1 unit of XLM and 1 unit of EURC are
+ * ~$0.17 and ~$1.14 of trade, so ranking assets by their impact at "1 unit"
+ * would compare wildly different trade sizes. It also has to be big enough to
+ * actually move a pool — measured against mainnet, a 1-vs-10-unit probe returns
+ * 0.0–5.6 bps of impact (noise, occasionally negative from rounding), while
+ * $10k separates the assets cleanly and monotonically.
+ */
+export const IMPACT_NOTIONAL = 10_000;
+
+export interface AquariusRateDepth {
+  /** USDC per 1 unit, from the 1-unit reference probe. Null when unquotable. */
+  rate: number | null;
+  /**
+   * How many basis points worse the per-unit rate gets when you trade
+   * `notional` instead of 1 unit — i.e. the gap between the headline rate and
+   * the rate you would actually receive at size. Lower is better; this is what
+   * the "Best Rate" badge ranks on.
+   *
+   * Null when either probe has no route, so a pair that only quotes at 1 unit is
+   * never badged on the strength of a rate nobody can trade.
+   */
+  impactBps: number | null;
+  status: AquariusStatus;
+}
+
+/**
+ * The two probes behind the "Best Rate" badge: a 1-unit reference rate (what the
+ * DEX Rate column shows) and the same route at `notional` of size (what the
+ * badge ranks on). Two calls, because Aquarius' response carries no depth or fee
+ * information of its own — `amount_with_fee` comes back equal to `amount` on
+ * every mainnet pair we quote, so it cannot stand in for this.
+ *
+ * Never throws, like the rest of this module. A failed second probe degrades to
+ * `impactBps: null` while keeping the reference `rate`, so an unbadgeable row
+ * still renders its rate.
+ */
+export async function aquariusRateWithImpact(
+  tokenInId: string,
+  tokenOutId: string,
+  notional = IMPACT_NOTIONAL,
+): Promise<AquariusRateDepth> {
+  const probeStroops = 10_000_000n;
+  const { price: rate, status } = await aquariusPriceResult(tokenInId, tokenOutId, probeStroops);
+  if (rate == null || rate <= 0) return { rate: null, impactBps: null, status };
+
+  // `notional` is denominated in the output asset, so units-in = notional / rate.
+  const stroopsAtSize = BigInt(Math.round((notional / rate) * Number(probeStroops)));
+  if (stroopsAtSize <= probeStroops) {
+    // The sized trade is no bigger than the reference probe (a very expensive
+    // input asset, or a tiny notional) — there is no impact to measure.
+    return { rate, impactBps: 0, status: "ok" };
+  }
+
+  const sized = await aquariusPriceResult(tokenInId, tokenOutId, stroopsAtSize);
+  if (sized.price == null || sized.price <= 0) return { rate, impactBps: null, status: sized.status };
+
+  // Clamped at zero: a bigger trade cannot genuinely get a *better* per-unit
+  // rate on an AMM, so the small negatives mainnet returns on deep stable pairs
+  // are rounding, not an edge. Reporting them would rank noise.
+  const impactBps = Math.max(0, ((rate - sized.price) / rate) * 10_000);
+  return { rate, impactBps, status: "ok" };
 }

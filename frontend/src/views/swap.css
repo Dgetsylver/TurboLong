@@ -164,6 +164,32 @@
 .tl-swap__qrow-v--good {
   color: var(--tl-success);
 }
+.tl-swap__qrow-v--bad {
+  color: var(--tl-danger);
+}
+
+/* "Best rate" marker on whichever source quotes more output */
+.tl-swap__best {
+  display: inline-block;
+  margin-left: var(--tl-space-2);
+  padding: 1px 6px;
+  border-radius: var(--tl-radius-xs);
+  background: color-mix(in srgb, var(--tl-success) 18%, transparent);
+  color: var(--tl-success);
+  border: 1px solid color-mix(in srgb, var(--tl-success) 40%, transparent);
+  font-family: var(--tl-font-sans, inherit);
+  font-size: var(--tl-text-xs);
+  font-weight: 700;
+  letter-spacing: .2px;
+  vertical-align: middle;
+}
+/* The row keeps its dim treatment; the badge must not inherit it. */
+.tl-swap__qrow--dim .tl-swap__best {
+  color: var(--tl-success);
+}
+.tl-swap__best[hidden] {
+  display: none;
+}
 
 /* Slippage chips */
 .tl-swap__slip {

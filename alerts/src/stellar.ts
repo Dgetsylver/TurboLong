@@ -110,6 +110,12 @@ export interface ReserveRates {
   util: number;
   /** Collateral factor (0..1). */
   cFactor: number;
+  /**
+   * Liability factor (0..1). Blend marks liabilities *up* by dividing by this,
+   * so it belongs in every health-factor calculation — omitting it reports a
+   * position as safer than the number that actually governs liquidation.
+   */
+  lFactor: number;
 }
 
 /** Simulate a contract call and return the decoded result. */
@@ -157,15 +163,35 @@ async function fetchBlndPrice(): Promise<number> {
   return 0;
 }
 
-/** Fetch reserve stats for a single asset in a pool and compute APR. */
-export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symbol: string; reserveIndex: number }): Promise<ReserveRates | null> {
+/**
+ * Fetch reserve stats for a single asset in a pool and compute APR.
+ *
+ * `withEmissions` controls the expensive three-quarters of the call. The BLND
+ * emissions APRs need the two `get_reserve_emissions` reads *and* the oracle
+ * `lastprice` that turns them into a rate (it feeds nothing else — see the
+ * totalSupplyUsd/totalBorrowUsd use below), plus the BLND spot price. With
+ * `withEmissions: false` all four are skipped and both BLND APRs come back 0 —
+ * which is what they have measured on every pool/asset to date.
+ *
+ * This knob exists because a Worker invocation gets 50 subrequests and the cron
+ * has 16 pool/assets to cover; at 4 reads each it ran out after 10 and the rest
+ * got neither a snapshot nor an alert check. See the rotation in
+ * index.ts:emissionsRowForTick.
+ */
+export async function fetchReserveRates(
+  pool: PoolDef,
+  asset: { id: string; symbol: string; reserveIndex: number },
+  { withEmissions = true }: { withEmissions?: boolean } = {},
+): Promise<ReserveRates | null> {
   try {
     const [reserveRaw, priceRaw, supplyEmissions, borrowEmissions, blndPrice] = await Promise.all([
       simulate(pool.id, "get_reserve", [{ type: "address", value: asset.id }]),
-      simulate(pool.oracleId, "lastprice", [{ type: "vec", value: [{ type: "symbol", value: "Stellar" }, { type: "address", value: asset.id }] }]),
-      simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 + 1 }]),
-      simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 }]),
-      fetchBlndPrice(),
+      withEmissions
+        ? simulate(pool.oracleId, "lastprice", [{ type: "vec", value: [{ type: "symbol", value: "Stellar" }, { type: "address", value: asset.id }] }])
+        : null,
+      withEmissions ? simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 + 1 }]) : null,
+      withEmissions ? simulate(pool.id, "get_reserve_emissions", [{ type: "u32", value: asset.reserveIndex * 2 }]) : null,
+      withEmissions ? fetchBlndPrice() : 0,
     ]);
 
     if (!reserveRaw) return null;
@@ -227,6 +253,7 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
     const blndBorrowApr = totalBorrowUsd > 0 ? (borrowBlndYr * blndPrice / totalBorrowUsd) * 100 : 0;
 
     const cFactor = (reserveRaw.config?.c_factor ?? 9_500_000) / SCALAR;
+    const lFactor = (reserveRaw.config?.l_factor ?? SCALAR) / SCALAR;
 
     return {
       netSupplyApr:     interestSupplyApr + blndSupplyApr,
@@ -237,6 +264,7 @@ export async function fetchReserveRates(pool: PoolDef, asset: { id: string; symb
       blndBorrowApr,
       util,
       cFactor,
+      lFactor,
     };
   } catch (e) {
     console.error(`fetchReserveRates failed for ${asset.symbol} on ${pool.name}:`, e);
@@ -253,11 +281,17 @@ export function computeNetApy(rates: ReserveRates, leverage: number): number {
  * Nominal health factor of a recursive-loop position at a given leverage.
  *
  * For leverage L the position holds supply = L·equity, debt = (L−1)·equity, so
- * HF = (supply · cFactor) / debt = L·cFactor / (L−1). Returns +Infinity for
- * L ≤ 1 (no debt). This is the bracket's HF given the pool's current collateral
- * factor — it falls as cFactor drops or leverage rises.
+ * HF = (supply · cFactor · lFactor) / debt = L·cFactor·lFactor / (L−1). Returns
+ * +Infinity for L ≤ 1 (no debt). This is the bracket's HF given the pool's
+ * current risk parameters — it falls as either factor drops or leverage rises.
+ *
+ * `lFactor` mirrors Blend's own solvency check, which marks liabilities up by
+ * dividing by it (`B × c_factor` against `D / l_factor`). Leaving it out made
+ * this number optimistic relative to the threshold that actually triggers a
+ * liquidation, so HF and liquidation alerts fired late — the off-chain twin of
+ * audit finding H-1.
  */
 export function computeHealthFactor(rates: ReserveRates, leverage: number): number {
   if (leverage <= 1) return Number.POSITIVE_INFINITY;
-  return (leverage * rates.cFactor) / (leverage - 1);
+  return (leverage * rates.cFactor * rates.lFactor) / (leverage - 1);
 }

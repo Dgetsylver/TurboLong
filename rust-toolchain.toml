@@ -1,0 +1,9 @@
+# The one compiler every build in this repository uses, so the wasm rebuilt
+# from a commit is byte-identical to the one deployed from it. The version is
+# recorded in each wasm's `rsver` meta. Bumping it changes the wasm: rebuild,
+# re-hash and redeploy.
+[toolchain]
+channel = "1.93.1"
+targets = ["wasm32v1-none"]
+components = ["rustfmt", "clippy"]
+profile = "minimal"

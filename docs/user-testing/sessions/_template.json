@@ -1,0 +1,41 @@
+{
+  "$comment": "Copy to P<NN>.json (file name = id) within 24h of the session. Pseudonymised: no names, emails, wallet addresses or recording links. Scores: 2 unaided · 1 assisted/partial (needs assists > 0 or a note) · 0 failed · null not attempted (needs skipReason). seq 1–7. sus = 10 answers 1–5 in questionnaire order. Rubrics: docs/user-testing/README.md § Scoring. Validate with: npx tsx scripts/user_testing_report.ts --no-issues --stdout",
+  "id": "P00",
+  "date": "2026-11-00",
+  "status": "completed",
+  "facilitator": "",
+  "notetaker": "",
+  "build": "",
+  "language": "es",
+  "cohorts": ["latam", "defi-native"],
+  "country": "",
+  "device": "desktop",
+  "wallet": "freighter",
+  "network": "testnet",
+  "tasks": [
+    { "id": "O1", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "O2", "score": null, "skipReason": "", "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "D1", "score": null, "skipReason": "", "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "D2", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "D3", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "M1", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "M2", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "M3", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "M4", "score": null, "skipReason": "", "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "M5", "score": null, "skipReason": "", "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "X1", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "X2", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" },
+    { "id": "X3", "score": null, "timeSec": null, "seq": null, "assists": 0, "issues": [], "notes": "" }
+  ],
+  "comprehension": [
+    { "id": "C1", "result": null, "notes": "" },
+    { "id": "C2", "result": null, "notes": "" },
+    { "id": "C3", "result": null, "notes": "" },
+    { "id": "C4", "result": null, "notes": "" },
+    { "id": "C5", "result": null, "notes": "" },
+    { "id": "C6", "result": null, "notes": "" }
+  ],
+  "sus": null,
+  "confidence": null,
+  "issues": []
+}

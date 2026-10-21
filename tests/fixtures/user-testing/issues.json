@@ -1,0 +1,10 @@
+[
+  { "number": 9001, "title": "[UT] Screens stay 'Connect your wallet' after connecting", "state": "OPEN", "url": "https://example.invalid/issues/9001",
+    "labels": [{ "name": "user-testing" }, { "name": "severity:S2-high" }, { "name": "flow:onboard" }] },
+  { "number": 9002, "title": "[UT] Participants believe alerts watch their own position", "state": "OPEN", "url": "https://example.invalid/issues/9002",
+    "labels": [{ "name": "user-testing" }, { "name": "severity:S1-critical" }, { "name": "flow:monitor" }] },
+  { "number": 9003, "title": "[UT] Vault withdraw button hard to see", "state": "CLOSED", "url": "https://example.invalid/issues/9003",
+    "labels": [{ "name": "user-testing" }, { "name": "severity:S3-medium" }, { "name": "flow:exit" }] },
+  { "number": 9004, "title": "[UT] Trade view untranslated in ES", "state": "OPEN", "url": "https://example.invalid/issues/9004",
+    "labels": [{ "name": "user-testing" }] }
+]

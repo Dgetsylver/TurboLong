@@ -1,5 +1,12 @@
 /**
- * Deploy the BlendLeverageStrategy contract to testnet.
+ * Deploy one BlendLeverageStrategy vault (USDC) to testnet, with the deployer as
+ * admin: the v1 of the upgrade rehearsal in docs/migration-runbook.md. The
+ * four-vault rehearsal of the mainnet deploy is deploy_strategy_testnet.ts.
+ *
+ * Installs the strategy and share-token wasms from the local builds; the
+ * strategy deploys its own share token in its constructor. Build both first:
+ *   (cd contracts/strategies/blend_leverage && cargo build --locked --target wasm32v1-none --release)
+ *   (cd contracts/tokens/vault_share        && cargo build --locked --target wasm32v1-none --release)
  *
  * Usage: npx tsx scripts/deploy_strategy.ts
  */
@@ -17,7 +24,11 @@ import {
   StrKey,
 } from "@stellar/stellar-sdk";
 import * as fs from "fs";
+import * as path from "path";
 import * as crypto from "crypto";
+import { fileURLToPath } from "url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const RPC_URL = "https://soroban-testnet.stellar.org";
 const PASSPHRASE = Networks.TESTNET;
@@ -44,12 +55,44 @@ const BLND = "CB22KRA3YZVCNCQI64JQ5WE7UY2VAV7WFLK6A2JN3HEX56T2EDAFO7QF";
 const ROUTER = "CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD";
 const KEEPER = "GBKC77KT5S3ZKLDQSKBPMRKFDNFOU4OMFFS73ZX65LB2R633X6JJZYKN";
 
-async function main() {
-  // Step 1: Read the WASM hash (already installed)
-  const wasmHash = "f70473bdd2431faa8486f76473b1bbd0a63f1dde4294bec2b0f4bd65c92823e7";
+const STRATEGY_WASM = path.resolve(here, "../contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm");
+const TOKEN_WASM = path.resolve(here, "../contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm");
 
-  console.log(`Deploying with wasm hash: ${wasmHash}`);
+// Upload a wasm and return its hash.
+async function installWasm(wasmPath: string): Promise<string> {
+  const wasm = fs.readFileSync(wasmPath);
+  const acc = await server.getAccount(account);
+  const tx = new TransactionBuilder(acc, {
+    fee: "10000000", // 1 XLM
+    networkPassphrase: PASSPHRASE,
+  })
+    .setTimeout(120)
+    .addOperation(Operation.uploadContractWasm({ wasm }))
+    .build();
+
+  const prepared = await server.prepareTransaction(tx);
+  (prepared as any).sign(keypair);
+  const response = await server.sendTransaction(prepared);
+
+  let result = await server.getTransaction(response.hash);
+  while (result.status === "NOT_FOUND") {
+    await new Promise(r => setTimeout(r, 1000));
+    result = await server.getTransaction(response.hash);
+  }
+  if (result.status !== "SUCCESS") {
+    throw new Error(`Installing ${wasmPath} failed: ${JSON.stringify(result, null, 2).slice(0, 3000)}`);
+  }
+  return ((result as any).returnValue as xdr.ScVal).bytes().toString("hex");
+}
+
+async function main() {
   console.log(`Deployer: ${account}`);
+
+  // Step 1: Install the strategy and share-token wasms
+  const wasmHash = await installWasm(STRATEGY_WASM);
+  const tokenWasmHash = await installWasm(TOKEN_WASM);
+  console.log(`Strategy wasm hash: ${wasmHash}`);
+  console.log(`Share token wasm hash: ${tokenWasmHash}`);
 
   // Helper to create ScVal for any address (G... or C...)
   function addrScVal(addr: string): xdr.ScVal {
@@ -69,10 +112,13 @@ async function main() {
     nativeToScVal(10_000_000n, { type: "i128" }), // [3] reward_threshold (1 BLND)
     addrScVal(KEEPER),                            // [4] keeper
     nativeToScVal(9_000_000n, { type: "i128" }),  // [5] c_factor (0.90)
-    nativeToScVal(3, { type: "u32" }),            // [6] target_loops
+    nativeToScVal(11_700_000n, { type: "i128" }), // [6] target_hf (1.17)
     nativeToScVal(10_500_000n, { type: "i128" }), // [7] min_hf (1.05)
     nativeToScVal(11_500_000n, { type: "i128" }), // [8] orange_hf (1.15)
     addrScVal(account),                           // [9] admin (deployer, testnet)
+    xdr.ScVal.scvBytes(Buffer.from(tokenWasmHash, "hex")),              // [10] share_token_wasm
+    nativeToScVal("BlendLeverage USDC Share", { type: "string" }),      // [11] share_name
+    nativeToScVal("blvUSDC", { type: "string" }),                       // [12] share_symbol
   ]);
 
   // Step 2: Build deploy transaction with constructor
@@ -130,6 +176,9 @@ async function main() {
       const addr = Address.fromScVal(contractId);
       console.log(`Contract ID: ${addr.toString()}`);
     }
+    // The first deposit gives up the share lockup, so the strategy refuses it
+    // from anyone but the keeper or the admin.
+    console.log(`Next: open the vault with a first deposit from the keeper (${KEEPER}) or the admin (${account}).`);
   } else {
     console.error("Deployment failed:", JSON.stringify(result, null, 2).slice(0, 3000));
   }

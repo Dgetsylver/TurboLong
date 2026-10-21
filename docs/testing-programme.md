@@ -42,12 +42,12 @@ The fund-holding logic. **96 tests** across:
 | Crate / file | Tests | Covers |
 |--------------|-------|--------|
 | `contracts/strategies/blend_leverage/src/test_leverage.rs` | 50 | leverage-loop open/close, health-factor math, partial unwind, `orange_hf` band, rebalance keeper, BLND harvest split (`harvest_claim` / `harvest_reinvest`), interest-rate kink, utilization-cap panics (e.g. `#[should_panic("Error(Contract, #422)")]` at >95% util); **partial-unwind degenerate fixtures** (exact-boundary no-op, one-stroop-below minimal repay, zero/negative-equity clamp to full close — never over-repay, dust position with zero-stroop layer, HF < 1.0 but salvageable, `target ≤ c_factor` error, accrued-rate sanity); **version counter** (`test_version_defaults_to_one_then_bumps`) and **upgrade-parity on a seeded fixture** (`test_upgrade_preserves_hf_and_balance_parity`) — equity/HF/per-share underlying identical **within 1e-7** |
-| `contracts/strategies/blend_leverage/src/test_integration.rs` | 29 | integration against a real Blend pool (`BlendFixture`): supply/borrow, leverage-loop build, full deposit→withdraw cycle, two-user proportionality, deleverage/partial-unwind, rebalance round-trip, harvest, real `deposit`/`withdraw` entrypoints keep reserves in sync, share-token wiring + `migrate_position`, transferred-share withdraw; **auto-rebalance keeper (T2.3)** — real `rebalance_keeper` on a stressed 8-loop position restores HF ≥ orange_hf and emits the `rebalance` event with (before_hf, after_hf, loops) matching on-chain state (`test_rebalance_keeper_unwinds_stressed_position_and_emits_event`), on-chain 60-ledger cooldown incl. one-ledger-short boundary + permissionless `rebalance` unaffected (`test_rebalance_keeper_cooldown_rate_limits_on_chain`), already-at-floor no-op emits nothing and does not consume the cooldown (`test_rebalance_keeper_already_at_floor_noop_does_not_consume_cooldown`), and rebalance still unwinds while deposits are locked above `MAX_SAFE_UTILIZATION` (`test_rebalance_keeper_works_while_deposits_locked_by_high_utilization`); **dry-run ↔ on-chain parity** (`test_partial_unwind_dry_run_matches_onchain_within_rounding`) — the closed-form + layered-execution prediction (the model `scripts/rebalance_sim.ts` uses) matches the executed Blend-pool position after a year of accrued rates within a few stroops per layer; **live pool-state `upgrade()` parity** (`test_upgrade_preserves_hf_and_balance_on_live_pool_state`) — real deposit + drifted rates, the real `upgrade()` entrypoint (admin-gated, version bump), equity/HF/per-user balance identical **within 1e-7** pre/post |
+| `contracts/strategies/blend_leverage/src/test_integration.rs` | 29 | integration against a real Blend pool (`BlendFixture`): supply/borrow, leverage-loop build, full deposit→withdraw cycle, two-user proportionality, deleverage/partial-unwind, rebalance round-trip, harvest, real `deposit`/`withdraw` entrypoints keep reserves in sync, share-token wiring, transferred-share withdraw; **auto-rebalance keeper (T2.3)** — real `rebalance_keeper` on a stressed 8-loop position restores HF ≥ orange_hf and emits the `rebalance` event with (before_hf, after_hf, repaid) matching on-chain state (`test_rebalance_keeper_unwinds_stressed_position_and_emits_event`), an immediate repeat — keeper or permissionless `rebalance` — is a no-op, which is why the keeper path needs no rate limit (`test_rebalance_keeper_repeat_call_is_a_noop`), already-at-floor no-op emits nothing (`test_rebalance_keeper_already_at_floor_is_a_noop`), and rebalance still unwinds while Blend refuses deposits above the reserve's `max_util` (`test_rebalance_keeper_works_while_deposits_locked_by_high_utilization`); **dry-run ↔ on-chain parity** (`test_partial_unwind_dry_run_matches_onchain_within_rounding`) — the closed-form + layered-execution prediction (the model `scripts/rebalance_sim.ts` uses) matches the executed Blend-pool position after a year of accrued rates within a few stroops per layer; **live pool-state `upgrade()` parity** (`test_upgrade_preserves_hf_and_balance_on_live_pool_state`) — real deposit + drifted rates, the real `upgrade()` entrypoint (admin-gated, version bump), equity/HF/per-user balance identical **within 1e-7** pre/post |
 | `contracts/tokens/vault_share/src/test.rs` | 17 | SEP-41 receipt token: `transfer` moves shares + proportional claim (no pool interaction), insufficient-balance/non-positive guards, `approve`/`allowance`/`transfer_from` happy + expiry + over-allowance, `total_supply == Σ balances` |
 
 **Run:** `cd contracts/strategies/blend_leverage && cargo test`;
 `cd contracts/tokens/vault_share && cargo test`.
-**Gate:** `contracts.yml` runs `cargo test` + `cargo build --target wasm32v1-none --release`; clippy `-D warnings` + `cargo fmt --check` enforced.
+**Gate:** `contracts.yml` runs `cargo test --locked` + `cargo build --locked --target wasm32v1-none --release` under the compiler pinned in `rust-toolchain.toml`; clippy `-D warnings` + `cargo fmt --check` enforced.
 
 ## Layer 2 — Rate-model parity (TS ↔ Rust) — *primary*
 
@@ -101,6 +101,16 @@ Executed at/after deploy; evidence captured for the SCF completion report.
   `docs/aquarius-listing-runbook.md`.
 - **Broker swap session** end-to-end through the keeper harvest path.
 
+## Beyond automation — moderated user testing
+
+The layers above prove the maths and the wiring are right. They can't tell
+whether a person understands the liquidation risk they are signing for. That is
+covered by the moderated user-testing programme (Milestone 4) in
+[`docs/user-testing/`](user-testing/README.md): scored deposit → monitor → exit
+sessions weighted toward LatAm and DeFi-native users, with findings triaged into
+`user-testing` + `severity:*` issues and reported by
+`scripts/user_testing_report.ts`.
+
 ---
 
 ## Known coverage gaps & planned work
@@ -120,7 +130,7 @@ Executed at/after deploy; evidence captured for the SCF completion report.
 
 - [ ] `cargo test` (all 80 contract tests) green.
 - [ ] `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` clean.
-- [ ] `cargo build --target wasm32v1-none --release` produces the final WASM.
+- [ ] `cargo build --locked --target wasm32v1-none --release` produces the final WASM, its hash matching CI's `Wasm hash`.
 - [ ] Parity suite green (`rate_calc` ↔ `projectRates`, ≥20 fixtures).
 - [ ] `npm run lint` + `npm run build` clean (frontend + alerts).
 - [ ] Playwright e2e green for 5 wallets + Ledger × {classic, Soroban}.
