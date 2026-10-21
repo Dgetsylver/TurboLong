@@ -19,7 +19,45 @@ export interface SnapshotPoint {
   val: number;
 }
 
-type Field = "net_supply_apr" | "net_borrow_cost";
+/** Columns of `rate_snapshots` the UI trends. `dex_rate` (Aquarius, USDC per 1
+ *  unit) is nullable per row — see the null handling in fetchSnapshotSeries. */
+type Field = "net_supply_apr" | "net_borrow_cost" | "dex_rate";
+
+/** Project one column of raw `/snapshots` rows into a series, oldest→newest. */
+export function seriesFromRows(rows: Record<string, unknown>[], field: Field): SnapshotPoint[] {
+  return (
+    rows
+      .filter((s) => s[field] != null) // `dex_rate` is NULL on ticks where Aquarius
+      // gave no quote, and on every row predating the column. Number(null) is 0,
+      // which is finite — so these must be dropped BEFORE the numeric filter or a
+      // gap in the series would read as a rate of zero.
+      .map((s) => ({
+        ts: Date.parse(String(s.recorded_at).replace(" ", "T") + "Z"),
+        val: Number(s[field]),
+      }))
+      .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.val))
+      .reverse()
+  ); // /snapshots returns newest-first → flip to oldest-first
+}
+
+/** Raw `/snapshots` rows for a pool/asset. Returns [] on any failure. */
+async function fetchSnapshotRows(
+  poolId: string,
+  assetSymbol: string,
+  limit: number,
+): Promise<Record<string, unknown>[]> {
+  try {
+    const url =
+      `${ALERTS_WORKER_URL}/snapshots?pool_id=${encodeURIComponent(poolId)}` +
+      `&asset=${encodeURIComponent(assetSymbol)}&limit=${limit}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) return [];
+    const d = (await res.json()) as { snapshots?: Record<string, unknown>[] };
+    return d.snapshots ?? [];
+  } catch {
+    return [];
+  }
+}
 
 /** Fetch the server time-series for a pool/asset, oldest→newest. */
 export async function fetchSnapshotSeries(
@@ -28,23 +66,24 @@ export async function fetchSnapshotSeries(
   field: Field,
   limit = 500,
 ): Promise<SnapshotPoint[]> {
-  try {
-    const url =
-      `${ALERTS_WORKER_URL}/snapshots?pool_id=${encodeURIComponent(poolId)}` +
-      `&asset=${encodeURIComponent(assetSymbol)}&limit=${limit}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!res.ok) return [];
-    const d = (await res.json()) as { snapshots?: Record<string, unknown>[] };
-    return (d.snapshots ?? [])
-      .map((s) => ({
-        ts: Date.parse(String(s.recorded_at).replace(" ", "T") + "Z"),
-        val: Number(s[field]),
-      }))
-      .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.val))
-      .reverse(); // /snapshots returns newest-first → flip to oldest-first
-  } catch {
-    return [];
-  }
+  return seriesFromRows(await fetchSnapshotRows(poolId, assetSymbol, limit), field);
+}
+
+/**
+ * Several columns from ONE request. The APR trend and the Aquarius rate trend
+ * live in the same rows, so Compare pulls both per pool/asset — fetching them
+ * separately would double the request count for identical payloads.
+ */
+export async function fetchSnapshotSeriesMulti<F extends Field>(
+  poolId: string,
+  assetSymbol: string,
+  fields: readonly F[],
+  limit = 500,
+): Promise<Record<F, SnapshotPoint[]>> {
+  const rows = await fetchSnapshotRows(poolId, assetSymbol, limit);
+  const out = {} as Record<F, SnapshotPoint[]>;
+  for (const f of fields) out[f] = seriesFromRows(rows, f);
+  return out;
 }
 
 function key(poolId: string, assetId: string, field: string): string {
