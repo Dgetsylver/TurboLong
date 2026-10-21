@@ -2,22 +2,32 @@
  * Turbolong auto-rebalance keeper — SCF #43 T2.3 production keeper.
  *
  * For each configured vault: read the ON-CHAIN risk config (`config()` — never
- * hardcoded copies), read `health_factor()`, and when HF has dropped below the
- * on-chain `orange_hf` threshold call the keeper-authorised, rate-limited
- * `rebalance_keeper(caller)` entrypoint, which unwinds the minimal loops to
- * restore HF to the target and emits a `rebalance` event with before/after HF
- * and loops unwound.
+ * hardcoded copies), read `health_factor()`, and drive whichever side of the
+ * position needs attention:
+ *
+ *   HF below the on-chain `orange_hf` → `rebalance_keeper()`, the
+ *     keeper-authorised entrypoint that repays just enough debt
+ *     to restore HF and emits a `rebalance` event with before/after HF and the
+ *     underlying repaid.
+ *
+ *   HF above it → `releverage()`, which borrows against collateral the
+ *     vault already holds to restore the leverage an earlier unwind removed.
+ *     Without this the position is a ratchet: every unwind is permanent and
+ *     holders keep earning the reduced yield (audit M-3). The keeper makes no
+ *     judgement about *how much* — the contract re-levers to its configured
+ *     `target_hf`, which sits clear of the rebalance band — so the
+ *     keeper only has to ask, and a no-op costs nothing but a simulation.
  *
  * Modes:
- *   (default) DRY-RUN — reads state + simulates `rebalance_keeper`; NO key
+ *   (default) DRY-RUN — reads state + simulates the call that applies; NO key
  *             needed, NO signing, NO on-chain writes. Safe for CI/cron probes.
  *   --execute Live: signs and submits `rebalance_keeper` when (and only when)
- *             the on-chain HF is below the on-chain orange_hf. Requires
+ *             the on-chain HF is below the on-chain orange_hf, or `releverage`
+ *             when the simulation says it would restore leverage. Requires
  *             KEEPER_SECRET (the strategy's keeper account) — provide it via a
  *             secrets manager (`op run`), never commit it.
- *   --loop    Keep running: re-check every INTERVAL_S (default 300s ≈ the
- *             60-ledger on-chain cooldown). Combine with --execute for the
- *             production keeper service.
+ *   --loop    Keep running: re-check every INTERVAL_S (default 300s). Combine
+ *             with --execute for the production keeper service.
  *
  * Env:
  *   NETWORK          testnet | mainnet            (default testnet)
@@ -27,15 +37,15 @@
  *   INTERVAL_S       loop interval seconds        (default 300)
  *   EVIDENCE_FILE    JSONL evidence output        (default docs/evidence/rebalance-keeper-log.jsonl)
  *
- * Every action (probe, skip, rebalance, cooldown rejection) is appended as a
- * JSON line to EVIDENCE_FILE — the audit trail for the T2.3/T3 acceptance.
+ * Every action (probe, skip, rebalance, re-leverage, cooldown rejection) is
+ * appended as a JSON line to EVIDENCE_FILE — the audit trail for the T2.3/T3
+ * acceptance.
  */
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   rpc as SorobanRpc,
-  Address,
   BASE_FEE,
   Contract,
   Keypair,
@@ -127,8 +137,9 @@ interface VaultState {
   hf: number; // health factor as a float
   minHf: number;
   orangeHf: number;
-  targetLoops: number | null;
+  targetHf: number | null;
   hasDebt: boolean;
+  hasCollateral: boolean;
   configSource: "on-chain" | "fallback";
 }
 
@@ -138,14 +149,14 @@ const FALLBACK_MIN_HF = Number(process.env.FALLBACK_MIN_HF ?? "1.05");
 const FALLBACK_ORANGE_HF = Number(process.env.FALLBACK_ORANGE_HF ?? "1.15");
 
 async function readVaultState(v: Vault): Promise<VaultState> {
-  // config() = (c_factor, target_loops, min_hf, orange_hf) — the on-chain
+  // config() = (c_factor, target_hf, min_hf, orange_hf) — the on-chain
   // source of truth for thresholds (anti-drift: never hardcode these). Older
   // deployments don't expose it; fall back to env-configured thresholds. The
   // contract re-checks HF < orange_hf on-chain anyway, so a stale fallback can
   // only cause a harmless no-op call, never an over-unwind.
-  let cfg: [bigint, number, bigint, bigint] | null = null;
+  let cfg: [bigint, bigint, bigint, bigint] | null = null;
   try {
-    cfg = (await simRead(v.strategyId, "config")) as [bigint, number, bigint, bigint];
+    cfg = (await simRead(v.strategyId, "config")) as [bigint, bigint, bigint, bigint];
   } catch {
     // pre-config() deployment — use fallback thresholds
   }
@@ -155,61 +166,77 @@ async function readVaultState(v: Vault): Promise<VaultState> {
     hf: Number(hfRaw) / Number(HF_SCALAR),
     minHf: cfg ? Number(cfg[2]) / Number(HF_SCALAR) : FALLBACK_MIN_HF,
     orangeHf: cfg ? Number(cfg[3]) / Number(HF_SCALAR) : FALLBACK_ORANGE_HF,
-    targetLoops: cfg ? Number(cfg[1]) : null,
+    targetHf: cfg ? Number(cfg[1]) / Number(HF_SCALAR) : null,
     hasDebt: BigInt(pos[3]) > 0n,
+    hasCollateral: BigInt(pos[2]) > 0n,
     configSource: cfg ? "on-chain" : "fallback",
   };
 }
 
-// ── Rebalance execution ───────────────────────────────────────────────────────
+// ── Keeper entrypoint execution ───────────────────────────────────────────────
 
-/** Simulate rebalance_keeper without signing; returns whether it would run. */
-async function simulateRebalanceKeeper(v: Vault, caller: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Simulate a keeper entrypoint (`rebalance_keeper` / `releverage`) without
+ * signing. Returns whether it would run and, for a success, its return value —
+ * `0` means the contract decided there is nothing to do, which is the signal to
+ * skip rather than spend a transaction.
+ */
+async function simulateKeeperCall(
+  v: Vault,
+  method: string,
+): Promise<{ ok: boolean; result?: number; error?: string }> {
   try {
     const acc = await server.getAccount(SIM_ACCOUNT);
     const tx = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
-      .addOperation(
-        new Contract(v.strategyId).call("rebalance_keeper", new Address(caller).toScVal()),
-      )
+      .addOperation(new Contract(v.strategyId).call(method))
       .setTimeout(30)
       .build();
     const sim = await server.simulateTransaction(tx);
-    if (SorobanRpc.Api.isSimulationSuccess(sim)) return { ok: true };
+    if (SorobanRpc.Api.isSimulationSuccess(sim)) {
+      const retval = sim.result?.retval ? Number(scValToNative(sim.result.retval)) : null;
+      return { ok: true, result: retval ?? undefined };
+    }
     return { ok: false, error: SorobanRpc.Api.isSimulationError(sim) ? sim.error : "unknown" };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
 }
 
-/** Sign + submit rebalance_keeper; returns (txHash, loopsUnwound). */
-async function executeRebalanceKeeper(v: Vault, kp: Keypair): Promise<{ tx: string; loops: number | null; status: string }> {
+/**
+ * Sign + submit a keeper entrypoint; returns (txHash, returnValue, status).
+ * The return value is underlying repaid for `rebalance_keeper`, underlying
+ * borrowed for `releverage`.
+ */
+async function executeKeeperCall(
+  v: Vault,
+  method: string,
+  kp: Keypair,
+): Promise<{ tx: string; result: number | null; status: string }> {
   const acc = await server.getAccount(kp.publicKey());
   const built = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
-    .addOperation(
-      new Contract(v.strategyId).call("rebalance_keeper", new Address(kp.publicKey()).toScVal()),
-    )
+    .addOperation(new Contract(v.strategyId).call(method))
     .setTimeout(120)
     .build();
   const prepared = await server.prepareTransaction(built);
   prepared.sign(kp);
   const sent = await server.sendTransaction(prepared);
   if (sent.status === "ERROR") {
-    return { tx: sent.hash, loops: null, status: `send_error: ${JSON.stringify(sent.errorResult ?? "")}` };
+    return { tx: sent.hash, result: null, status: `send_error: ${JSON.stringify(sent.errorResult ?? "")}` };
   }
 
-  // Poll for the final result (loops unwound = the entrypoint's u32 return).
+  // Poll for the final result (the entrypoint's return value).
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 2_000));
     const res = await server.getTransaction(sent.hash);
     if (res.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
-      const loops = res.returnValue ? Number(scValToNative(res.returnValue)) : null;
-      return { tx: sent.hash, loops, status: "success" };
+      const result = res.returnValue ? Number(scValToNative(res.returnValue)) : null;
+      return { tx: sent.hash, result, status: "success" };
     }
     if (res.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
-      return { tx: sent.hash, loops: null, status: "failed" };
+      return { tx: sent.hash, result: null, status: "failed" };
     }
   }
-  return { tx: sent.hash, loops: null, status: "timeout" };
+  return { tx: sent.hash, result: null, status: "timeout" };
 }
 
 // ── Per-vault pass ────────────────────────────────────────────────────────────
@@ -229,27 +256,66 @@ async function processVault(v: Vault): Promise<void> {
     hf: state.hf,
     min_hf: state.minHf,
     orange_hf: state.orangeHf,
+    target_hf: state.targetHf,
     has_debt: state.hasDebt,
     config_source: state.configSource,
   };
 
-  if (!state.hasDebt) {
-    logEvidence({ ...base, action: "skip", reason: "no_debt" });
+  // HF in the orange zone with debt outstanding — unwind. This side is the
+  // urgent one and always takes precedence.
+  if (state.hasDebt && state.hf < state.orangeHf) {
+    if (!EXECUTE) {
+      const sim = await simulateKeeperCall(v, "rebalance_keeper");
+      logEvidence({ ...base, action: "dry_run", would_rebalance: true, sim_ok: sim.ok, sim_error: sim.error ?? null });
+      return;
+    }
+
+    const res = await executeKeeperCall(v, "rebalance_keeper", keeper!);
+    let afterHf: number | null = null;
+    try {
+      afterHf = (await readVaultState(v)).hf;
+    } catch {
+      // best-effort post-read; the on-chain event remains the source of truth
+    }
+    logEvidence({
+      ...base,
+      action: "rebalance",
+      before_hf: state.hf,
+      after_hf: afterHf,
+      repaid: res.result,
+      tx: res.tx,
+      status: res.status,
+    });
     return;
   }
-  if (state.hf >= state.orangeHf) {
+
+  // Nothing to unwind. Is there leverage to put back? Ask the contract rather
+  // than deciding here: it owns the target (design leverage, floored clear of
+  // the rebalance band), the cooldown and the safety checks, and a simulated
+  // `0` is the authoritative "nothing to do".
+  if (!state.hasCollateral) {
+    logEvidence({ ...base, action: "skip", reason: "no_position" });
+    return;
+  }
+
+  const sim = await simulateKeeperCall(v, "releverage");
+  if (!sim.ok) {
+    // Expected and harmless in steady state: `DeadlineExpired` inside the
+    // re-leverage cooldown, or a pre-M-3 deployment with no such entrypoint.
+    logEvidence({ ...base, action: "skip", reason: "releverage_unavailable", sim_error: sim.error ?? null });
+    return;
+  }
+  if (!sim.result) {
     logEvidence({ ...base, action: "skip", reason: "hf_at_or_above_target" });
     return;
   }
 
-  // HF is in the orange zone — the keeper has work to do.
   if (!EXECUTE) {
-    const sim = await simulateRebalanceKeeper(v, SIM_ACCOUNT);
-    logEvidence({ ...base, action: "dry_run", would_rebalance: true, sim_ok: sim.ok, sim_error: sim.error ?? null });
+    logEvidence({ ...base, action: "dry_run", would_releverage: true, would_borrow: sim.result });
     return;
   }
 
-  const res = await executeRebalanceKeeper(v, keeper!);
+  const res = await executeKeeperCall(v, "releverage", keeper!);
   let afterHf: number | null = null;
   try {
     afterHf = (await readVaultState(v)).hf;
@@ -258,10 +324,10 @@ async function processVault(v: Vault): Promise<void> {
   }
   logEvidence({
     ...base,
-    action: "rebalance",
+    action: "releverage",
     before_hf: state.hf,
     after_hf: afterHf,
-    loops_unwound: res.loops,
+    borrowed: res.result,
     tx: res.tx,
     status: res.status,
   });

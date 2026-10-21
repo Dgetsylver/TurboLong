@@ -7,23 +7,28 @@
 ## Ready ✅
 
 - **Deploy script:** `scripts/deploy_strategy_mainnet.ts` — installs both WASMs,
-  then per asset deploys the 10-arg `blend_leverage_strategy` + a `vault_share`
-  SEP-41 token, wires `set_share_token` + `set_swap_account(keeper)`, and writes
+  then per asset deploys the 13-arg `blend_leverage_strategy`, which deploys its
+  own `vault_share` SEP-41 token, wires `set_swap_account(keeper)`, plus
+  `set_min_harvest_rate` where its `MIN_HARVEST_RATE_<SYMBOL>` is set and
+  `set_swap_via` where the asset routes through USDC, and writes
   `deployed-vaults.mainnet.json`.
 - **WASMs built** at the exact paths the script reads:
   - `contracts/strategies/blend_leverage/target/wasm32v1-none/release/blend_leverage_strategy.wasm`
   - `contracts/tokens/vault_share/target/wasm32v1-none/release/vault_share_token.wasm`
-  - (rebuild: `cd <crate> && cargo build --target wasm32v1-none --release`)
+  - (rebuild: `cd <crate> && cargo build --locked --target wasm32v1-none --release`)
 - **Config verified against LIVE mainnet** (Etherfuse pool `CDMAVJPF…`, status=1
   active; Soroswap router `CAG5LRYQ…`). Per-asset strategy `c_factor` sits safely
   below the pool's current value (buffer for HF):
 
-  | Asset | Contract | Strategy cFactor | Pool cFactor (live) | Loops | min_hf | orange_hf |
-  |---|---|---|---|---|---|---|
-  | USDC  | `CCW67TSZ…JMI75` | 0.90 | 0.95 | 4 | 1.05 | 1.15 |
-  | USTRY | `CBLV4ATS…PNUR`  | 0.85 | 0.90 | 3 | 1.05 | 1.15 |
-  | CETES | `CAL6ER2T…6VXV`  | 0.75 | 0.80 | 3 | 1.05 | 1.15 |
-  | XLM   | `CAS3J7GY…OWMA`  | 0.70 | 0.75 | 2 | 1.10 | 1.20 |
+  | Asset | Contract | Strategy cFactor | Pool cFactor / lFactor (live) | target_hf | Leverage | min_hf | orange_hf |
+  |---|---|---|---|---|---|---|---|
+  | USDC  | `CCW67TSZ…JMI75` | 0.90 | 0.95 / 0.95 | 1.13 | 4.11× | 1.05 | 1.10 |
+  | USTRY | `CBLV4ATS…PNUR`  | 0.85 | 0.90 / 0.90 | 1.17 | 2.89× | 1.05 | 1.15 |
+  | CETES | `CAL6ER2T…6VXV`  | 0.75 | 0.80 / 0.80 | 1.12 | 2.15× | 1.05 | 1.10 |
+  | XLM   | `CAS3J7GY…OWMA`  | 0.70 | 0.75 / 0.75 | 1.22 | 1.76× | 1.10 | 1.20 |
+
+  Leverage is `target_hf / (target_hf − c_factor × l_factor)` at the live
+  l_factor; the contract refuses a `target_hf` less than 0.02 above `orange_hf`.
 
   `reward_threshold = 100 BLND`. (Pool's 5th reserve TESOURO is intentionally out
   of the D1 4-asset scope.)
@@ -32,13 +37,14 @@
 
 1. **`DEPLOY_SECRET_KEY`** — `S…` deployer secret, via 1Password / a secrets
    manager (never inline a mainnet key). Account must be **funded** (~30–50 XLM
-   buffer: 2 WASM installs + 4×[deploy strategy + deploy token + 2 wirings]).
+   buffer: 2 WASM installs + 4×[deploy strategy, which deploys its token, + up
+   to 3 wirings]).
 2. **`KEEPER_PUBKEY`** — `G…` keeper account (runs harvest + `rebalance_keeper`,
    pulls BLND). **Required.**
-3. **`ADMIN_PUBKEY`** — `G…` admin (upgrade + `set_share_token`/`set_swap_account`).
+3. **`ADMIN_PUBKEY`** — `G…` admin (upgrade + `set_swap_account`).
    Defaults to the deployer; **recommend a multisig/hardware key**.
 4. **Risk-param sign-off** — approve (or adjust) the per-asset `c_factor` /
-   `target_loops` / `min_hf` / `orange_hf` / `reward_threshold` table above.
+   `target_hf` / `min_hf` / `orange_hf` / `reward_threshold` table above.
 
 ## Run it
 
@@ -58,17 +64,23 @@ op run -- env \
 
 > Note: `DRY_RUN=1` validates the deployer account + the first WASM install
 > simulation. The full chain can't be fully dry-run (each deploy depends on the
-> prior contract existing on-chain) — the proven rehearsal is the **testnet**
-> deploy (`scripts/deploy_strategy.ts`, the live testnet vault `CDOET…`).
+> prior contract existing on-chain) — the rehearsal is the same four-vault flow
+> on **testnet**, `scripts/deploy_strategy_testnet.ts`, which mirrors this
+> script. Rerun it on the build being deployed: the testnet vaults deployed so
+> far (`deployed-vaults.testnet.json`, and the older `CDOET…`) predate the
+> audit fixes.
 
 ## After deploy
 
-1. Wire the 4 vaultIds into `frontend/src/defindex.ts` `MAINNET_VAULTS`
+1. **Open each vault** before anything points at it: a first `deposit` from
+   the keeper or the admin (`docs/mainnet-go-live-runbook.md` §3). Until then
+   the strategy refuses every other deposit with `NotAuthorized`.
+2. Wire the 4 vaultIds into `frontend/src/defindex.ts` `MAINNET_VAULTS`
    (`scripts/wire_mainnet_vaults.ts` reads `deployed-vaults.mainnet.json`).
-2. Per asset: small **deposit → loop → withdraw** on mainnet; capture tx hashes
+3. Per asset: small **deposit → withdraw** on mainnet; capture tx hashes
    (Stellar Expert) for the T1/T3 reports.
-3. **DeFindex co-sign** of the 4 deployments (external).
-4. Fill the ⛔ rows in `docs/scf-t1-completion-report.md` +
+4. **DeFindex co-sign** of the 4 deployments (external).
+5. Fill the ⛔ rows in `docs/scf-t1-completion-report.md` +
    `docs/scf-t3-completion-report.md` (vault IDs, receipt-token addresses, tx
    hashes), then file.
 

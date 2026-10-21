@@ -9,7 +9,7 @@
 //               the auto-deleverage path is operational on a real contract.
 //
 //   --execute --runs N   (needs KEEPER_SECRET) — the live keeper loop: for each
-//               run read HF, submit rebalance_keeper(caller), read HF after,
+//               run read HF, submit rebalance_keeper(), read HF after,
 //               record before/after + tx hash, and respect the on-chain
 //               REBALANCE_COOLDOWN (60 ledgers). The operator induces a stressed
 //               position between runs (see the runbook block printed at start).
@@ -154,11 +154,11 @@ async function execute() {
   for (let i = 1; i <= RUNS; i++) {
     const before = await simRead("health_factor");
     const beforeHf = before != null ? Number(before as bigint) / HF_SCALAR : null;
-    // Submit rebalance_keeper(caller=keeper).
+    // Submit rebalance_keeper() as the keeper.
     let tx: string | null = null, note = "submitted";
     try {
       const acc = await server.getAccount(keeper.publicKey());
-      const op = new Contract(VAULT).call("rebalance_keeper", new Contract(keeper.publicKey()).address().toScVal());
+      const op = new Contract(VAULT).call("rebalance_keeper");
       const built = new TransactionBuilder(acc, { fee: BASE_FEE, networkPassphrase: PASSPHRASE })
         .addOperation(op).setTimeout(60).build();
       const prepared = await server.prepareTransaction(built);

@@ -21,11 +21,13 @@ import {
   buildVaultRebalanceXdr,
   formatUsd,
   formatHf,
+  targetLeverage,
   type VaultConfig,
   type VaultStats,
 } from "../defindex";
 import { fetchAllReserves, getKnownPools, getActiveNetwork, type ReserveStats } from "../blend";
-import { getAquariusListing, AQUARIUS_SWAP_URL } from "../aquarius_listings";
+import { getAquariusListing } from "../aquarius_listings";
+import { quoteReceiptSwap, buildAquariusSwapXdr, DEFAULT_SLIPPAGE_BPS } from "../aquarius_trade";
 import { getState } from "../app/state";
 import { signAndSubmit } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
@@ -62,8 +64,18 @@ interface VaultViewState {
 
 // ── Detail rendering ───────────────────────────────────────────────────────
 
-/** Build the receipt-token / "Trade on Aquarius" block for a vault. */
-function aquariusBlock(vault: VaultConfig): HTMLElement {
+/**
+ * Receipt-token block: the secondary exit. Sells vault share tokens for the
+ * underlying on Aquarius in-app, so a depositor can leave without calling
+ * `withdraw` (which unwinds the leverage loop on-chain).
+ *
+ * Quotes come from the Aquarius router's `estimate_swap` view and are refreshed
+ * as the amount changes; `out_min` is derived from the quote and enforced
+ * on-chain, so a pool that moves between quote and submission reverts instead of
+ * filling at a worse price. Degrades to a notice when the asset is not listed on
+ * the active network.
+ */
+function aquariusBlock(vault: VaultConfig, addr: string | null, h: DetailHandlers): HTMLElement {
   const listing = getAquariusListing(vault.assetSymbol);
   const headRow = el("div", { class: "vault-receipt__row" }, [
     el("span", { class: "vault-receipt__label" }, [
@@ -111,24 +123,174 @@ function aquariusBlock(vault: VaultConfig): HTMLElement {
     );
   }
 
-  const tradeBtn = Button({
+  // Not listed on this network yet — say so, and don't offer a trade UI that
+  // cannot work. (Listings are per-network; see aquarius_listings.ts.)
+  if (!listing) {
+    return el("div", { class: "vault-receipt" }, [
+      headRow,
+      el("p", { class: "vault-note" }, [
+        tt(
+          "vault.listingPending",
+          `Not yet listed on Aquarius for this network. Once listed, the receipt token trades against ${vault.assetSymbol} here, so you can exit your leveraged position without unwinding the loop on-chain.`,
+        ),
+      ]),
+    ]);
+  }
+
+  const sym = vault.assetSymbol;
+  const scalar = 10 ** vault.decimals;
+
+  // Receipt balance is fetched once per render; the panel is rebuilt on refresh.
+  let receiptBalance = 0;
+  const balanceHint = el("p", { class: "vault-wallet-hint" }, [
+    addr ? "Receipt balance: —" : tt("vault.tradeConnect", "Connect your wallet to trade your receipt token."),
+  ]);
+  if (addr) {
+    void fetchTokenBalance(listing.shareToken, addr, vault.decimals)
+      .then((b) => {
+        receiptBalance = b;
+        balanceHint.textContent = `Receipt balance: ${b.toFixed(4)}`;
+      })
+      .catch(() => {
+        /* balance stays 0; the quote path still works, Max just does nothing */
+      });
+  }
+
+  const sellInput = Input({
+    placeholder: "0.00",
+    inputMode: "decimal",
+    suffix: tt("vault.shares", "shares"),
+    disabled: !addr,
+    onMax: () => {
+      if (receiptBalance > 0) {
+        // Same rounding buffer as the withdraw field — a max that reverts on a
+        // dust mismatch is worse than one that leaves a fraction behind.
+        const safe = Math.max(receiptBalance - 0.001, 0);
+        sellField.value = safe > 0 ? safe.toFixed(4) : "";
+        void refreshQuote();
+      }
+    },
+  });
+  const sellField = sellInput.querySelector("input") as HTMLInputElement;
+
+  const quoteLine = el("p", { class: "vault-note vault-receipt__quote" }, [
+    addr
+      ? tt("vault.tradeQuoteHint", "Enter an amount to see what you would receive.")
+      : tt("vault.tradeConnect", "Connect your wallet to trade your receipt token."),
+  ]);
+
+  const sellBtn = Button({
     variant: "secondary",
     fullWidth: true,
-    children: `${tt("vault.tradeCta", "Trade on Aquarius")} ↗`,
+    disabled: true,
+    children: `${tt("vault.tradeCta", "Sell shares for")} ${sym}`,
   });
-  on(tradeBtn, "click", () => window.open(AQUARIUS_SWAP_URL, "_blank", "noopener"));
 
-  const note = listing?.shareToken
-    ? tt(
-        "vault.tradeOnAquariusSub",
-        `Your vault deposit is a transferable SEP-41 receipt token. It trades against ${vault.assetSymbol} on Aquarius, so you can exit without unwinding the loop on-chain.`,
-      )
-    : tt(
-        "vault.listingPending",
-        "Listing on Aquarius after the mainnet vault launch. The receipt token will trade against USDC, so you can exit your leveraged position without unwinding the loop on-chain.",
+  // Latest quote wins: a slow response for an old amount must not overwrite a
+  // newer one, or the user signs against a figure that isn't on screen.
+  let quoteSeq = 0;
+  let lastQuote: { amountIn: bigint; minOut: bigint } | null = null;
+
+  async function refreshQuote() {
+    const seq = ++quoteSeq;
+    const amount = Number.parseFloat(sellField.value);
+    lastQuote = null;
+    sellBtn.disabled = true;
+
+    if (!amount || amount <= 0) {
+      quoteLine.textContent = tt("vault.tradeQuoteHint", "Enter an amount to see what you would receive.");
+      return;
+    }
+    quoteLine.textContent = tt("vault.tradeQuoting", "Fetching quote…");
+
+    try {
+      const amountIn = BigInt(Math.round(amount * scalar));
+      const q = await quoteReceiptSwap(listing!, listing!.shareToken, listing!.pairedWith, amountIn);
+      if (seq !== quoteSeq) return; // superseded
+
+      const out = Number(q.amountOut) / scalar;
+      const min = Number(q.minOut) / scalar;
+      const impact = q.impactBps == null ? "" : `  ·  impact ${(q.impactBps / 100).toFixed(2)}%`;
+      quoteLine.textContent = `≈ ${out.toFixed(4)} ${sym}  (min ${min.toFixed(4)} at ${
+        DEFAULT_SLIPPAGE_BPS / 100
+      }% slippage)${impact}`;
+      lastQuote = { amountIn, minOut: q.minOut };
+      sellBtn.disabled = !addr;
+    } catch (err) {
+      if (seq !== quoteSeq) return;
+      // A thin or unreachable pool must read as "no quote", never as a zero price.
+      quoteLine.textContent = `${tt("vault.tradeNoQuote", "No quote available")} — ${
+        (err as Error)?.message ?? err
+      }`;
+    }
+  }
+
+  let quoteTimer: ReturnType<typeof setTimeout> | undefined;
+  on(sellField, "input", () => {
+    clearTimeout(quoteTimer);
+    quoteTimer = setTimeout(() => void refreshQuote(), 400);
+  });
+
+  async function runSell() {
+    if (!addr || !listing || !lastQuote) return;
+    const amount = Number.parseFloat(sellField.value);
+    sellBtn.disabled = true;
+    txShow(["Build", "Sign swap", "Submit", "Confirmed"]);
+    try {
+      txStep(0);
+      const xdr = await buildAquariusSwapXdr(
+        addr,
+        listing,
+        listing.shareToken,
+        listing.pairedWith,
+        lastQuote.amountIn,
+        lastQuote.minOut,
       );
+      txStep(1);
+      const hash = await signAndSubmit(xdr, `Sell ${amount} shares`);
+      txStep(3);
+      txHide();
+      toast(`Sold ${amount} shares for ${sym}`, "success", hash);
+      sellField.value = "";
+      lastQuote = null;
+      h.refresh();
+    } catch (err) {
+      txStep(1, true);
+      txHide();
+      toast(`Swap failed: ${(err as Error)?.message ?? err}`, "error");
+    } finally {
+      sellBtn.disabled = !addr || !lastQuote;
+    }
+  }
+  on(sellBtn, "click", () => void runSell());
 
-  return el("div", { class: "vault-receipt" }, [headRow, tradeBtn, el("p", { class: "vault-note" }, [note])]);
+  const poolLink = listing.poolAddress
+    ? el(
+        "a",
+        { class: "vault-receipt__explorer", href: expertContractUrl(listing.poolAddress), target: "_blank", rel: "noopener" },
+        [tt("vault.tradePool", "Pool ↗")],
+      )
+    : null;
+
+  const note = el("p", { class: "vault-note" }, [
+    tt(
+      "vault.tradeOnAquariusSub",
+      `Sells your receipt token on Aquarius instead of unwinding the loop. Settles against the ${sym} pool at the quoted price.`,
+    ),
+    ...(poolLink ? [" ", poolLink] : []),
+  ]);
+
+  return el("div", { class: "vault-receipt" }, [
+    headRow,
+    el("div", { class: "vault-field" }, [
+      el("label", { class: "vault-field__label" }, [tt("vault.tradeSell", "Sell receipt token")]),
+      sellInput,
+    ]),
+    quoteLine,
+    sellBtn,
+    balanceHint,
+    note,
+  ]);
 }
 
 /** Header (title + Strategy/Auto-rebalance badges) + 3 MetricHero. */
@@ -196,7 +358,16 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
   const collateral = ready && stats ? `${fmt(stats.collateralValue)} ${sym}` : "—";
   const debt = ready && stats ? `${fmt(stats.debtValue)} ${sym}` : "—";
   const equity = ready && stats ? `${fmt(stats.totalEquity)} ${sym}` : "—";
-  const loops = ready ? `${vault.targetLoops}×` : "—";
+  // Realized leverage next to the configured one. The two diverge: a
+  // rebalance unwinds leverage to protect the position and only the keeper's
+  // `releverage` puts it back, so `targetHf` is where the vault aims, not where
+  // it is. `stats.leverage` is collateral ÷ equity measured from the live
+  // position — the same figure the net APY above is computed from.
+  const configuredLeverage = targetLeverage(vault, stats?.lFactor ?? 1);
+  const leverage =
+    ready && stats
+      ? `${stats.leverage.toFixed(2)}× / ${configuredLeverage.toFixed(2)}×`
+      : "—";
 
   const stats4 = el("div", { class: "vault-stats4" }, [
     StatCard({
@@ -221,10 +392,10 @@ function strategyCard(vault: VaultConfig, stats: VaultStats | null): HTMLElement
     }),
     StatCard({
       label: lbl(
-        tt("vault.loops", "Loops"),
-        "How many times collateral was re-supplied and borrowed to build the leverage.",
+        tt("vault.leverage", "Leverage"),
+        "What the vault is actually levered at right now (collateral ÷ equity), against the target its loop configuration aims for. Rebalances lower it to protect the position; the keeper restores it.",
       ),
-      value: loops,
+      value: leverage,
     }),
   ]);
 
@@ -305,11 +476,11 @@ function yourPositionCard(
   const depField = depInput.querySelector("input") as HTMLInputElement;
 
   // ── Projected HF preview (before → after) for the entered deposit amount ──
-  // The loop levers every deposit at the same ratio, so the marginal HF is the
-  // deterministic target c·S/(S−1); the aggregate "after" HF blends it with the
-  // current position. Computed entirely client-side from cFactor + targetLoops
-  // and the position's underlying collateral/debt — no extra on-chain call.
-  const targetLeverage = (1 - vault.cFactor ** (vault.targetLoops + 1)) / (1 - vault.cFactor);
+  // Every deposit is levered to `targetHf`, so the marginal HF is that target;
+  // the aggregate "after" HF blends it with the current position. Computed
+  // entirely client-side from cFactor + targetHf + the live l_factor and the
+  // position's underlying collateral/debt — no extra on-chain call.
+  const depositLeverage = targetLeverage(vault, stats?.lFactor ?? 1);
   const depPreview = el("div", { class: "vault-row vault-dep-preview", style: "display:none" }, []);
   function updateDepPreview() {
     const amount = Number.parseFloat(depField.value);
@@ -320,9 +491,15 @@ function yourPositionCard(
     const cBefore = stats?.collateralValue ?? 0;
     const dBefore = stats?.debtValue ?? 0;
     const hfBefore = stats?.healthFactor ?? Number.POSITIVE_INFINITY;
-    const cAfter = cBefore + amount * targetLeverage;
-    const dAfter = dBefore + amount * (targetLeverage - 1);
-    const hfAfter = dAfter > 0 ? (vault.cFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
+    const cAfter = cBefore + amount * depositLeverage;
+    const dAfter = dBefore + amount * (depositLeverage - 1);
+    // Same formula the contract uses: the debt side carries the pool's
+    // liability factor (HF = B × c_factor × l_factor / D). Without it the
+    // "after" figure would sit optimistically above the "before" one, which is
+    // read straight from `health_factor()`.
+    const lFactor = stats?.lFactor ?? 1;
+    const hfAfter =
+      dAfter > 0 ? (vault.cFactor * lFactor * cAfter) / dAfter : Number.POSITIVE_INFINITY;
     const fb = formatHf(hfBefore);
     const fa = formatHf(hfAfter);
     depPreview.replaceChildren(
@@ -336,7 +513,7 @@ function yourPositionCard(
         el("span", { class: fb.cls }, [fb.text]),
         " → ",
         el("span", { class: fa.cls }, [fa.text]),
-        el("span", { class: "vault-dep-preview__lev" }, [`  (~${targetLeverage.toFixed(2)}×)`]),
+        el("span", { class: "vault-dep-preview__lev" }, [`  (~${depositLeverage.toFixed(2)}×)`]),
       ]),
     );
     depPreview.style.display = "";
@@ -492,7 +669,7 @@ function yourPositionCard(
     el("div", { class: "vault-field" }, [el("label", { class: "vault-field__label" }, [`Withdraw ${sym}`]), wdInput]),
     wdBtn,
     walletHint,
-    el("div", { class: "vault-divider" }, [aquariusBlock(vault)]),
+    el("div", { class: "vault-divider" }, [aquariusBlock(vault, addr, h)]),
     el("div", { class: "vault-rebal" }, [rebalBtn, rebalHint]),
   ];
 

@@ -27,6 +27,8 @@ export { Input } from "./input";
 export type { InputProps } from "./input";
 export { Sparkline, colorForTone } from "./sparkline";
 export type { SparklineProps } from "./sparkline";
+export { ApyChart } from "./apyChart";
+export type { ApyChartProps } from "./apyChart";
 
 // Forms
 export { Select } from "./select";

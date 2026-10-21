@@ -15,9 +15,10 @@ rollback, comms, and the post-launch watch.
 
 - [ ] **Release gate green** — see `docs/testing-programme.md` (80 contract tests,
       parity, lint/build, e2e, audit, gitleaks).
-- [ ] Final mainnet WASM built (`cargo build --target wasm32v1-none --release`),
-      hash recorded — includes D2 receipt token + D3 admin/upgrade.
-- [ ] Mainnet config signed off: per-asset `c_factor` (≤ pool), `target_loops`,
+- [ ] Final mainnet WASM built (`cargo build --locked --target wasm32v1-none --release`),
+      hash recorded and matching CI's `Wasm hash` for the same commit — includes
+      D2 receipt token + D3 admin/upgrade.
+- [ ] Mainnet config signed off: per-asset `c_factor` (≤ pool), `target_hf`,
       `min_hf`, `orange_hf`, `reward_threshold` (see `project` notes /
       `mainnet-go-live-runbook.md`).
 - [ ] **Keeper** account created + funded; pubkey set. **Admin** account created
@@ -31,11 +32,15 @@ rollback, comms, and the post-launch watch.
 
 Follow **`docs/mainnet-go-live-runbook.md`**:
 1. `DRY_RUN=1` deploy to validate args/config.
-2. Deploy 4 strategy + 4 share-token contracts; `set_share_token` +
-   `set_swap_account` each; persist `deployed-vaults.mainnet.json`.
-3. Wire `frontend/src/defindex.ts` `MAINNET_VAULTS` from the deploy output (helper
+2. Deploy 4 strategies (each deploys its own share token); `set_swap_account` +
+   `set_min_harvest_rate` each (the last gates the Broker
+   harvest path — see the runbook's `MIN_HARVEST_RATE_*` note); persist
+   `deployed-vaults.mainnet.json`.
+3. **Open each vault**: the keeper (or admin) makes its first deposit. Until
+   then the vault refuses every other deposit (`NotAuthorized`, `#418`).
+4. Wire `frontend/src/defindex.ts` `MAINNET_VAULTS` from the deploy output (helper
    `scripts/wire_mainnet_vaults.ts`).
-4. Per-asset **deposit → loop → withdraw** with small amounts; capture tx hashes
+5. Per-asset **deposit → loop → withdraw** with small amounts; capture tx hashes
    on Stellar Expert (b/d-token deltas). Record for the completion report.
 
 ## 2. List receipt tokens on Aquarius (T3.2)
