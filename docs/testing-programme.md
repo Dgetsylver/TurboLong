@@ -101,6 +101,16 @@ Executed at/after deploy; evidence captured for the SCF completion report.
   `docs/aquarius-listing-runbook.md`.
 - **Broker swap session** end-to-end through the keeper harvest path.
 
+## Beyond automation — moderated user testing
+
+The layers above prove the maths and the wiring are right. They can't tell
+whether a person understands the liquidation risk they are signing for. That is
+covered by the moderated user-testing programme (Milestone 4) in
+[`docs/user-testing/`](user-testing/README.md): scored deposit → monitor → exit
+sessions weighted toward LatAm and DeFi-native users, with findings triaged into
+`user-testing` + `severity:*` issues and reported by
+`scripts/user_testing_report.ts`.
+
 ---
 
 ## Known coverage gaps & planned work

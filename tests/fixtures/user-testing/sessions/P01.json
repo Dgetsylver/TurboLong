@@ -1,0 +1,24 @@
+{
+  "id": "P01", "date": "2026-11-03", "status": "completed", "facilitator": "AA", "build": "deaff57",
+  "language": "es", "cohorts": ["latam", "defi-native"], "country": "AR", "device": "desktop", "wallet": "freighter", "network": "testnet",
+  "tasks": [
+    { "id": "O1", "score": 1, "timeSec": 240, "seq": 3, "assists": 1, "issues": [9001] },
+    { "id": "O2", "score": null, "skipReason": "already in language" },
+    { "id": "D1", "score": 2, "timeSec": 150, "seq": 5 },
+    { "id": "D2", "score": 2, "timeSec": 310, "seq": 5 },
+    { "id": "D3", "score": 2, "timeSec": 95, "seq": 6 },
+    { "id": "M1", "score": 2, "timeSec": 70, "seq": 6 },
+    { "id": "M2", "score": 2, "timeSec": 60, "seq": 6 },
+    { "id": "M3", "score": 2, "timeSec": 180, "seq": 4 },
+    { "id": "M4", "score": null, "skipReason": "time" },
+    { "id": "M5", "score": null, "skipReason": "time" },
+    { "id": "X1", "score": 2, "timeSec": 120, "seq": 6 },
+    { "id": "X2", "score": 2, "timeSec": 45, "seq": 7 },
+    { "id": "X3", "score": 1, "timeSec": 170, "seq": 4, "assists": 1, "issues": [9003] }
+  ],
+  "comprehension": [
+    { "id": "C1", "result": "correct" }, { "id": "C2", "result": "correct" }, { "id": "C3", "result": "partial" },
+    { "id": "C4", "result": "incorrect" }, { "id": "C5", "result": "correct" }, { "id": "C6", "result": "incorrect" }
+  ],
+  "sus": [4, 2, 4, 2, 4, 3, 4, 2, 4, 2], "confidence": 5, "issues": [9002, 9004]
+}

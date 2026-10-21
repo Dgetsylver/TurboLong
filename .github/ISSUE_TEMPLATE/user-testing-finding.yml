@@ -1,0 +1,72 @@
+name: User-testing finding
+description: A problem observed in a moderated user-testing session (Milestone 4). Filed at triage, one issue per distinct problem.
+title: "[UT] "
+labels: ["user-testing"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per **distinct problem**, not per session. If the problem is already filed, add the
+        session ID to that issue and to the session record's `issues` list instead.
+        After filing, apply **one** `severity:*` label and **at least one** `flow:*` label
+        (see `docs/user-testing/README.md` § Severity). Never paste wallet addresses, names, emails or
+        recording links. Refer to participants only by session ID (P01, P02…).
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Proposed severity
+      description: Mirror this with the matching severity label once triage agrees.
+      options:
+        - S1 critical — fund-loss/liquidation risk, risk misunderstood, or journey blocked
+        - S2 high — task failed or needed facilitator help; serious confusion
+        - S3 medium — friction, hesitation, self-recovered error
+        - S4 low — cosmetic, wording, translation polish
+    validations:
+      required: true
+  - type: dropdown
+    id: flow
+    attributes:
+      label: Where in the journey
+      multiple: true
+      options:
+        - onboard (landing, wallet connect, network, tour, language)
+        - deposit (open leveraged position / vault deposit)
+        - monitor (dashboard, health factor, APY/PnL, alerts, status)
+        - exit (remove funds, close, vault withdraw, receipt-token trade)
+    validations:
+      required: true
+  - type: input
+    id: sessions
+    attributes:
+      label: Seen in sessions
+      description: Session IDs, plus the task where it happened.
+      placeholder: "P03 (D2), P07 (D2), P09 (D3)"
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened
+      description: What the participant did and said. Short verbatim quotes are best (translate and keep the original).
+      placeholder: |
+        P03 dragged leverage to max, read "1.02" as the APY multiplier, and said "¿1.02 es bueno, no?"
+        P07 asked the facilitator what "HF" meant before signing.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened / why it matters
+      description: The success criterion the participant missed, and the consequence on real funds if any.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Language, device, wallet, network, screen/route, and recording timestamps (kept in the private notes, not here).
+      placeholder: "es · mobile (Android, Chrome) · LOBSTR · testnet · #/trade · 00:14:20 in P03 notes"
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix (optional)
