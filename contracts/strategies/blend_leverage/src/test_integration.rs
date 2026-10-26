@@ -2521,13 +2521,15 @@ fn test_deleverage_improves_hf_and_preserves_equity_after_rates_accrue() {
 
     // Repay a fifth of the debt through the REAL production deleverage path.
     let repay = pre_d * d_rate / SCALAR_12 / 5;
-    let (b_removed, d_removed) = e.as_contract(&strategy, || {
-        blend_pool::submit_deleverage(&e, repay, &config).unwrap()
+    let settled = e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, repay, &config)
     });
 
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
     let post_b = post.collateral.get(config.reserve_id).unwrap_or(0);
     let post_d = post.liabilities.get(config.reserve_id).unwrap_or(0);
+    assert_eq!(settled, (post_b, post_d), "returns the settled position");
+    let (b_removed, d_removed) = (pre_b - post_b, pre_d - post_d);
     let post_equity = post_b * b_rate / SCALAR_12 - post_d * d_rate / SCALAR_12;
     let post_hf =
         compute_health_factor(post_b, post_d, b_rate, d_rate, config.c_factor, l_factor).unwrap();
@@ -2608,12 +2610,14 @@ fn test_deleverage_repays_exactly_the_requested_amount() {
     let (b_rate, d_rate) = blend_pool::get_rates(&e, &config);
     assert!(d_rate > SCALAR_12, "precondition: interest must accrue");
     let pre = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
+    let pre_b = pre.collateral.get(config.reserve_id).unwrap_or(0);
     let pre_d = pre.liabilities.get(config.reserve_id).unwrap_or(0);
 
     let repay = pre_d * d_rate / SCALAR_12 / 10;
-    let (b_removed, d_removed) = e.as_contract(&strategy, || {
-        blend_pool::submit_deleverage(&e, repay, &config).unwrap()
+    let (post_b, post_d) = e.as_contract(&strategy, || {
+        blend_pool::submit_deleverage(&e, repay, &config)
     });
+    let (b_removed, d_removed) = (pre_b - post_b, pre_d - post_d);
 
     // Blend converts at the live rates: the repay burns floor(repay / d_rate)
     // d-tokens and the withdraw ceil(repay / b_rate) b-tokens — nothing more.
@@ -2689,7 +2693,7 @@ fn test_rebalance_round_trip_restores_hf_to_target() {
 
     // Execute the real deleverage on the real pool.
     e.as_contract(&strategy, || {
-        blend_pool::submit_deleverage(&e, repay, &config).unwrap();
+        blend_pool::submit_deleverage(&e, repay, &config);
     });
 
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -2807,7 +2811,7 @@ fn test_partial_unwind_dry_run_matches_onchain_within_rounding() {
 
     // ── Execute the real deleverage on the real pool ──────────────────────────
     e.as_contract(&strategy, || {
-        blend_pool::submit_deleverage(&e, repay, &config).unwrap();
+        blend_pool::submit_deleverage(&e, repay, &config);
     });
 
     let post = pool::Client::new(&e, &pool_addr).get_positions(&strategy);
@@ -2899,7 +2903,7 @@ fn deleverage_scenario(
 
     let repay = compute_partial_unwind(b, d, b_rate, d_rate, config.c_factor, l, target).unwrap();
     e.as_contract(&strategy, || {
-        blend_pool::submit_deleverage(&e, repay, &config).unwrap()
+        blend_pool::submit_deleverage(&e, repay, &config)
     });
 
     let (b2, d2) = e.as_contract(&strategy, || {

@@ -534,11 +534,9 @@ fn unwind_to(
         return Ok((before_hf, before_hf, 0));
     }
 
-    let (b_removed, d_removed) = blend_pool::submit_deleverage(e, repay, config)?;
-
-    // HF of the settled position — the position read above less what the pool
-    // measurably removed — for the event / return.
-    let (b2, d2) = (b_tokens - b_removed, d_tokens - d_removed);
+    // HF of the settled position, as the pool reports it after the submit, for
+    // the event / return.
+    let (b2, d2) = blend_pool::submit_deleverage(e, repay, config);
     let after_hf = if d2 == 0 {
         i128::MAX
     } else {
@@ -741,14 +739,11 @@ impl BlendLeverageStrategy {
             return Ok(0);
         }
 
-        let (b_delta, d_delta) = blend_pool::submit_releverage(&e, borrow_underlying, &config)?;
-
-        // Verify against the settled position — the position read above plus
-        // what the pool measurably added — rather than a projection: the pool
-        // rounds its own conversions, and this is the direction where being wrong
-        // costs the vault. HF below the rebalance trigger reverts the whole
-        // transaction.
-        let (b2, d2) = (b_tokens + b_delta, d_tokens + d_delta);
+        // Verify against the settled position, as the pool reports it after the
+        // submit, rather than a projection: the pool rounds its own conversions,
+        // and this is the direction where being wrong costs the vault. HF below
+        // the rebalance trigger reverts the whole transaction.
+        let (b2, d2) = blend_pool::submit_releverage(&e, borrow_underlying, &config);
         let after_hf = compute_health_factor(b2, d2, b_rate, d_rate, c_factor, l_factor)?;
         if after_hf < config.orange_hf {
             return Err(StrategyError::ExternalError);
