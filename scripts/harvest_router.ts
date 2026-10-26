@@ -18,7 +18,8 @@
  *             Requires KEEPER_SECRET and is meant for the dedicated Node
  *             keeper service (not a CI runner).
  *   --loop     Keep running: re-run every INTERVAL_S (default 3600s). Combine
- *             with --execute for the production harvest keeper service.
+ *             with --execute for the production harvest keeper service. A
+ *             vault whose previous harvest is still vesting (~6h) is skipped.
  *
  * Execution flow (per vault, --execute):
  *   1. `harvest_claim()` → BLND claimed into the strategy and approved to
@@ -532,6 +533,20 @@ async function processVault(v: Vault): Promise<void> {
       brokerExecutable = false;
       console.warn(`[${v.symbol}] min_harvest_rate unset; Broker path disabled (see set_min_harvest_rate)`);
     }
+  }
+
+  // The contract refuses a harvest until the previous one's shares have
+  // vested (~6h), so the hourly loop skips the vault until then rather than
+  // sending a claim that reverts. A contract predating `unvested_shares` has
+  // no such cooldown.
+  try {
+    const unvested = BigInt((await simCall(v.strategyId, "unvested_shares")) as bigint | number);
+    if (unvested > 0n) {
+      console.log(`[${v.symbol}] previous harvest still vesting (${unvested} shares); skipping`);
+      return;
+    }
+  } catch {
+    // no `unvested_shares` view: harvest as before
   }
 
   // 1. Claim BLND emissions (also approves the swap account for the Broker pull).

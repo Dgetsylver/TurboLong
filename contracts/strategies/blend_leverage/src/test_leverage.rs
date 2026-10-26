@@ -3,12 +3,12 @@
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
     compute_equity, compute_equity_up, compute_health_factor, compute_lever_in,
-    compute_partial_unwind, compute_releverage, effective_c_factor, harvest_floor, lock_profit,
-    locked_profit, priced_equity, prorate_floor, shares_to_underlying, underlying_to_shares,
-    unwind_rounding_margin,
+    compute_partial_unwind, compute_releverage, effective_c_factor, harvest_floor, is_wiped_out,
+    priced_shares, prorate_floor, shares_to_underlying, underlying_to_shares, unvested_shares,
+    unvested_shares_down, unwind_rounding_margin,
 };
 use crate::reserves::LeverageReserves;
-use crate::storage::LockedProfit;
+use crate::storage::UnvestedShares;
 use soroban_fixed_point_math::FixedPoint;
 
 /// `l_factor = 1.0` — the pool applies no liability markup, so HF reduces to the
@@ -237,22 +237,39 @@ fn test_underlying_to_shares_refuses_shares_with_nothing_behind_them() {
         total_d_tokens: 1_000_0000000,
         ..wiped_out.clone()
     };
-    // Equity left, but no more than the harvest profit still locked.
-    let all_locked = LeverageReserves {
-        total_b_tokens: 1_050_0000000,
-        total_d_tokens: 1_000_0000000,
-        ..wiped_out.clone()
-    };
 
-    for (reserves, locked) in [(wiped_out, 0), (underwater, 0), (all_locked, 50_0000000)] {
-        assert_eq!(
-            underlying_to_shares(500_0000000, &reserves, locked),
-            Err(crate::StrategyError::InvalidSharesMinted),
-            "{:?} with {} locked",
-            reserves,
-            locked
-        );
+    for reserves in [wiped_out, underwater] {
+        for unvested in [0, 100_0000000] {
+            assert!(is_wiped_out(&reserves).unwrap());
+            assert_eq!(
+                underlying_to_shares(500_0000000, &reserves, unvested),
+                Err(crate::StrategyError::InvalidSharesMinted),
+                "{:?} with {} unvested",
+                reserves,
+                unvested
+            );
+        }
     }
+}
+
+#[test]
+fn test_unvested_shares_never_price_held_ones_at_nothing() {
+    // 50 of equity left over 1000 held shares and 1000 unvested ones, as a
+    // loss right after a harvest the size of the vault would leave. The shares
+    // are still priced, at 50 / 2000, so the vault is not wiped out and a
+    // deposit mints at that price.
+    let r = make_reserves(1_050_0000000, 1_000_0000000, 1_000_0000000);
+    let unvested = 1_000_0000000;
+
+    assert!(!is_wiped_out(&r).unwrap());
+    assert_eq!(
+        shares_to_underlying(1_000_0000000, &r, unvested).unwrap(),
+        25_0000000
+    );
+    assert_eq!(
+        underlying_to_shares(25_0000000, &r, unvested).unwrap(),
+        1_000_0000000
+    );
 }
 
 #[test]
@@ -758,7 +775,7 @@ fn test_withdraw_refused_when_underwater() {
 }
 
 // A withdrawal's slice rounds against the withdrawer, at any rates and with
-// harvest profit locked or not. The shares burned cover the amount; the
+// harvest shares unvested or not. The shares burned cover the amount; the
 // collateral rounds down and the debt up, so the slice's collateral-to-debt
 // ratio is at most the vault's and its exact value at most the burned shares'.
 // A slice of a vault with debt always carries some, so its repay is never left
@@ -798,25 +815,27 @@ fn test_a_withdrawal_slice_rounds_against_the_withdrawer() {
             // The position's exact value, in underlying × SCALAR_12.
             let value = b_tokens * b_rate - d_tokens * d_rate;
 
-            for locked in [0, equity / 3] {
+            for unvested in [0, total_shares / 3] {
                 let now = e.ledger().sequence();
-                storage::set_locked_profit(
+                storage::set_unvested_shares(
                     e,
-                    &LockedProfit {
-                        amount: locked,
-                        from: now,
-                        until: now + W,
+                    &UnvestedShares {
+                        amount: unvested,
+                        start: now,
+                        end: now + W,
                     },
                 );
-                let priced = equity - locked;
+                let priced_shares = priced_shares(&reserves, unvested).unwrap();
+                // What the holders' shares are worth.
+                let held = total_shares * equity / priced_shares;
 
-                for amount in [1, 7, priced / 1_000 + 3, priced / 3, priced] {
-                    let case = (b_tokens, locked, amount);
+                for amount in [1, 7, held / 1_000 + 3, held / 3, held] {
+                    let case = (b_tokens, unvested, amount);
                     let (burned, b, d) =
                         reserves::withdraw(e, total_shares, amount, &reserves).unwrap();
 
                     assert!(
-                        burned * priced >= amount * total_shares,
+                        burned * equity >= amount * priced_shares,
                         "{:?}: shares cover it",
                         case
                     );
@@ -826,8 +845,7 @@ fn test_a_withdrawal_slice_rounds_against_the_withdrawer() {
                         case
                     );
                     assert!(
-                        (b * b_rate - d * d_rate) * total_shares
-                            <= burned * (value - locked * SCALAR_12),
+                        (b * b_rate - d * d_rate) * priced_shares <= burned * value,
                         "{:?}: worth at most the shares burned",
                         case
                     );
@@ -871,189 +889,171 @@ fn test_harvest_increases_share_value() {
     assert_eq!(post_value - pre_value, 100_0000000); // +100 equity
 }
 
-// ── Profit release ───────────────────────────────────────────────────────────
+// ── Profit vesting ───────────────────────────────────────────────────────────
 
 const W: u32 = PROFIT_UNLOCK_LEDGERS;
 
 #[test]
-fn test_locked_profit_releases_linearly() {
-    let lock = LockedProfit {
+fn test_unvested_shares_vest_linearly() {
+    let schedule = UnvestedShares {
         amount: 1_000_0000000,
-        from: 100,
-        until: 100 + W,
+        start: 100,
+        end: 100 + W,
     };
     assert_eq!(
-        locked_profit(&lock, 100).unwrap(),
+        unvested_shares(&schedule, 100).unwrap(),
         1_000_0000000,
-        "all locked at first"
+        "all unvested at first"
     );
-    assert_eq!(locked_profit(&lock, 100 + W / 4).unwrap(), 750_0000000);
-    assert_eq!(locked_profit(&lock, 100 + W / 2).unwrap(), 500_0000000);
     assert_eq!(
-        locked_profit(&lock, 100 + W).unwrap(),
+        unvested_shares(&schedule, 100 + W / 4).unwrap(),
+        750_0000000
+    );
+    assert_eq!(
+        unvested_shares(&schedule, 100 + W / 2).unwrap(),
+        500_0000000
+    );
+    assert_eq!(
+        unvested_shares(&schedule, 100 + W).unwrap(),
         0,
-        "all released at the end"
+        "all vested at the end"
     );
-    assert_eq!(locked_profit(&lock, 100 + 2 * W).unwrap(), 0);
-    assert_eq!(locked_profit(&LockedProfit::default(), 100).unwrap(), 0);
+    assert_eq!(unvested_shares(&schedule, 100 + 2 * W).unwrap(), 0);
+    assert_eq!(unvested_shares(&UnvestedShares::default(), 100).unwrap(), 0);
 }
 
 #[test]
-fn test_lock_profit_gives_a_fresh_gain_the_full_window() {
-    assert_eq!(
-        lock_profit(&LockedProfit::default(), 100_0000000, 500, W).unwrap(),
-        LockedProfit {
-            amount: 100_0000000,
-            from: 500,
-            until: 500 + W,
-        }
-    );
-
-    // A harvest that adds no equity locks nothing.
-    for gain in [0, -5] {
+fn test_unvested_shares_round_up_for_exits_and_down_for_mints() {
+    // 10 shares over 3 ledgers: 6⅔ left after one.
+    let schedule = UnvestedShares {
+        amount: 10,
+        start: 0,
+        end: 3,
+    };
+    assert_eq!(unvested_shares(&schedule, 1).unwrap(), 7);
+    assert_eq!(unvested_shares_down(&schedule, 1).unwrap(), 6);
+    for now in [0, 3, 4] {
         assert_eq!(
-            lock_profit(&LockedProfit::default(), gain, 500, W).unwrap(),
-            LockedProfit::default()
-        );
-    }
-}
-
-#[test]
-fn test_lock_profit_without_gain_keeps_the_schedule() {
-    let lock = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
-    let rebased = lock_profit(&lock, 0, W / 4, W).unwrap();
-
-    assert_eq!(rebased.until, lock.until, "same end date");
-    for now in [W / 4, W / 2, 3 * W / 4, W] {
-        assert_eq!(
-            locked_profit(&rebased, now).unwrap(),
-            locked_profit(&lock, now).unwrap(),
-            "same release at ledger {}",
+            unvested_shares_down(&schedule, now).unwrap(),
+            unvested_shares(&schedule, now).unwrap(),
+            "exact at ledger {}",
             now
         );
     }
 }
 
 #[test]
-fn test_lock_profit_stacks_to_the_gain_weighted_end() {
-    // Half of a first harvest is still locked when an equal second one lands:
-    // 50 with half a window to go and 100 with a whole one release together
-    // until (50 × W/2 + 100 × W) / 150 = 5W/6 from now.
-    let first = lock_profit(&LockedProfit::default(), 100_0000000, 0, W).unwrap();
-    let both = lock_profit(&first, 100_0000000, W / 2, W).unwrap();
+fn test_a_deposit_is_minted_over_the_unvested_count_rounded_down() {
+    // 1000 held shares and 6⅔ unvested ones over 1000 of equity plus 7 stroops.
+    // Over the 7 the exits round to, a deposit of 1000 would be minted 1000
+    // shares; over the 6 it is minted against, a fraction of a share less,
+    // rounded down to one fewer.
+    let e = Env::default();
+    with_contract(&e, |e, _| {
+        let now = e.ledger().sequence();
+        storage::set_unvested_shares(
+            e,
+            &UnvestedShares {
+                amount: 10,
+                start: now,
+                end: now + 3,
+            },
+        );
+        e.ledger().with_mut(|li| li.sequence_number += 1);
+        let r = make_reserves(4_000_0000007, 3_000_0000000, 1_000_0000000);
+        storage::set_total_shares(e, r.total_shares);
 
-    assert_eq!(
-        both,
-        LockedProfit {
-            amount: 150_0000000,
-            from: W / 2,
-            until: W / 2 + 5 * W / 6,
-        }
-    );
+        let (minted, _, _) = reserves::deposit(e, 1_000_0000000, 0, &r).unwrap();
+        assert_eq!(minted, 1_000_0000000 - 1, "priced over 6 unvested shares");
+    });
 }
 
 #[test]
-fn test_hourly_harvests_keep_about_half_a_window_locked() {
-    // A week of hourly harvests of `g`. The release settles on the harvest rate,
-    // and what is locked just after a harvest on g × (W + h) / 2h — 12.5 harvests
-    // for a one-day window — instead of growing without bound. Nothing is created
-    // or lost: everything harvested is either released or still locked.
-    let g = 10_0000000_i128;
-    let h = 720_u32; // one hour
-    let mut lock = LockedProfit::default();
-    let mut now = 0_u32;
-    let (mut harvested, mut released) = (0_i128, 0_i128);
+fn test_unvested_shares_are_priced_like_held_ones() {
+    // Equity 1100 over 1000 held shares and 100 unvested ones: each share is
+    // worth 1.
+    let r = make_reserves(8_800_0000000, 7_700_0000000, 1_000_0000000);
+    let unvested = 100_0000000;
 
-    for _ in 0..7 * 24 {
-        let before = locked_profit(&lock, now).unwrap();
-        lock = lock_profit(&lock, g, now, W).unwrap();
-        harvested += g;
-        assert_eq!(locked_profit(&lock, now).unwrap(), before + g);
-
-        now += h;
-        released += before + g - locked_profit(&lock, now).unwrap();
-    }
-
-    assert_eq!(harvested, released + locked_profit(&lock, now).unwrap());
-    assert!(
-        (lock.amount - g * 25 / 2).abs() <= g / 10,
-        "locked just after a harvest settles on 12.5 harvests: {}",
-        lock.amount
-    );
-    let last_hour = lock.amount - locked_profit(&lock, lock.from + h).unwrap();
-    assert!(
-        (last_hour - g).abs() <= g / 100,
-        "an hour releases one harvest's worth: {}",
-        last_hour
-    );
-}
-
-#[test]
-fn test_priced_equity_nets_out_locked_profit() {
-    let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000); // equity 1000
-
-    assert_eq!(priced_equity(&r, 0).unwrap(), 1_000_0000000);
-    assert_eq!(priced_equity(&r, 100_0000000).unwrap(), 900_0000000);
-    // While 100 of the 1000 is locked, shares are priced at 900.
+    assert_eq!(priced_shares(&r, unvested).unwrap(), 1_100_0000000);
     assert_eq!(
-        shares_to_underlying(1_000_0000000, &r, 100_0000000).unwrap(),
-        900_0000000
-    );
-    assert_eq!(
-        underlying_to_shares(900_0000000, &r, 100_0000000).unwrap(),
+        shares_to_underlying(1_000_0000000, &r, unvested).unwrap(),
         1_000_0000000
     );
-    // More locked than there is equity (only after a loss) prices at zero.
-    assert_eq!(priced_equity(&r, 5_000_0000000).unwrap(), 0);
+    assert_eq!(
+        underlying_to_shares(1_000_0000000, &r, unvested).unwrap(),
+        1_000_0000000
+    );
+
+    // A loss of half the equity halves what both are worth: it falls on the
+    // unvested shares too, pro rata.
+    let halved = make_reserves(4_400_0000000, 3_850_0000000, 1_000_0000000);
+    assert_eq!(
+        shares_to_underlying(1_000_0000000, &halved, unvested).unwrap(),
+        500_0000000
+    );
+    assert_eq!(
+        shares_to_underlying(unvested, &halved, unvested).unwrap(),
+        50_0000000
+    );
 }
 
 #[test]
-fn test_harvest_locks_the_equity_it_adds() {
+fn test_harvest_mints_its_gain_as_unvested_shares() {
     let e = Env::default();
     with_contract(&e, |e, _| {
         let r = make_reserves(8_000_0000000, 7_000_0000000, 1_000_0000000);
         storage::set_total_shares(e, r.total_shares);
 
-        // +500 b / +400 d: the harvest adds 100 of equity, all of it locked.
+        // +500 b / +400 d: the harvest adds 100 of equity, minted as 100
+        // unvested shares at the share price of 1.
         let updated = reserves::harvest(e, 500_0000000, 400_0000000, &r).unwrap();
         let value = |e: &Env| {
-            shares_to_underlying(1_000_0000000, &updated, reserves::locked_profit(e).unwrap())
-                .unwrap()
+            shares_to_underlying(
+                1_000_0000000,
+                &updated,
+                reserves::unvested_shares(e).unwrap(),
+            )
+            .unwrap()
         };
-        assert_eq!(reserves::locked_profit(e).unwrap(), 100_0000000);
+        assert_eq!(reserves::unvested_shares(e).unwrap(), 100_0000000);
         assert_eq!(value(e), 1_000_0000000, "no jump at the harvest");
 
         e.ledger().with_mut(|li| li.sequence_number += W / 2);
-        assert_eq!(value(e), 1_050_0000000, "half released after half a window");
+        assert_eq!(
+            value(e),
+            1_100_0000000 * 1_000_0000000 / 1_050_0000000,
+            "half the shares vested after half a window"
+        );
 
         e.ledger().with_mut(|li| li.sequence_number += W / 2);
-        assert_eq!(value(e), 1_100_0000000, "all released after the window");
-        assert_eq!(reserves::locked_profit(e).unwrap(), 0);
+        assert_eq!(value(e), 1_100_0000000, "all vested after the window");
+        assert_eq!(reserves::unvested_shares(e).unwrap(), 0);
     });
 }
 
 #[test]
-fn test_withdraw_leaves_the_locked_profit_behind() {
-    // Equity 1100, of which a harvest's 100 was locked this ledger: shares are
-    // priced at 1000. Withdrawing 500 burns half the shares and takes out 500 —
-    // not the 550 half the position holds. The leaver's 50 of the locked profit
-    // stays for the holders it is still being released to.
+fn test_withdraw_leaves_the_unvested_shares_slice_behind() {
+    // Equity 1100 over 1000 held shares and a harvest's 100 unvested ones,
+    // minted this ledger: each share is worth 1. Withdrawing 500 burns half the
+    // held shares and takes out 500 — not the 550 half the position holds. The
+    // unvested shares keep their slice for the holders they still vest to.
     let e = Env::default();
     with_contract(&e, |e, _| {
         let r = make_reserves(8_800_0000000, 7_700_0000000, 1_000_0000000);
         let now = e.ledger().sequence();
-        storage::set_locked_profit(
+        storage::set_unvested_shares(
             e,
-            &LockedProfit {
+            &UnvestedShares {
                 amount: 100_0000000,
-                from: now,
-                until: now + W,
+                start: now,
+                end: now + W,
             },
         );
 
         let (burned, b, d) = reserves::withdraw(e, 1_000_0000000, 500_0000000, &r).unwrap();
 
-        assert_eq!(burned, 500_0000000, "half the shares");
+        assert_eq!(burned, 500_0000000, "half the held shares");
         assert_eq!((b, d), (4_000_0000000, 3_500_0000000));
         assert_eq!(
             b - d,
@@ -1061,6 +1061,221 @@ fn test_withdraw_leaves_the_locked_profit_behind() {
             "500 of equity, at the position's leverage"
         );
     });
+}
+
+// ── Random walk ──────────────────────────────────────────────────────────────
+
+/// xorshift64: a deterministic stream for the random walk below.
+struct Rng(u64);
+
+impl Rng {
+    /// Uniform in `lo..=hi`.
+    fn range(&mut self, lo: i128, hi: i128) -> i128 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        lo + (self.0 % (hi - lo + 1) as u64) as i128
+    }
+}
+
+/// The position's exact equity, in underlying × SCALAR_12.
+fn exact_equity(r: &LeverageReserves) -> i128 {
+    r.total_b_tokens * r.b_rate - r.total_d_tokens * r.d_rate
+}
+
+/// Whether the share price at `after` is at least the one at `before`, each the
+/// exact equity over the holders' shares and the unvested ones. `None` when the
+/// comparison overflows i128.
+fn price_not_lower(
+    before: (&LeverageReserves, i128),
+    after: (&LeverageReserves, i128),
+) -> Option<bool> {
+    let (r0, u0) = before;
+    let (r1, u1) = after;
+    let lhs = exact_equity(r1).checked_mul(priced_shares(r0, u0).unwrap())?;
+    let rhs = exact_equity(r0).checked_mul(priced_shares(r1, u1).unwrap())?;
+    Some(lhs >= rhs)
+}
+
+/// The b/d tokens that supply `amount × (1 + extra)` and borrow `amount × extra`
+/// of underlying at `r`'s rates, rounded as Blend mints them.
+fn lever_in_tokens(amount: i128, extra: i128, r: &LeverageReserves) -> (i128, i128) {
+    let b = (amount * (1 + extra))
+        .fixed_mul_floor(SCALAR_12, r.b_rate)
+        .unwrap();
+    let d = (amount * extra)
+        .fixed_mul_ceil(SCALAR_12, r.d_rate)
+        .unwrap();
+    (b, d)
+}
+
+/// One random walk of `steps` deposits, withdrawals, redemptions, harvests,
+/// losses and ledgers passing, by four holders, at rates off 1.0. Ends early
+/// with `None`, rather than failing, once a price comparison would overflow
+/// i128.
+fn random_walk(e: &Env, seed: u64, steps: u32) -> Option<()> {
+    let mut rng = Rng(seed);
+    let b_rate = SCALAR_12 + rng.range(1, SCALAR_12 / 5);
+    let d_rate = b_rate + rng.range(1, SCALAR_12 / 10);
+    let mut r = LeverageReserves {
+        total_shares: 0,
+        total_b_tokens: 0,
+        total_d_tokens: 0,
+        b_rate,
+        d_rate,
+    };
+    // Shares held by the four holders, then by the lockup.
+    let mut held = [0_i128; 5];
+    let mut heavy_loss_left = true;
+
+    for step in 0..steps {
+        let case = (seed, step);
+        let u = reserves::unvested_shares(e).unwrap();
+        let holder = rng.range(0, 3) as usize;
+        let op = if r.total_shares == 0 {
+            0
+        } else {
+            rng.range(0, 5)
+        };
+        let checked = match op {
+            // A deposit. Taken straight back out, its shares are worth at most
+            // what it added.
+            0 => {
+                let amount = rng.range(1_0000000, 100_0000000);
+                let (b, d) = lever_in_tokens(amount, rng.range(0, 3), &r);
+                let (minted, lockup, after) = reserves::deposit(e, b, d, &r).unwrap();
+                let (rb, rd) = reserves::redeem(e, minted, minted, &after).unwrap();
+                assert!(
+                    rb * b_rate - rd * d_rate <= b * b_rate - d * d_rate,
+                    "{:?}: a deposit's round trip profits",
+                    case
+                );
+                let ok = r.total_shares == 0 || price_not_lower((&r, u), (&after, u))?;
+                held[holder] += minted;
+                held[4] += lockup;
+                r = after;
+                ok
+            }
+            // A withdrawal of part of a holder's worth, or all their shares.
+            1 | 2 if held[holder] > 0 => {
+                let (burn, b, d) = if op == 1 {
+                    let worth = shares_to_underlying(held[holder], &r, u).unwrap();
+                    let amount = worth * rng.range(1, 8) / 8;
+                    if amount == 0 {
+                        continue;
+                    }
+                    reserves::withdraw(e, held[holder], amount, &r).unwrap()
+                } else {
+                    let (b, d) = reserves::redeem(e, held[holder], held[holder], &r).unwrap();
+                    (held[holder], b, d)
+                };
+                let after = reserves::commit_withdraw(e, burn, b, d, &r).unwrap();
+                let ok = price_not_lower((&r, u), (&after, u))?;
+                held[holder] -= burn;
+                r = after;
+                ok
+            }
+            // A harvest, once the last one has vested (`check_vested`; until
+            // then, ledgers pass instead): it raises the holders' worth by
+            // rounding dust at most.
+            3 if u == 0 => {
+                let (b, d) = lever_in_tokens(rng.range(100_000, 50_0000000), rng.range(0, 3), &r);
+                let equity = compute_equity(&r).unwrap();
+                let worth = shares_to_underlying(r.total_shares, &r, u).unwrap();
+                let per_share = equity / priced_shares(&r, u).unwrap();
+                let after = reserves::harvest(e, b, d, &r).unwrap();
+                let u_after = reserves::unvested_shares(e).unwrap();
+                let jump =
+                    shares_to_underlying(after.total_shares, &after, u_after).unwrap() - worth;
+                let gain = (b * b_rate - d * d_rate) / SCALAR_12;
+                assert!(
+                    jump <= 10 + per_share + 3 * gain / equity.max(1),
+                    "{:?}: a harvest of {} jumps the holders' worth by {}",
+                    case,
+                    gain,
+                    jump
+                );
+                let ok = price_not_lower((&r, u), (&after, u_after))?;
+                r = after;
+                ok
+            }
+            // A loss, as a liquidation or bad debt leaves; once per walk, a
+            // near-total one.
+            4 => {
+                let pct = if heavy_loss_left && rng.range(0, 20) == 0 {
+                    heavy_loss_left = false;
+                    99
+                } else {
+                    rng.range(1, 20)
+                };
+                let loss = compute_equity(&r).unwrap() * pct / 100;
+                r.total_b_tokens -= loss.fixed_mul_ceil(SCALAR_12, b_rate).unwrap();
+                assert!(
+                    !is_wiped_out(&r).unwrap(),
+                    "{:?}: equity left, yet wiped out",
+                    case
+                );
+                true
+            }
+            // Ledgers passing, sometimes past the whole window: the price only
+            // rises as the shares vest.
+            _ => {
+                let ledgers = if rng.range(0, 3) == 0 {
+                    rng.range(W as i128 / 2, 2 * W as i128)
+                } else {
+                    rng.range(0, 1_000)
+                };
+                e.ledger()
+                    .with_mut(|li| li.sequence_number += ledgers as u32);
+                let u_after = reserves::unvested_shares(e).unwrap();
+                assert!(u_after <= u, "{:?}: unvested shares grew", case);
+                price_not_lower((&r, u), (&r, u_after))?
+            }
+        };
+        assert!(checked, "{:?}: the share price fell (op {})", case, op);
+
+        // The share count is the holders', and every unit of equity is either
+        // theirs or the unvested shares': none is left that no one holds.
+        assert_eq!(r.total_shares, held.iter().sum::<i128>(), "{:?}", case);
+        assert_eq!(storage::get_total_shares(e), r.total_shares, "{:?}", case);
+        let u = reserves::unvested_shares(e).unwrap();
+        let equity = compute_equity(&r).unwrap();
+        let worth = held
+            .iter()
+            .chain([u].iter())
+            .map(|s| shares_to_underlying(*s, &r, u).unwrap())
+            .sum::<i128>();
+        assert!(
+            worth <= equity && worth >= equity - 6,
+            "{:?}: shares worth {} against {} of equity",
+            case,
+            worth,
+            equity
+        );
+    }
+    Some(())
+}
+
+// No step a holder takes, no harvest and no ledger passing lowers the share
+// price for the others, a deposit's round trip never profits, a harvest moves
+// the price by rounding dust at most, and the equity is always all held: by
+// the holders, or by the unvested shares vesting to them.
+#[test]
+fn test_a_random_walk_never_lowers_the_share_price() {
+    let mut completed = 0;
+    for seed in 1..=40 {
+        let e = Env::default();
+        with_contract(&e, |e, _| {
+            if random_walk(e, seed, 300).is_some() {
+                completed += 1;
+            }
+        });
+    }
+    assert!(
+        completed >= 30,
+        "only {} of 40 walks ran to the end",
+        completed
+    );
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────

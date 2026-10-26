@@ -18,21 +18,21 @@ pub const FIRST_DEPOSIT_LOCKUP: i128 = 1000;
 /// in the share math first.
 pub const MAX_ASSET_DECIMALS: u32 = 7;
 
-/// Ledgers over which each harvest's profit is released into the share price
-/// (~1 day at ~5s/ledger).
+/// Ledgers over which each harvest's profit vests into the share price (~6
+/// hours at ~5s/ledger), and so the least that separates two harvests.
 ///
 /// A harvest levers BLND emissions into the position in one step. Priced in at
 /// once, all of it would go to whoever holds shares at that ledger: a deposit
 /// just before a harvest and a withdraw just after would collect emissions
 /// earned before the deposit, and `harvest_claim` announces the amount minutes
-/// ahead. Released linearly instead, a position collects only what is released
-/// while it is in, the same as holding.
+/// ahead. Vested linearly instead, a position collects only what vests while it
+/// is in.
 ///
-/// The cost falls on exits: a holder who leaves forgoes the part of recent
-/// harvests not yet released — about half a window of yield with hourly
-/// harvests — which stays with the holders it is still being released to. A
-/// longer window also spreads a delayed harvest's backlog more thinly.
-pub const PROFIT_UNLOCK_LEDGERS: u32 = 17_280;
+/// A harvest is refused until the previous one's shares have all vested, so
+/// each vests over a window of its own. The cost falls on exits: a holder who
+/// leaves forgoes the part of the last harvest not yet vested — half a window
+/// of yield on average — which stays with the holders it is still vesting to.
+pub const PROFIT_UNLOCK_LEDGERS: u32 = 4_320;
 
 /// Minimum ledgers between keeper re-leverages (~1 day at ~5s/ledger).
 ///
