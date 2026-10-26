@@ -272,18 +272,15 @@ fn unwind_requests(
 /// stroop or two of rounding), so the unwind goes through as long as the pool
 /// has a few stroops free. The two transfers net to zero.
 ///
-/// Returns (b_tokens_removed, d_tokens_removed).
-pub fn submit_deleverage(
-    e: &Env,
-    repay_underlying: i128,
-    config: &Config,
-) -> Result<(i128, i128), StrategyError> {
+/// Returns the settled position `(b_tokens, d_tokens)`, read back from the pool
+/// — the position as it stands when there is no debt or nothing to repay.
+pub fn submit_deleverage(e: &Env, repay_underlying: i128, config: &Config) -> (i128, i128) {
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
 
     let (pre_b, pre_d) = get_strategy_positions(e, config);
     if pre_d == 0 || repay_underlying <= 0 {
-        return Ok((0, 0));
+        return (pre_b, pre_d);
     }
 
     let requests: Vec<Request> = vec![
@@ -302,16 +299,7 @@ pub fn submit_deleverage(
 
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
-    let (new_b, new_d) = get_strategy_positions(e, config);
-
-    Ok((
-        pre_b
-            .checked_sub(new_b)
-            .ok_or(StrategyError::UnderflowOverflow)?,
-        pre_d
-            .checked_sub(new_d)
-            .ok_or(StrategyError::UnderflowOverflow)?,
-    ))
+    get_strategy_positions(e, config)
 }
 
 /// Re-leverage: supply `amount` of the underlying as collateral and borrow the
@@ -321,22 +309,18 @@ pub fn submit_deleverage(
 /// checked against the final state. The order is not about funding — the two
 /// transfers net to zero, so the strategy needs no balance of its own either
 /// way. The pool health-checks the finished request set, and the caller
-/// (`releverage`) re-reads the position afterwards and reverts if its HF
-/// settled below `orange_hf`.
+/// (`releverage`) reverts if the position returned here settled below
+/// `orange_hf`.
 ///
-/// Returns `(b_token_delta, d_token_delta)` — both positive on success.
-pub fn submit_releverage(
-    e: &Env,
-    amount: i128,
-    config: &Config,
-) -> Result<(i128, i128), StrategyError> {
+/// Returns the settled position `(b_tokens, d_tokens)`, read back from the pool
+/// — the position as it stands when `amount` is not positive.
+pub fn submit_releverage(e: &Env, amount: i128, config: &Config) -> (i128, i128) {
     if amount <= 0 {
-        return Ok((0, 0));
+        return get_strategy_positions(e, config);
     }
 
     let pool_client = BlendPoolClient::new(e, &config.pool);
     let strategy = e.current_contract_address();
-    let (pre_b, pre_d) = get_strategy_positions(e, config);
 
     let requests: Vec<Request> = vec![
         e,
@@ -354,16 +338,7 @@ pub fn submit_releverage(
 
     pool_client.submit_with_allowance(&strategy, &strategy, &strategy, &requests);
 
-    let (new_b, new_d) = get_strategy_positions(e, config);
-
-    Ok((
-        new_b
-            .checked_sub(pre_b)
-            .ok_or(StrategyError::UnderflowOverflow)?,
-        new_d
-            .checked_sub(pre_d)
-            .ok_or(StrategyError::UnderflowOverflow)?,
-    ))
+    get_strategy_positions(e, config)
 }
 
 // ── Claim BLND emissions ─────────────────────────────────────────────────────
