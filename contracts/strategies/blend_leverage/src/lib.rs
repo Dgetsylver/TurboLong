@@ -201,7 +201,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::current(&e, &config);
-        check_not_wiped_out(&e, &reserves)?;
+        check_not_wiped_out(&reserves)?;
         if reserves.total_shares == 0 && from != storage::get_keeper(&e) && from != Self::admin(&e)
         {
             return Err(StrategyError::NotAuthorized);
@@ -233,8 +233,11 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         }
 
         let user_shares = token.balance(&from);
-        let underlying_balance =
-            shares_to_underlying(user_shares, &updated_reserves, reserves::locked_profit(&e)?)?;
+        let underlying_balance = shares_to_underlying(
+            user_shares,
+            &updated_reserves,
+            reserves::unvested_shares(&e)?,
+        )?;
 
         event::emit_deposit(&e, String::from_str(&e, STRATEGY_NAME), amount, from);
 
@@ -245,14 +248,16 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
     ///
     /// Callable only by the keeper. Claims from both supply and borrow emission
     /// sides, swaps BLND → underlying via Soroswap, then re-leverages proceeds.
-    /// No new shares are minted: the proceeds raise per-share equity gradually,
-    /// released over `PROFIT_UNLOCK_LEDGERS` (see `reserves::harvest`).
+    /// No share tokens are minted: the proceeds raise per-share equity gradually,
+    /// as the shares they are priced at vest over `PROFIT_UNLOCK_LEDGERS` (see
+    /// `reserves::harvest`).
     ///
     /// Refused while a split harvest is awaiting settlement: this path would
     /// swap the pending claim's BLND and lever the proceeds in the same call,
     /// leaving `harvest_reinvest` to measure a settlement whose underlying has
     /// already gone into the pool. Settle through `harvest_reinvest` (which
-    /// covers the Soroswap route) rather than interleaving the two.
+    /// covers the Soroswap route) rather than interleaving the two. Refused too
+    /// while the previous harvest's shares are vesting (`check_vested`).
     ///
     /// **The swap always runs with a floor** (see `blend_pool::perform_reinvest`):
     /// the stricter of the keeper's `amount_out_min`, optionally carried in
@@ -272,13 +277,14 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         if storage::get_pending_harvest(&e).is_some() {
             return Err(StrategyError::DeadlineExpired);
         }
+        check_vested(&e)?;
 
         let config = storage::get_config(&e);
 
         // Pre-reinvest snapshot: `reserves::harvest` adds the measured deltas to
         // this, so it must be read before the pool settles the reinvest.
         let reserves = reserves::current(&e, &config);
-        check_not_wiped_out(&e, &reserves)?;
+        check_not_wiped_out(&reserves)?;
 
         // Claim BLND from both supply and borrow sides
         blend_pool::claim(&e, &config);
@@ -299,8 +305,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let (b_delta, d_delta, realized_underlying) =
             blend_pool::perform_reinvest(&e, &config, caller_min)?;
 
-        // Lock the gain rather than mint shares: it reaches the share price as it
-        // is released (`reserves::harvest`).
+        // Mint the gain as unvested shares rather than share tokens: it reaches
+        // the share price as they vest (`reserves::harvest`).
         if b_delta > 0 {
             let updated_reserves = reserves::harvest(&e, b_delta, d_delta, &reserves)?;
             // In underlying, as `harvest_reinvest` reports it: what the swap of
@@ -310,7 +316,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
                 String::from_str(&e, STRATEGY_NAME),
                 realized_underlying,
                 keeper,
-                shares_to_underlying(SCALAR_12, &updated_reserves, reserves::locked_profit(&e)?)?,
+                shares_to_underlying(SCALAR_12, &updated_reserves, reserves::unvested_shares(&e)?)?,
             );
 
             // Emit custom event for realized underlying
@@ -369,7 +375,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
         let underlying_balance = shares_to_underlying(
             remaining_shares,
             &updated_reserves,
-            reserves::locked_profit(&e)?,
+            reserves::unvested_shares(&e)?,
         )?;
 
         // The amount paid, which rounding can leave a few stroops under `amount`.
@@ -380,7 +386,8 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
     /// Query the underlying asset balance for an address.
     ///
-    /// balance = caller_shares / total_shares × (supply_value - debt_value)
+    /// balance = caller_shares / (total_shares + unvested_shares) ×
+    /// (supply_value - debt_value)
     fn balance(e: Env, from: Address) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
 
@@ -392,7 +399,7 @@ impl DeFindexStrategyTrait for BlendLeverageStrategy {
 
         let config = storage::get_config(&e);
         let reserves = reserves::current(&e, &config);
-        shares_to_underlying(user_shares, &reserves, reserves::locked_profit(&e)?)
+        shares_to_underlying(user_shares, &reserves, reserves::unvested_shares(&e)?)
     }
 }
 
@@ -465,12 +472,24 @@ fn check_settled_position(e: &Env, config: &Config) -> Result<(), StrategyError>
 }
 
 /// Refuse new equity — a deposit or a harvest — into a vault whose shares have
-/// no priced equity behind them (`leverage::is_wiped_out`). A deposit would be
-/// minted shares against nothing and diluted into the old ones, and a harvest
-/// would restart the vault at a dust share price.
-fn check_not_wiped_out(e: &Env, reserves: &LeverageReserves) -> Result<(), StrategyError> {
-    if leverage::is_wiped_out(reserves, reserves::locked_profit(e)?)? {
+/// no equity behind them (`leverage::is_wiped_out`). A deposit would be minted
+/// shares against nothing and diluted into the old ones, and a harvest would
+/// restart the vault at a dust share price.
+fn check_not_wiped_out(reserves: &LeverageReserves) -> Result<(), StrategyError> {
+    if leverage::is_wiped_out(reserves)? {
         return Err(StrategyError::InvalidSharesMinted);
+    }
+    Ok(())
+}
+
+/// Refuse a harvest — any of `harvest`, `harvest_claim` and `harvest_reinvest`
+/// — until the previous one's shares have all vested, so each harvest vests
+/// over a window of its own (see `PROFIT_UNLOCK_LEDGERS`). `harvest_claim` is
+/// refused too, so the Broker is never handed BLND whose proceeds could not be
+/// settled. `DeadlineExpired`, as for the keeper's other calls made too early.
+fn check_vested(e: &Env) -> Result<(), StrategyError> {
+    if reserves::unvested_shares(e)? > 0 {
+        return Err(StrategyError::DeadlineExpired);
     }
     Ok(())
 }
@@ -824,8 +843,9 @@ impl BlendLeverageStrategy {
     /// Get current strategy position details.
     /// Returns (total_equity, total_shares, b_tokens, d_tokens, b_rate, d_rate).
     ///
-    /// `total_equity` is the whole position's, harvest profit not yet released
-    /// included; shares are priced at `total_equity − locked_profit()`.
+    /// `total_equity` is the whole position's, harvest profit not yet vested
+    /// included; shares are priced at `total_equity / (total_shares +
+    /// unvested_shares())`.
     pub fn position(e: Env) -> Result<(i128, i128, i128, i128, i128, i128), StrategyError> {
         extend_instance_ttl(&e);
         let config = storage::get_config(&e);
@@ -841,11 +861,11 @@ impl BlendLeverageStrategy {
         ))
     }
 
-    /// Harvest profit still being released into the share price, in
-    /// underlying (see `PROFIT_UNLOCK_LEDGERS`).
-    pub fn locked_profit(e: Env) -> Result<i128, StrategyError> {
+    /// Shares harvest profit was minted as, still vesting to the holders (see
+    /// `PROFIT_UNLOCK_LEDGERS`). Not part of the share token's supply.
+    pub fn unvested_shares(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
-        reserves::locked_profit(&e)
+        reserves::unvested_shares(&e)
     }
 
     /// Current contract version (1 at deploy, bumped on each upgrade).
@@ -1061,10 +1081,13 @@ impl BlendLeverageStrategy {
     /// it, so a fresh claim proceeds — and if that stale claim's BLND did leave
     /// and never came back, `harvest_unsettled` is emitted rather than the
     /// obligation quietly disappearing.
+    ///
+    /// Refused while the previous harvest's shares are vesting (`check_vested`).
     pub fn harvest_claim(e: Env) -> Result<i128, StrategyError> {
         extend_instance_ttl(&e);
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
+        check_vested(&e)?;
 
         let config = storage::get_config(&e);
         let now = e.ledger().sequence();
@@ -1153,6 +1176,8 @@ impl BlendLeverageStrategy {
     /// allowance and no BLND can have left, so re-leveraging idle underlying
     /// owes nothing.
     ///
+    /// Refused while the previous harvest's shares are vesting (`check_vested`).
+    ///
     /// Emits a `harvest_route` event `(route, amount_in, amount_out_min, realized)`
     /// for the keeper's A/B telemetry. Returns realized underlying re-leveraged.
     pub fn harvest_reinvest(
@@ -1165,6 +1190,7 @@ impl BlendLeverageStrategy {
         let keeper = storage::get_keeper(&e);
         keeper.require_auth();
         check_positive_amount(amount_in)?;
+        check_vested(&e)?;
         let config = storage::get_config(&e);
         let strategy = e.current_contract_address();
 
@@ -1188,7 +1214,7 @@ impl BlendLeverageStrategy {
         // Pre-reinvest snapshot — see the trait `harvest` for why it must be
         // taken before the pool settles.
         let reserves = reserves::current(&e, &config);
-        check_not_wiped_out(&e, &reserves)?;
+        check_not_wiped_out(&reserves)?;
 
         let (b_delta, d_delta, realized) = if via_soroswap {
             blend_pool::perform_reinvest(&e, &config, amount_out_min)?
@@ -1224,7 +1250,7 @@ impl BlendLeverageStrategy {
                 String::from_str(&e, STRATEGY_NAME),
                 realized,
                 keeper.clone(),
-                shares_to_underlying(SCALAR_12, &updated, reserves::locked_profit(&e)?)?,
+                shares_to_underlying(SCALAR_12, &updated, reserves::unvested_shares(&e)?)?,
             );
         }
 

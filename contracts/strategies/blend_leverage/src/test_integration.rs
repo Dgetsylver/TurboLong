@@ -4640,9 +4640,12 @@ fn test_trait_harvest_takes_the_stricter_of_the_caller_and_admin_floors() {
 
     // Stricter than the floor, on the other hand, is the caller's business: they
     // may know the live price, which the admin's slack floor deliberately does not.
+    // (The next harvest waits for this one's shares to vest.)
     StellarAssetClient::new(&e, &blnd)
         .mock_all_auths()
         .mint(&strategy, &1_000_0000000);
+    e.ledger()
+        .with_mut(|li| li.sequence_number += crate::constants::PROFIT_UNLOCK_LEDGERS);
     sclient.harvest(&keeper, &Some(min_out_data(&e, 45_0000000)));
     assert_eq!(router.last_amount_out_min(), 45_0000000);
 }
@@ -4691,13 +4694,21 @@ fn test_trait_harvest_below_the_reward_threshold_needs_no_floor() {
     assert_eq!(router.last_amount_out_min(), 0, "no swap ran");
 }
 
-// ── Harvest profit is released, not sniped ───────────────────────────────────
+// ── Harvest profit vests, it is not sniped ───────────────────────────────────
+
+/// What the harvest shares still unvested are worth, in underlying: the harvest
+/// profit not yet in the holders' share price.
+fn unvested_value(sclient: &crate::BlendLeverageStrategyClient) -> i128 {
+    let (equity, shares, ..) = sclient.position();
+    let unvested = sclient.unvested_shares();
+    unvested * equity / (shares + unvested)
+}
 
 // A deposit just before a harvest and a withdraw just after used to collect a
 // pro-rata share of emissions earned before the deposit, and `harvest_claim`
 // announces the amount minutes ahead. The harvest's profit now reaches the
 // share price over `PROFIT_UNLOCK_LEDGERS`: the round trip takes out what it
-// put in, and the holder who was there gets the harvest as it is released.
+// put in, and the holder who was there gets the harvest as it vests.
 #[test]
 fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
     let e = Env::default();
@@ -4725,15 +4736,15 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
     mint(&attacker, 1_000_0000000);
     sclient.deposit(&1_000_0000000, &attacker);
 
-    // The harvest: 100 of Broker proceeds, levered in. Its equity is locked
-    // rather than priced in.
+    // The harvest: 100 of Broker proceeds, levered in. Its equity is minted as
+    // unvested shares rather than priced in.
     let proceeds = 100_0000000_i128;
     mint(&strategy, proceeds);
     sclient.harvest_reinvest(&proceeds, &false, &0);
-    let locked = sclient.locked_profit();
+    let locked = unvested_value(&sclient);
     assert!(
         (proceeds - locked).abs() <= 10,
-        "the harvest's equity is locked: {}",
+        "the harvest's equity is unvested: {}",
         locked
     );
 
@@ -4747,29 +4758,35 @@ fn test_harvest_profit_cannot_be_sniped_by_a_round_trip() {
         attacker_back
     );
 
-    // The honest holder gets all of it as it is released — the attacker's
-    // half included, since the attacker left it behind.
+    // The honest holder gets all of it as it vests — the attacker's half
+    // included, since the attacker left it behind.
+    let (equity, held, ..) = sclient.position();
+    let unvested = sclient.unvested_shares();
     let honest_gain = |ledgers: u32| {
         e.ledger().with_mut(|li| li.sequence_number += ledgers);
         sclient.balance(&honest) - honest_before
     };
     let tolerance = locked / 1_000;
     assert!(honest_gain(0).abs() <= 10, "no jump at the harvest");
+    // Half the unvested shares are left after half a window, priced alongside
+    // the holder's.
     let half = honest_gain(crate::constants::PROFIT_UNLOCK_LEDGERS / 2);
+    let expected = equity * held / (held + unvested / 2) - honest_before;
     assert!(
-        (half - locked / 2).abs() <= tolerance,
-        "half released after half a window: {} of {}",
+        (half - expected).abs() <= tolerance,
+        "half the shares vested after half a window: {} of {}, expected {}",
         half,
-        locked
+        locked,
+        expected
     );
     let all = honest_gain(crate::constants::PROFIT_UNLOCK_LEDGERS / 2);
     assert!(
         (all - locked).abs() <= tolerance,
-        "all released after the window: {} of {}",
+        "all vested after the window: {} of {}",
         all,
         locked
     );
-    assert_eq!(sclient.locked_profit(), 0);
+    assert_eq!(sclient.unvested_shares(), 0);
 
     // And it is real: the honest holder can take it out.
     sclient.withdraw(&sclient.balance(&honest), &honest, &honest);
@@ -4797,7 +4814,7 @@ enum HarvestRoute {
 /// just before a harvest worth ~100 of equity and withdraws everything in the
 /// same ledger. Returns `(attacker_back, honest_jump, locked)` — what the
 /// attacker got back, how far the honest holder's balance moved at the harvest
-/// ledger, and the profit the harvest locked.
+/// ledger, and what the shares the harvest minted unvested are worth.
 fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
     let e = Env::default();
     e.mock_all_auths();
@@ -4845,7 +4862,7 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
             sclient.harvest_reinvest(&1, &true, &0);
         }
     }
-    let locked = sclient.locked_profit();
+    let locked = unvested_value(&sclient);
     let honest_jump = sclient.balance(&honest) - honest_before;
 
     sclient.withdraw(&sclient.balance(&attacker), &attacker, &attacker);
@@ -4854,7 +4871,8 @@ fn round_trip_around_a_harvest(route: HarvestRoute) -> (i128, i128, i128) {
 }
 
 // The round trip above, on every other route that levers harvest equity in.
-// Each locks its gain the same way, so none hands the attacker half of it.
+// Each mints its gain as unvested shares the same way, so none hands the
+// attacker half of it.
 #[test]
 fn test_no_harvest_route_lets_a_round_trip_collect_the_harvest() {
     for route in [
@@ -4865,7 +4883,7 @@ fn test_no_harvest_route_lets_a_round_trip_collect_the_harvest() {
         let (attacker_back, honest_jump, locked) = round_trip_around_a_harvest(route);
         assert!(
             (locked - 100_0000000).abs() <= 10,
-            "{:?}: the harvest's equity must be locked: {}",
+            "{:?}: the harvest's equity must be unvested: {}",
             route,
             locked
         );
@@ -4882,6 +4900,53 @@ fn test_no_harvest_route_lets_a_round_trip_collect_the_harvest() {
             attacker_back
         );
     }
+}
+
+// A harvest is refused, by every route and at the claim, until the previous
+// one's shares have all vested: each harvest vests over a window of its own.
+#[test]
+fn test_a_harvest_is_refused_until_the_previous_one_has_vested() {
+    let e = Env::default();
+    e.mock_all_auths();
+    e.cost_estimate().budget().reset_unlimited();
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
+    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (strategy, sclient, _router, keeper) =
+        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+    sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+    let mint = |to: &Address, amount: i128| {
+        StellarAssetClient::new(&e, &token)
+            .mock_all_auths()
+            .mint(to, &amount)
+    };
+
+    mint(&strategy, 100_0000000);
+    sclient.harvest_reinvest(&100_0000000, &false, &0);
+    mint(&strategy, 10_0000000);
+    let refused = || {
+        let too_early = Some(Ok(StrategyError::DeadlineExpired));
+        assert_eq!(sclient.try_harvest(&keeper, &None).err(), too_early);
+        assert_eq!(sclient.try_harvest_claim().err(), too_early);
+        assert_eq!(
+            sclient.try_harvest_reinvest(&10_0000000, &false, &0).err(),
+            too_early
+        );
+        assert_eq!(sclient.try_harvest_reinvest(&1, &true, &0).err(), too_early);
+    };
+    refused();
+
+    // A ledger short of the window, some of the shares are still unvested.
+    e.ledger().with_mut(|li| {
+        li.sequence_number += crate::constants::PROFIT_UNLOCK_LEDGERS - 1;
+    });
+    assert!(sclient.unvested_shares() > 0);
+    refused();
+
+    // At its end, the next harvest goes through and starts a window of its own.
+    e.ledger().with_mut(|li| li.sequence_number += 1);
+    assert_eq!(sclient.unvested_shares(), 0);
+    sclient.harvest(&keeper, &None);
+    assert!(sclient.unvested_shares() > 0);
 }
 
 // When Blend refuses the levered reinvest — the pool on ice here (no new
@@ -5245,92 +5310,135 @@ fn take_equity(e: &Env, pool_addr: &Address, strategy: &Address, token: &Address
     });
 }
 
-// A loss inside a harvest's release window comes out of the priced equity in
-// full. One that leaves the vault no more equity than is still locked prices
-// the shares at nothing, so deposits, harvests and exits are all refused, as
-// for a wiped-out vault, until enough of the lock is released for the shares
-// to be worth something again.
-#[test]
-fn test_a_loss_inside_the_release_window_closes_the_vault_until_it_is_released() {
-    let e = Env::default();
+/// A vault the keeper holds 1,000 of, in which a harvest has just minted ~100
+/// of profit as unvested shares and a loss has then left 50 of equity: less
+/// than the harvest added. Returns `(strategy, client, keeper, token)`.
+fn loss_inside_the_vesting_window<'a>(
+    e: &Env,
+) -> (
+    Address,
+    crate::BlendLeverageStrategyClient<'a>,
+    Address,
+    Address,
+) {
     e.mock_all_auths();
     e.cost_estimate().budget().reset_unlimited();
-    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(&e);
-    seed_pool_liquidity(&e, &pool_addr, &token, 100_000_0000000);
+    let (pool_addr, token, blnd, _blend, _deployer) = setup_blend_env(e);
+    seed_pool_liquidity(e, &pool_addr, &token, 100_000_0000000);
     let (strategy, sclient, _router, keeper) =
-        setup_trait_harvest(&e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
+        setup_trait_harvest(e, &pool_addr, &token, &blnd, 1_000_0000000, 500_000);
     sclient.set_min_harvest_rate(&TEST_MIN_HARVEST_RATE);
+
+    StellarAssetClient::new(e, &token)
+        .mock_all_auths()
+        .mint(&strategy, &100_0000000);
+    sclient.harvest_reinvest(&100_0000000, &false, &0);
+    assert!(
+        sclient.unvested_shares() > 0,
+        "precondition: the harvest minted unvested shares"
+    );
+
+    let (equity, ..) = sclient.position();
+    take_equity(e, &pool_addr, &strategy, &token, equity - 50_0000000);
+    let (equity, ..) = sclient.position();
+    assert_eq!(equity, 50_0000000, "precondition: 50 of equity left");
+    (strategy, sclient, keeper, token)
+}
+
+// A loss inside a harvest's vesting window falls on every share pro rata, the
+// unvested ones included, so the holders keep their part of what is left. A
+// deposit made just after collects only its part of what vests while it is
+// in. (Had the harvest's gain been held back as an amount of underlying, the
+// loss would have come out of the holders' equity alone: it would have priced
+// their shares at nothing, and a deposit made as the hold-back was released
+// below the equity would have bought nearly all the shares and collected the
+// 50.)
+#[test]
+fn test_a_loss_inside_the_vesting_window_falls_on_every_share_pro_rata() {
+    let e = Env::default();
+    let (_strategy, sclient, keeper, token) = loss_inside_the_vesting_window(&e);
+    let shares = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
+
+    // The keeper's shares are worth their pro-rata part of the 50.
+    let (equity, total, ..) = sclient.position();
+    let unvested = sclient.unvested_shares();
+    let worth = sclient.balance(&keeper);
+    assert_eq!(
+        worth,
+        shares.balance(&keeper) * equity / (total + unvested),
+        "the loss falls on every share pro rata"
+    );
+    assert!(
+        worth > 45_0000000,
+        "the keeper keeps ~10/11 of the 50: {}",
+        worth
+    );
+
+    // A deposit of 10 is credited at most what it adds.
+    let bob = Address::generate(&e);
+    StellarAssetClient::new(&e, &token)
+        .mock_all_auths()
+        .mint(&bob, &10_0000000);
+    sclient.deposit(&10_0000000, &bob);
+    assert!(sclient.balance(&bob) <= 10_0000000);
+
+    // Over the window, Bob collects his part of the unvested shares' worth,
+    // as any holder would, and the keeper keeps everything the loss left it.
+    let (_, total, ..) = sclient.position();
+    let bob_part = unvested_value(&sclient) * shares.balance(&bob) / total;
+    e.ledger().with_mut(|li| {
+        li.sequence_number += crate::constants::PROFIT_UNLOCK_LEDGERS;
+    });
+    assert_eq!(sclient.unvested_shares(), 0);
+    let bob_gain = sclient.balance(&bob) - 10_0000000;
+    assert!(
+        bob_gain <= bob_part + 1,
+        "Bob collects at most his part of what vests: {} of {}",
+        bob_gain,
+        bob_part
+    );
+    assert!(
+        sclient.balance(&keeper) >= worth,
+        "the keeper keeps what the loss left it: {} of {}",
+        sclient.balance(&keeper),
+        worth
+    );
+}
+
+// Since the shares stay priced after a loss inside the vesting window, the
+// vault stays open: deposits and exits, by amount or by share count, go
+// through at once, and harvests, by either route, once the window ends, as
+// after any harvest.
+#[test]
+fn test_a_loss_inside_the_vesting_window_leaves_the_vault_open() {
+    let e = Env::default();
+    let (strategy, sclient, keeper, token) = loss_inside_the_vesting_window(&e);
     let shares = vault_share_token::VaultShareTokenClient::new(&e, &sclient.share_token());
     let mint = |to: &Address, amount: i128| {
         StellarAssetClient::new(&e, &token)
             .mock_all_auths()
             .mint(to, &amount)
     };
+    let next_window = || {
+        e.ledger()
+            .with_mut(|li| li.sequence_number += crate::constants::PROFIT_UNLOCK_LEDGERS)
+    };
 
-    // A harvest locks its profit.
-    mint(&strategy, 100_0000000);
-    sclient.harvest_reinvest(&100_0000000, &false, &0);
-    let locked = sclient.locked_profit();
-    assert!(locked > 0, "precondition: the harvest locked its profit");
-
-    // In the same window, a loss leaves the vault half that as equity.
-    let (equity, ..) = sclient.position();
-    take_equity(&e, &pool_addr, &strategy, &token, equity - locked / 2);
-    let (equity, ..) = sclient.position();
-    assert!(
-        equity > 0 && equity < sclient.locked_profit(),
-        "precondition: equity {} under the {} still locked",
-        equity,
-        sclient.locked_profit()
-    );
-    assert_eq!(
-        sclient.balance(&keeper),
-        0,
-        "the shares are priced at nothing"
-    );
-
-    // No deposit, ...
     let depositor = Address::generate(&e);
     mint(&depositor, 1_000_0000000);
-    assert_eq!(
-        sclient.try_deposit(&1_000_0000000, &depositor),
-        Err(Ok(StrategyError::InvalidSharesMinted))
-    );
-    // ... no harvest, by either route, ...
-    assert_eq!(
-        sclient.try_harvest(&keeper, &None),
-        Err(Ok(StrategyError::InvalidSharesMinted))
-    );
-    mint(&strategy, 10_0000000);
-    assert_eq!(
-        sclient.try_harvest_reinvest(&10_0000000, &false, &0),
-        Err(Ok(StrategyError::InvalidSharesMinted))
-    );
-    // ... and no exit, by amount or by share count.
-    let held = shares.balance(&keeper);
-    assert_eq!(
-        sclient.try_withdraw(&1, &keeper, &keeper),
-        Err(Ok(StrategyError::InsufficientBalance))
-    );
-    assert_eq!(
-        sclient.try_redeem(&held, &keeper, &keeper),
-        Err(Ok(StrategyError::InsufficientBalance))
-    );
-
-    // Three quarters through the window, a quarter of the lock is left, under
-    // the equity: the shares are worth the difference, and every call goes
-    // through again.
-    e.ledger().with_mut(|li| {
-        li.sequence_number += crate::constants::PROFIT_UNLOCK_LEDGERS * 3 / 4;
-    });
-    let worth = sclient.balance(&keeper);
-    assert!(worth > 0, "the shares are worth something again");
-    sclient.harvest_reinvest(&10_0000000, &false, &0);
     sclient.deposit(&1_000_0000000, &depositor);
     assert!(sclient.balance(&depositor) > 0);
+
+    let worth = sclient.balance(&keeper);
     sclient.withdraw(&(worth / 2), &keeper, &keeper);
     let paid = sclient.redeem(&shares.balance(&keeper), &keeper, &keeper);
     assert!(paid > 0 && shares.balance(&keeper) == 0);
+
+    next_window();
+    sclient.harvest(&keeper, &None);
+    next_window();
+    mint(&strategy, 10_0000000);
+    sclient.harvest_reinvest(&10_0000000, &false, &0);
 }
 
 // ── Withdrawals at accrued rates keep the share count in sync ───────────────
@@ -5998,7 +6106,7 @@ fn test_upgrade_preserves_hf_and_balance_on_live_pool_state() {
             )
             .unwrap();
             let underlying =
-                shares_to_underlying(user_shares, &r, reserves::locked_profit(&e).unwrap())
+                shares_to_underlying(user_shares, &r, reserves::unvested_shares(&e).unwrap())
                     .unwrap();
             (equity, hf, underlying, r.total_b_tokens, r.total_d_tokens)
         });

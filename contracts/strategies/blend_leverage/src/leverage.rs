@@ -1,5 +1,5 @@
 use crate::constants::{SCALAR_12, SCALAR_7};
-use crate::{reserves::LeverageReserves, storage::LockedProfit};
+use crate::{reserves::LeverageReserves, storage::UnvestedShares};
 use defindex_strategy_core::StrategyError;
 use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::{panic_with_error, Env};
@@ -79,134 +79,102 @@ pub fn compute_equity_up(reserves: &LeverageReserves) -> Result<i128, StrategyEr
         .ok_or(StrategyError::UnderflowOverflow)
 }
 
-/// The equity shares are priced at: `compute_equity` less the harvest profit
-/// still `locked` (see `locked_profit`), never taken below zero.
-pub fn priced_equity(reserves: &LeverageReserves, locked: i128) -> Result<i128, StrategyError> {
-    let equity = compute_equity(reserves)?;
-    equity
-        .checked_sub(locked.clamp(0, equity.max(0)))
+/// The share count the vault is priced over: the holders' (`total_shares`) and
+/// the harvest shares still `unvested` (see `unvested_shares`).
+pub fn priced_shares(reserves: &LeverageReserves, unvested: i128) -> Result<i128, StrategyError> {
+    reserves
+        .total_shares
+        .checked_add(unvested.max(0))
         .ok_or(StrategyError::UnderflowOverflow)
 }
 
-/// Convert shares to underlying equity amount, net of the `locked` harvest
-/// profit.
+/// Convert shares to underlying equity amount, priced over the holders' shares
+/// and the `unvested` ones.
 pub fn shares_to_underlying(
     shares: i128,
     reserves: &LeverageReserves,
-    locked: i128,
+    unvested: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 {
         return Ok(0);
     }
-    let total_equity = priced_equity(reserves, locked)?;
+    let total_equity = compute_equity(reserves)?;
     if total_equity <= 0 {
         return Ok(0);
     }
     shares
-        .fixed_mul_floor(total_equity, reserves.total_shares)
+        .fixed_mul_floor(total_equity, priced_shares(reserves, unvested)?)
         .ok_or(StrategyError::ArithmeticError)
 }
 
-/// Whether the vault has shares outstanding with no priced equity behind them:
-/// wiped out by a liquidation or bad debt, or left by a loss with no more equity
-/// than the harvest profit still locked. No fair share price exists, so it takes
-/// no new deposits and no harvests until one does.
-pub fn is_wiped_out(reserves: &LeverageReserves, locked: i128) -> Result<bool, StrategyError> {
-    Ok(reserves.total_shares > 0 && priced_equity(reserves, locked)? <= 0)
+/// Whether the vault has shares outstanding with no equity behind them: wiped
+/// out by a liquidation or bad debt. No fair share price exists, so it takes no
+/// new deposits and no harvests.
+pub fn is_wiped_out(reserves: &LeverageReserves) -> Result<bool, StrategyError> {
+    Ok(reserves.total_shares > 0 && compute_equity(reserves)? <= 0)
 }
 
-/// Convert underlying amount to shares, net of the `locked` harvest profit.
+/// Convert underlying amount to shares, priced over the holders' shares and the
+/// `unvested` ones.
 ///
 /// Refused with `InvalidSharesMinted` when shares are outstanding with no
-/// priced equity behind them (see `is_wiped_out`): there is no price to mint at.
+/// equity behind them (see `is_wiped_out`): there is no price to mint at.
 /// Otherwise the vault is priced at its equity rounded up (`compute_equity_up`)
 /// and the shares round down, so a deposit never mints more than it adds.
 pub fn underlying_to_shares(
     amount: i128,
     reserves: &LeverageReserves,
-    locked: i128,
+    unvested: i128,
 ) -> Result<i128, StrategyError> {
     if reserves.total_shares == 0 {
         // First deposit: 1 share = 1 unit
         return Ok(amount);
     }
-    if priced_equity(reserves, locked)? <= 0 {
+    if is_wiped_out(reserves)? {
         return Err(StrategyError::InvalidSharesMinted);
     }
-    let equity_up = compute_equity_up(reserves)?;
-    let priced_up = equity_up
-        .checked_sub(locked.clamp(0, equity_up.max(0)))
-        .ok_or(StrategyError::UnderflowOverflow)?;
     amount
-        .fixed_mul_floor(reserves.total_shares, priced_up)
+        .fixed_mul_floor(
+            priced_shares(reserves, unvested)?,
+            compute_equity_up(reserves)?,
+        )
         .ok_or(StrategyError::ArithmeticError)
 }
 
-// ── Profit release ───────────────────────────────────────────────────────────
+// ── Profit vesting ───────────────────────────────────────────────────────────
 //
-// A harvest's equity gain is locked and released into the share price linearly
-// over `PROFIT_UNLOCK_LEDGERS` rather than priced in at the harvest ledger (the
-// constant explains why). All harvests share one linear schedule: a new one
-// folds in and the combined amount releases until the gain-weighted average of
-// the two end dates, so each harvest keeps, on average, its own window.
+// A harvest's equity gain is minted as shares held by no one, which vest
+// linearly over `PROFIT_UNLOCK_LEDGERS` rather than reaching the share price at
+// the harvest ledger (the constant explains why). Until they vest they are
+// priced like any other share, so a loss in the meantime falls on them and on
+// the holders' shares pro rata. A harvest is refused while any are unvested
+// (`lib.rs::check_vested`), so the schedule holds a single harvest's shares.
 
-/// Profit still locked at ledger `now`. Rounds down: it unlocks a stroop early
-/// rather than late.
-pub fn locked_profit(lock: &LockedProfit, now: u32) -> Result<i128, StrategyError> {
-    if lock.amount <= 0 || now >= lock.until {
+/// Shares of `schedule` still unvested at ledger `now`. Rounds up, so the
+/// holders' shares are valued, and leave, over a count never short of the exact
+/// one.
+pub fn unvested_shares(schedule: &UnvestedShares, now: u32) -> Result<i128, StrategyError> {
+    unvested(schedule, now, true)
+}
+
+/// `unvested_shares` rounded down instead: what a deposit or a harvest is
+/// minted against, so neither mints more than the exact count would.
+pub fn unvested_shares_down(schedule: &UnvestedShares, now: u32) -> Result<i128, StrategyError> {
+    unvested(schedule, now, false)
+}
+
+fn unvested(schedule: &UnvestedShares, now: u32, round_up: bool) -> Result<i128, StrategyError> {
+    if schedule.amount <= 0 || now >= schedule.end {
         return Ok(0);
     }
-    let span = lock.until.saturating_sub(lock.from).max(1);
-    let remaining = (lock.until - now).min(span);
-    lock.amount
-        .fixed_mul_floor(remaining as i128, span as i128)
-        .ok_or(StrategyError::ArithmeticError)
-}
-
-/// Fold `gain` into `lock` at ledger `now`.
-///
-/// What is still locked keeps its end date and `gain` gets the full `window`;
-/// the sum releases linearly until the gain-weighted average of the two. A
-/// non-positive `gain` locks nothing and only re-bases the schedule onto `now`,
-/// which leaves it releasing exactly as before.
-pub fn lock_profit(
-    lock: &LockedProfit,
-    gain: i128,
-    now: u32,
-    window: u32,
-) -> Result<LockedProfit, StrategyError> {
-    let still_locked = locked_profit(lock, now)?;
-    let gain = gain.max(0);
-    let amount = still_locked
-        .checked_add(gain)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    if amount == 0 {
-        return Ok(LockedProfit::default());
+    let span = schedule.end.saturating_sub(schedule.start).max(1) as i128;
+    let remaining = (schedule.end - now).min(span as u32) as i128;
+    if round_up {
+        schedule.amount.fixed_mul_ceil(remaining, span)
+    } else {
+        schedule.amount.fixed_mul_floor(remaining, span)
     }
-
-    // underlying × ledgers: many orders inside i128.
-    let weighted = still_locked
-        .checked_mul(lock.until.saturating_sub(now) as i128)
-        .ok_or(StrategyError::ArithmeticError)?
-        .checked_add(
-            gain.checked_mul(window as i128)
-                .ok_or(StrategyError::ArithmeticError)?,
-        )
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    // A weighted average of the two durations, rounded up so a positive amount
-    // always has at least a ledger to release over.
-    let duration = weighted
-        .fixed_mul_ceil(1, amount)
-        .and_then(|d| u32::try_from(d).ok())
-        .ok_or(StrategyError::ArithmeticError)?;
-
-    Ok(LockedProfit {
-        amount,
-        from: now,
-        until: now
-            .checked_add(duration)
-            .ok_or(StrategyError::UnderflowOverflow)?,
-    })
+    .ok_or(StrategyError::ArithmeticError)
 }
 
 // ── Health factor ────────────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 use crate::{
     blend_pool,
     constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12},
-    leverage::{self, compute_equity, priced_equity, underlying_to_shares},
-    storage::{self, Config},
+    leverage::{self, compute_equity, priced_shares, underlying_to_shares},
+    storage::{self, Config, UnvestedShares},
 };
 
 use defindex_strategy_core::StrategyError;
@@ -48,9 +48,28 @@ pub fn current(e: &Env, config: &Config) -> LeverageReserves {
     }
 }
 
-/// Harvest profit still locked out of the share price at the current ledger.
-pub fn locked_profit(e: &Env) -> Result<i128, StrategyError> {
-    leverage::locked_profit(&storage::get_locked_profit(e), e.ledger().sequence())
+/// Harvest shares still unvested at the current ledger.
+pub fn unvested_shares(e: &Env) -> Result<i128, StrategyError> {
+    leverage::unvested_shares(&storage::get_unvested_shares(e), e.ledger().sequence())
+}
+
+/// The equity that `b_tokens_delta` and `d_tokens_delta` add to `reserves`,
+/// rounded down (the collateral down, the debt up) so it is never credited above
+/// what they add.
+fn equity_added(
+    b_tokens_delta: i128,
+    d_tokens_delta: i128,
+    reserves: &LeverageReserves,
+) -> Result<i128, StrategyError> {
+    let supply_added = b_tokens_delta
+        .fixed_mul_floor(reserves.b_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    let debt_added = d_tokens_delta
+        .fixed_mul_ceil(reserves.d_rate, SCALAR_12)
+        .ok_or(StrategyError::ArithmeticError)?;
+    supply_added
+        .checked_sub(debt_added)
+        .ok_or(StrategyError::UnderflowOverflow)
 }
 
 // ── Deposit accounting ───────────────────────────────────────────────────────
@@ -87,24 +106,16 @@ pub fn deposit(
         return Err(StrategyError::BTokensAmountBelowMin);
     }
 
-    // Calculate the equity added by this deposit, rounded down (the collateral
-    // down, the debt up) so the depositor is never credited more than they add.
-    let supply_added = b_tokens_delta
-        .fixed_mul_floor(reserves.b_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-    let debt_added = d_tokens_delta
-        .fixed_mul_ceil(reserves.d_rate, SCALAR_12)
-        .ok_or(StrategyError::ArithmeticError)?;
-    let equity_added = supply_added
-        .checked_sub(debt_added)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-
+    // The depositor is never credited more than they add.
+    let equity_added = equity_added(b_tokens_delta, d_tokens_delta, &reserves)?;
     if equity_added <= 0 {
         return Err(StrategyError::UnderlyingAmountBelowMin);
     }
 
     // Convert equity to shares
-    let new_shares = underlying_to_shares(equity_added, &reserves, locked_profit(e)?)?;
+    let unvested =
+        leverage::unvested_shares_down(&storage::get_unvested_shares(e), e.ledger().sequence())?;
+    let new_shares = underlying_to_shares(equity_added, &reserves, unvested)?;
     if new_shares <= 0 {
         panic_with_error!(e, StrategyError::InvalidSharesMinted);
     }
@@ -169,14 +180,14 @@ pub fn withdraw(
     }
 
     let total_equity = compute_equity(reserves)?;
-    let priced = priced_equity(reserves, locked_profit(e)?)?;
-    if priced <= 0 {
+    if total_equity <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
+    let priced_shares = priced_shares(reserves, unvested_shares(e)?)?;
 
     // Calculate the share proportion for the requested amount
     let shares_to_burn = amount
-        .fixed_mul_ceil(reserves.total_shares, priced)
+        .fixed_mul_ceil(priced_shares, total_equity)
         .ok_or(StrategyError::ArithmeticError)?;
 
     if shares_to_burn > user_shares {
@@ -184,7 +195,7 @@ pub fn withdraw(
     }
 
     let (b_tokens_to_remove, d_tokens_to_remove) =
-        share_slice(shares_to_burn, reserves, priced, total_equity)?;
+        share_slice(shares_to_burn, reserves, priced_shares)?;
     Ok((shares_to_burn, b_tokens_to_remove, d_tokens_to_remove))
 }
 
@@ -204,39 +215,35 @@ pub fn redeem(
         return Err(StrategyError::InsufficientBalance);
     }
 
-    let total_equity = compute_equity(reserves)?;
-    let priced = priced_equity(reserves, locked_profit(e)?)?;
-    if priced <= 0 {
+    if compute_equity(reserves)? <= 0 {
         return Err(StrategyError::InsufficientBalance);
     }
 
-    share_slice(shares, reserves, priced, total_equity)
+    share_slice(
+        shares,
+        reserves,
+        priced_shares(reserves, unvested_shares(e)?)?,
+    )
 }
 
 /// The b/d tokens that carry `shares` out of the vault: their pro-rata slice of
-/// the position, scaled by `priced / total_equity`.
+/// the position, out of the `priced_shares` (see `leverage::priced_shares`).
 ///
-/// Shares are priced net of the harvest profit still locked, and the slice is
-/// scaled to match, so it carries out the shares' priced value and leaves the
-/// withdrawer's part of the locked profit to the holders it is still being
-/// released to. With nothing locked the scale is exactly 1.
+/// The harvest shares still unvested keep their slice, so the withdrawer's part
+/// of a recent harvest stays with the holders it is still vesting to.
 ///
 /// The collateral rounds down and the debt rounds up, against the withdrawer,
 /// so the holders who stay never inherit a sliver of the leaver's debt.
 fn share_slice(
     shares: i128,
     reserves: &LeverageReserves,
-    priced: i128,
-    total_equity: i128,
+    priced_shares: i128,
 ) -> Result<(i128, i128), StrategyError> {
-    // `priced > 0` implies `total_equity >= priced > 0`.
     let b_tokens = shares
-        .fixed_mul_floor(reserves.total_b_tokens, reserves.total_shares)
-        .and_then(|b| b.fixed_mul_floor(priced, total_equity))
+        .fixed_mul_floor(reserves.total_b_tokens, priced_shares)
         .ok_or(StrategyError::ArithmeticError)?;
     let d_tokens = shares
-        .fixed_mul_ceil(reserves.total_d_tokens, reserves.total_shares)
-        .and_then(|d| d.fixed_mul_ceil(priced, total_equity))
+        .fixed_mul_ceil(reserves.total_d_tokens, priced_shares)
         .ok_or(StrategyError::ArithmeticError)?;
     Ok((b_tokens, d_tokens))
 }
@@ -275,14 +282,17 @@ pub fn commit_withdraw(
 
 // ── Harvest accounting ───────────────────────────────────────────────────────
 
-/// Account for harvested rewards that have been re-leveraged. No shares are
-/// minted, and the equity the b/d token deltas add is locked: it reaches the
-/// share price gradually, over `PROFIT_UNLOCK_LEDGERS`, rather than at this
-/// ledger.
+/// Account for harvested rewards that have been re-leveraged. The equity the
+/// b/d token deltas add is minted as shares, priced as a deposit's, that no one
+/// holds: they vest over `PROFIT_UNLOCK_LEDGERS`, so the gain reaches the
+/// holders' share price gradually rather than at this ledger.
 ///
 /// `reserves` is the position **before** the reinvest, exactly as `deposit`
 /// takes one: the pool has already settled the reinvest by the time this is
 /// called, so the gain is measured as the deltas' equity on top of it.
+///
+/// The caller has refused the harvest while any shares are unvested
+/// (`lib.rs::check_vested`), so there are none to price over or to keep.
 ///
 /// Returns the position after the reinvest.
 pub fn harvest(
@@ -291,6 +301,21 @@ pub fn harvest(
     d_tokens_delta: i128,
     reserves: &LeverageReserves,
 ) -> Result<LeverageReserves, StrategyError> {
+    let gain = equity_added(b_tokens_delta, d_tokens_delta, reserves)?;
+    if gain > 0 {
+        let now = e.ledger().sequence();
+        storage::set_unvested_shares(
+            e,
+            &UnvestedShares {
+                amount: underlying_to_shares(gain, reserves, 0)?,
+                start: now,
+                end: now
+                    .checked_add(PROFIT_UNLOCK_LEDGERS)
+                    .ok_or(StrategyError::UnderflowOverflow)?,
+            },
+        );
+    }
+
     let mut updated = reserves.clone();
     updated.total_b_tokens = updated
         .total_b_tokens
@@ -300,17 +325,5 @@ pub fn harvest(
         .total_d_tokens
         .checked_add(d_tokens_delta)
         .ok_or(StrategyError::UnderflowOverflow)?;
-
-    let gain = compute_equity(&updated)?
-        .checked_sub(compute_equity(reserves)?)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    let lock = leverage::lock_profit(
-        &storage::get_locked_profit(e),
-        gain,
-        e.ledger().sequence(),
-        PROFIT_UNLOCK_LEDGERS,
-    )?;
-    storage::set_locked_profit(e, &lock);
-
     Ok(updated)
 }

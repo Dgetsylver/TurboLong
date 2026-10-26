@@ -30,8 +30,8 @@ pub enum DataKey {
     MinHarvestRate,
     /// The in-flight `harvest_claim` awaiting settlement by `harvest_reinvest`.
     PendingHarvest,
-    /// Harvest profit still being released into the share price.
-    LockedProfit,
+    /// Shares minted for harvest profit, still vesting to the holders.
+    UnvestedShares,
     /// Optional intermediate token of the on-chain Soroswap harvest route
     /// (BLND → via → underlying), admin-set.
     SwapVia,
@@ -258,30 +258,34 @@ pub fn take_pending_harvest(e: &Env) -> Option<PendingHarvest> {
     pending
 }
 
-// ── Locked harvest profit ────────────────────────────────────────────────────
+// ── Unvested harvest shares ──────────────────────────────────────────────────
 
-/// Harvest profit held out of the share price: `amount` at ledger `from`,
-/// released linearly to nothing at ledger `until` (see `PROFIT_UNLOCK_LEDGERS`).
+/// Shares a harvest's profit was minted as, held by no one: `amount` at ledger
+/// `start`, vesting linearly to none at ledger `end` (see
+/// `PROFIT_UNLOCK_LEDGERS`). They are priced alongside the holders' shares
+/// until they vest, and are never part of the share token's supply.
 #[contracttype]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct LockedProfit {
-    /// Underlying still locked at ledger `from`.
+pub struct UnvestedShares {
+    /// Shares still unvested at ledger `start`.
     pub amount: i128,
     /// Ledger the schedule was last set.
-    pub from: u32,
-    /// Ledger by which all of `amount` is released.
-    pub until: u32,
+    pub start: u32,
+    /// Ledger by which all of `amount` has vested.
+    pub end: u32,
 }
 
-pub fn set_locked_profit(e: &Env, locked: &LockedProfit) {
-    e.storage().instance().set(&DataKey::LockedProfit, locked);
-}
-
-/// The release schedule, or an empty one when no harvest has locked anything.
-pub fn get_locked_profit(e: &Env) -> LockedProfit {
+pub fn set_unvested_shares(e: &Env, unvested: &UnvestedShares) {
     e.storage()
         .instance()
-        .get(&DataKey::LockedProfit)
+        .set(&DataKey::UnvestedShares, unvested);
+}
+
+/// The vesting schedule, or an empty one when no harvest has minted any.
+pub fn get_unvested_shares(e: &Env) -> UnvestedShares {
+    e.storage()
+        .instance()
+        .get(&DataKey::UnvestedShares)
         .unwrap_or_default()
 }
 
