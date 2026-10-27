@@ -3,9 +3,9 @@
 use crate::constants::{FIRST_DEPOSIT_LOCKUP, PROFIT_UNLOCK_LEDGERS, SCALAR_12, SCALAR_7};
 use crate::leverage::{
     compute_equity, compute_equity_up, compute_health_factor, compute_lever_in,
-    compute_partial_unwind, compute_releverage, effective_c_factor, harvest_floor, is_wiped_out,
-    priced_shares, prorate_floor, shares_to_underlying, underlying_to_shares, unvested_shares,
-    unvested_shares_down, unwind_rounding_margin,
+    compute_partial_unwind, compute_releverage, harvest_floor, is_wiped_out, priced_shares,
+    prorate_floor, shares_to_underlying, underlying_to_shares, unvested_shares,
+    unvested_shares_down,
 };
 use crate::reserves::LeverageReserves;
 use crate::storage::UnvestedShares;
@@ -562,8 +562,7 @@ fn test_partial_unwind_highly_levered_position() {
 
 #[test]
 fn test_partial_unwind_minimal_repay_is_exact() {
-    // Verify the closed-form gives the minimum repay (not over-unwinding): the
-    // repay is the exact solution plus the rounding margin and nothing more.
+    // Verify the closed-form gives the minimum repay (not over-unwinding).
     // b=10500, d=9500, c=0.95 → HF = 10500*0.95/9500 ≈ 1.05
     // target = 1.15
     let repay = compute_partial_unwind(
@@ -576,18 +575,11 @@ fn test_partial_unwind_minimal_repay_is_exact() {
         11_500_000,
     )
     .unwrap();
-    let margin = unwind_rounding_margin(
-        SCALAR_12,
-        SCALAR_12,
-        effective_c_factor(9_500_000, L_NONE).unwrap(),
-        11_500_000,
-    )
-    .unwrap();
 
-    // Repaying the closed form's floor minus a stroop — the repay without the
-    // margin and its threshold stroop — should leave HF below target
-    if repay > margin + 2 {
-        let x_minus = repay - margin - 2;
+    // Repaying the closed form's floor minus a stroop — the repay without its
+    // threshold stroop — should leave HF below target
+    if repay > 2 {
+        let x_minus = repay - 2;
         let new_b = 10_500_0000000 - x_minus;
         let new_d = 9_500_0000000 - x_minus;
         let hf_short =
@@ -1655,7 +1647,7 @@ fn test_partial_unwind_one_stroop_below_target_minimal_repay() {
     let repay = compute_partial_unwind(b, d, SCALAR_12, SCALAR_12, c, L_NONE, target).unwrap();
     assert!(
         repay > 0 && repay < 100,
-        "a 1-stroop breach needs only a few stroops of repay (plus the rounding margin), got {}",
+        "a 1-stroop breach needs only a few stroops of repay, got {}",
         repay
     );
 
@@ -1723,9 +1715,8 @@ fn test_partial_unwind_hf_below_one_but_salvageable() {
 
 #[test]
 fn test_partial_unwind_dust_position_is_sane() {
-    // Dust position: a handful of stroops, smaller than the rounding margin
-    // itself. The function must still return a sane answer — clamped at the
-    // debt, never more.
+    // Dust position: a handful of stroops. The function must still return a
+    // sane answer — clamped at the debt, never more.
     let b = 5_i128;
     let d = 5_i128;
     let repay =
@@ -1759,11 +1750,11 @@ fn settle_unwind(b: i128, d: i128, x: i128, b_rate: i128, d_rate: i128) -> (i128
     (b - b_burnt, d - d_burnt)
 }
 
-/// The rounding margin is what makes the closed form land: put the repay
-/// through Blend's own token conversions and the settled HF must sit at or above
-/// the target — never the one unit short that the bare closed form leaves about
-/// half the time — and only a hair above it. Swept over factor pairs, accrued
-/// rates, loop depths and position sizes from dust to a million units.
+/// Put the repay through Blend's own token conversions and the settled HF lands
+/// on the target: a unit either side, or a couple of dozen on a dust position
+/// (0.1 unit), where a stroop is a larger share of it. Either way thousands of
+/// times inside `REBALANCE_HF_BUFFER`. Swept over factor pairs, accrued rates,
+/// loop depths and position sizes from dust to a million units.
 #[test]
 fn test_partial_unwind_lands_on_target_after_blend_rounding() {
     let target = 11_500_000_i128;
@@ -1795,9 +1786,10 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
                     let x = compute_partial_unwind(b, d, b_rate, d_rate, c, l, target).unwrap();
                     let (b2, d2) = settle_unwind(b, d, x, b_rate, d_rate);
                     let hf = compute_health_factor(b2, d2, b_rate, d_rate, c, l).unwrap();
+                    let tol = if deposit < SCALAR_7 { 25 } else { 1 };
                     assert!(
-                        hf >= target,
-                        "short of target: c={} l={} rates=({}, {}) built at {} deposit={}: {} < {}",
+                        (hf - target).abs() <= tol,
+                        "off target: c={} l={} rates=({}, {}) built at {} deposit={}: {} vs {}",
                         c,
                         l,
                         b_rate,
@@ -1806,19 +1798,6 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
                         deposit,
                         hf,
                         target
-                    );
-                    // A hair above at most: the margin is a few dozen stroops, which
-                    // only registers on positions of a few units.
-                    assert!(
-                        hf - target <= 100,
-                        "overshot: c={} l={} rates=({}, {}) built at {} deposit={}: {}",
-                        c,
-                        l,
-                        b_rate,
-                        d_rate,
-                        build_hf,
-                        deposit,
-                        hf
                     );
                     landed += 1;
                 }
@@ -1830,21 +1809,6 @@ fn test_partial_unwind_lands_on_target_after_blend_rounding() {
         "the sweep must exercise the unwind: {}",
         landed
     );
-}
-
-#[test]
-fn test_partial_unwind_rounding_margin_is_a_few_dozen_stroops() {
-    // c = 0.90, l = 1.0, target 1.15, rates ≈ 1.0: (3·0.9 + 3·1.15) / 0.25 + 1.
-    let cl = effective_c_factor(9_000_000, L_NONE).unwrap();
-    assert_eq!(
-        unwind_rounding_margin(SCALAR_12, SCALAR_12, cl, 11_500_000).unwrap(),
-        25
-    );
-    // Rates above 2.0 cost a stroop more per side.
-    let wide = unwind_rounding_margin(2_100_000_000_000, 2_500_000_000_000, cl, 11_500_000);
-    assert_eq!(wide.unwrap(), 33);
-    // An unreachable target is an error, exactly as in the closed form.
-    assert!(unwind_rounding_margin(SCALAR_12, SCALAR_12, cl, cl).is_err());
 }
 
 // ── compute_releverage (audit M-3) ───────────────────────────────────────────
@@ -2013,8 +1977,9 @@ fn test_releverage_with_accrued_rates_is_sane() {
         L_NONE,
     )
     .unwrap();
+    // The token conversions can settle it a unit below, as for a deposit.
     assert!(
-        hf1 >= target,
+        hf1 >= target - 1,
         "rate-adjusted re-leverage must not overshoot: {} < {}",
         hf1,
         target

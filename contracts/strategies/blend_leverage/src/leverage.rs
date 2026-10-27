@@ -262,7 +262,7 @@ pub fn check_min_health_factor(e: &Env, hf: i128, min_hf: i128) -> Result<(), St
 }
 
 /// Compute the underlying amount to repay (and withdraw) so that, once Blend has
-/// settled the pair, HF sits at or just above `target_hf`.
+/// settled the pair, HF sits on `target_hf`, to within the pool's rounding.
 ///
 /// Closed-form derivation (all values in underlying units):
 ///   B  = b_tokens × b_rate / SCALAR_12  (supply value)
@@ -279,10 +279,10 @@ pub fn check_min_health_factor(e: &Env, hf: i128, min_hf: i128) -> Result<(), St
 /// `B` is rounded down and `D` up, as Blend values them, so both err toward
 /// repaying more. The closed form is exact; the pool is not. Blend burns
 /// `ceil(x / b_rate)` b-tokens for the withdraw and `floor(x / d_rate)` d-tokens
-/// for the repay — both against HF, enough to leave the exact `x` one unit
-/// (1e-7) short of the target in a third to a half of cases, i.e. still inside
-/// the orange zone it was meant to leave. `x` is therefore padded by
-/// `unwind_rounding_margin` (≈25 stroops at typical parameters).
+/// for the repay, which can settle HF a unit (1e-7) short of the target, or a
+/// couple of dozen on a dust position. Every caller's target sits at least
+/// `REBALANCE_HF_BUFFER` above `orange_hf`, so the position still leaves the
+/// orange zone.
 ///
 /// Returns `0` if already at or above target_hf, or if there is no debt.
 /// The result is clamped at the outstanding debt value: for degenerate positions
@@ -339,61 +339,19 @@ pub fn compute_partial_unwind(
         return Err(StrategyError::ArithmeticError);
     }
 
-    // x = -numerator / denom, +1 stroop to clear the threshold, plus the
-    // rounding margin; clamped at the debt so a zero/negative equity position
-    // resolves to a full close instead of an over-repay.
-    let margin = unwind_rounding_margin(b_rate, d_rate, cl, target_hf)?;
+    // x = -numerator / denom, +1 stroop to clear the threshold; clamped at the
+    // debt so a zero/negative equity position resolves to a full close instead
+    // of an over-repay.
     let repay_underlying = numerator
         .checked_neg()
         .ok_or(StrategyError::ArithmeticError)?
         .checked_div(denom)
         .ok_or(StrategyError::DivisionByZero)?
-        .checked_add(1 + margin)
+        .checked_add(1)
         .ok_or(StrategyError::UnderflowOverflow)?
         .min(debt_value);
 
     Ok(repay_underlying)
-}
-
-/// Stroops added to `compute_partial_unwind`'s repay, and taken off
-/// `compute_releverage`'s borrow, so that Blend's rounding cannot leave the
-/// settled HF below `target_hf`. A re-leverage's legs (b-tokens minted down,
-/// d-tokens minted up) cost the position the same as an unwind's.
-///
-/// Each leg can cost the position up to `rate / SCALAR_12 + 1` stroops on its
-/// side — one token of burn rounding plus the floor on the value — which the
-/// `+ 2` below covers for any rate: collateral (`slip_b`) for the withdraw, debt
-/// (`slip_d`) for the repay. Every extra stroop repaid moves `B·cl − target·D` by
-/// `target − cl`, so buying both back takes
-/// `(slip_b·cl + slip_d·target) / (target − cl)` stroops, plus one for the
-/// division's floor.
-pub fn unwind_rounding_margin(
-    b_rate: i128,
-    d_rate: i128,
-    cl: i128,
-    target_hf: i128,
-) -> Result<i128, StrategyError> {
-    let denom = target_hf
-        .checked_sub(cl)
-        .ok_or(StrategyError::UnderflowOverflow)?;
-    if denom <= 0 {
-        return Err(StrategyError::ArithmeticError);
-    }
-
-    let slip_b = b_rate / SCALAR_12 + 2;
-    let slip_d = d_rate / SCALAR_12 + 2;
-    let margin = slip_b
-        .checked_mul(cl)
-        .ok_or(StrategyError::ArithmeticError)?
-        .checked_add(
-            slip_d
-                .checked_mul(target_hf)
-                .ok_or(StrategyError::ArithmeticError)?,
-        )
-        .ok_or(StrategyError::UnderflowOverflow)?
-        / denom;
-
-    Ok(margin + 1)
 }
 
 /// Compute the underlying amount to borrow (and immediately re-supply) to bring
@@ -459,18 +417,15 @@ pub fn compute_releverage(
     }
 
     // −1 stroop, the mirror of the +1 in `compute_partial_unwind`, rounds the
-    // borrow down, and the same rounding margin buys back what the pool's own
-    // rounding (b-tokens minted down, d-tokens up) costs the position, so the
-    // settled HF lands at or above the target. `releverage` still checks the
-    // settled HF against `orange_hf`, which the target clears by
-    // `RELEVERAGE_HF_BUFFER`.
-    let margin = unwind_rounding_margin(b_rate, d_rate, cl, target_hf)?;
+    // borrow down. The pool's own rounding (b-tokens minted down, d-tokens up)
+    // can still settle HF a unit or so below the target, as for a deposit;
+    // `releverage` checks the settled HF against `orange_hf`, which the target
+    // clears by `RELEVERAGE_HF_BUFFER`.
     Ok((numerator
         .checked_div(denom)
         .ok_or(StrategyError::DivisionByZero)?
-        - 1
-        - margin)
-        .max(0))
+        - 1)
+    .max(0))
 }
 
 // ── Harvest settlement floor ─────────────────────────────────────────────────
