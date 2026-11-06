@@ -23,6 +23,7 @@ export interface WalletSignResult {
  * https://github.com/nidohq/nido/blob/main/packages/stellar-wallets-kit-module/src/module.ts
  */
 export class TurboLongNidoModule extends NidoModule {
+  private static signing = false;
   private readonly deployment;
 
   constructor(network: NetworkMode) {
@@ -35,40 +36,46 @@ export class TurboLongNidoModule extends NidoModule {
     txXdr: string,
     opts?: { networkPassphrase?: string; address?: string; path?: string },
   ): Promise<WalletSignResult> {
-    const networkPassphrase = opts?.networkPassphrase ?? this.deployment.networkPassphrase;
-    if (networkPassphrase !== this.deployment.networkPassphrase) {
-      throw new Error("Nido: transaction network does not match the connected wallet.");
-    }
-    const { address } = await this.getAddress({ skipRequestAccess: true });
-    if (opts?.address && opts.address !== address) {
-      throw new Error("Nido: reconnect before signing with a different account.");
-    }
-    const url = signTransactionUrl({
-      base: this.deployment.base,
-      account: address,
-      xdr: txXdr,
-      networkPassphrase,
-      dappOrigin: window.location.origin,
-      returnUrl: window.location.href,
-    });
-    const { search } = await openCeremonyPopup(url, accountOrigin(this.deployment.base, address));
-    const params = new URLSearchParams(search);
-    const hash = params.get("nido_submitted");
-    if (hash !== null) {
-      if (params.get("kind") !== "tx" || !/^[a-f0-9]{64}$/i.test(hash)) {
-        throw new Error("Nido: invalid transaction confirmation. Check the wallet before retrying.");
+    if (TurboLongNidoModule.signing) throw new Error("Nido: another transaction approval is already in progress.");
+    TurboLongNidoModule.signing = true;
+    try {
+      const networkPassphrase = opts?.networkPassphrase ?? this.deployment.networkPassphrase;
+      if (networkPassphrase !== this.deployment.networkPassphrase) {
+        throw new Error("Nido: transaction network does not match the connected wallet.");
       }
-      return { signedTxXdr: hash, signerAddress: address, submitted: true };
+      const { address } = await this.getAddress({ skipRequestAccess: true });
+      if (opts?.address && opts.address !== address) {
+        throw new Error("Nido: reconnect before signing with a different account.");
+      }
+      const url = signTransactionUrl({
+        base: this.deployment.base,
+        account: address,
+        xdr: txXdr,
+        networkPassphrase,
+        dappOrigin: window.location.origin,
+        returnUrl: window.location.href,
+      });
+      const { search } = await openCeremonyPopup(url, accountOrigin(this.deployment.base, address));
+      const params = new URLSearchParams(search);
+      const hash = params.get("nido_submitted");
+      if (hash !== null) {
+        if (params.get("kind") !== "tx" || !/^[a-f0-9]{64}$/i.test(hash)) {
+          throw new Error("Nido: invalid transaction confirmation. Check the wallet before retrying.");
+        }
+        return { signedTxXdr: hash, signerAddress: address, submitted: true };
+      }
+      const result = parseSignReturn(search);
+      if (result?.status === "switch-account") {
+        clearCachedAddress();
+        throw new AccountSwitchRequestedError();
+      }
+      if (result?.status === "cancelled") throw new Error("Nido: signing was cancelled.");
+      if (result?.status === "error") throw new Error(`Nido: ${result.error}`);
+      // The live wallet submits itself. Never interpret an old signed-XDR reply
+      // as confirmation or broadcast an envelope without a fee-payer signature.
+      throw new Error("Nido: no transaction confirmation. Check the wallet before retrying.");
+    } finally {
+      TurboLongNidoModule.signing = false;
     }
-    const result = parseSignReturn(search);
-    if (result?.status === "switch-account") {
-      clearCachedAddress();
-      throw new AccountSwitchRequestedError();
-    }
-    if (result?.status === "cancelled") throw new Error("Nido: signing was cancelled.");
-    if (result?.status === "error") throw new Error(`Nido: ${result.error}`);
-    // The live wallet submits itself. Never interpret an old signed-XDR reply
-    // as confirmation or broadcast an envelope without a fee-payer signature.
-    throw new Error("Nido: no transaction confirmation. Check the wallet before retrying.");
   }
 }

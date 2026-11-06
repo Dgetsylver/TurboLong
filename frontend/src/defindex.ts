@@ -17,12 +17,13 @@ import {
 
 import {
   server as blendServer,
-  getSorobanSource,
   getNetworkPassphrase,
   getActiveNetwork,
   fetchAllReserves,
   type ReserveStats,
 } from "./blend.ts";
+import { isContractAccount } from "./nido";
+import { t } from "./i18n";
 
 // ── Vault configuration ──────────────────────────────────────────────────────
 
@@ -462,10 +463,11 @@ export async function fetchUserVaultBalance(
  * Build a deposit transaction XDR for the vault.
  */
 export async function buildVaultDepositXdr(vault: VaultConfig, userAddress: string, amount: number): Promise<string> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await getSorobanSource(userAddress);
+  const account = await blendServer.getAccount(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -496,10 +498,11 @@ export async function buildVaultDepositXdr(vault: VaultConfig, userAddress: stri
  * Build a withdraw transaction XDR for the vault.
  */
 export async function buildVaultWithdrawXdr(vault: VaultConfig, userAddress: string, amount: number): Promise<string> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await getSorobanSource(userAddress);
+  const account = await blendServer.getAccount(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -533,7 +536,8 @@ export async function buildVaultWithdrawXdr(vault: VaultConfig, userAddress: str
  * (and is a harmless no-op above it).
  */
 export async function buildVaultRebalanceXdr(vault: VaultConfig, userAddress: string): Promise<string> {
-  const account = await getSorobanSource(userAddress);
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
+  const account = await blendServer.getAccount(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {

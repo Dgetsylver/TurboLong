@@ -65,7 +65,48 @@ describe.each(["mainnet", "testnet"] as const)("Nido %s handover", (network) => 
       }),
     ).rejects.toThrow(/network/);
     expect(popup).not.toHaveBeenCalled();
+    popup.mockResolvedValue({ search: `?nido_submitted=${hash}&kind=tx` });
+    await expect(module.signTransaction("retry")).resolves.toMatchObject({ signedTxXdr: hash });
   });
+});
+
+it.each(["same instance", "replacement instance", "different network"])(
+  "rejects overlapping approvals from the %s without disturbing the pending action",
+  async (variant) => {
+    const module = new TurboLongNidoModule("mainnet");
+    const other = variant === "same instance"
+      ? module
+      : new TurboLongNidoModule(variant === "different network" ? "testnet" : "mainnet");
+    let complete!: (value: { search: string }) => void;
+    const adjustmentHash = "b".repeat(64);
+    popup.mockResolvedValue({ search: `?nido_submitted=${adjustmentHash}&kind=tx` });
+    popup.mockImplementationOnce(() => new Promise((resolve) => {
+      complete = resolve;
+    }));
+    const close = module.signTransaction("close");
+    try {
+      await expect(other.signTransaction("adjust")).rejects.toThrow(/approval.*in progress/);
+      await expect(module.signTransaction("adjust-again")).rejects.toThrow(/approval.*in progress/);
+      expect(popup).toHaveBeenCalledOnce();
+      expect(new URL(popup.mock.calls[0][0]).searchParams.get("xdr")).toBe("close");
+    } finally {
+      complete({ search: `?nido_submitted=${hash}&kind=tx` });
+      await expect(close).resolves.toMatchObject({ signedTxXdr: hash, submitted: true });
+    }
+    await expect(other.signTransaction("adjust-after-close")).resolves.toMatchObject({
+      signedTxXdr: adjustmentHash,
+      submitted: true,
+    });
+    expect(popup).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("allows another approval after the popup rejects", async () => {
+  popup.mockRejectedValueOnce(new Error("Popup closed"));
+  const module = new TurboLongNidoModule("mainnet");
+  await expect(module.signTransaction("close")).rejects.toThrow("Popup closed");
+  popup.mockResolvedValue({ search: `?nido_submitted=${hash}&kind=tx` });
+  await expect(module.signTransaction("retry")).resolves.toMatchObject({ signedTxXdr: hash });
 });
 
 it.each([
@@ -77,7 +118,10 @@ it.each([
   ["", "no transaction confirmation"],
 ])("fails safely for response %s", async (search, message) => {
   popup.mockResolvedValue({ search });
-  await expect(new TurboLongNidoModule("mainnet").signTransaction("xdr")).rejects.toThrow(message);
+  const module = new TurboLongNidoModule("mainnet");
+  await expect(module.signTransaction("xdr")).rejects.toThrow(message);
+  popup.mockResolvedValue({ search: `?nido_submitted=${hash}&kind=tx` });
+  await expect(module.signTransaction("retry")).resolves.toMatchObject({ signedTxXdr: hash });
 });
 
 it("clears the bound account when the user requests an account switch", async () => {
@@ -86,6 +130,9 @@ it("clears the bound account when the user requests an account switch", async ()
     name: "ACCOUNT_SWITCH_REQUESTED",
   });
   expect(loadCachedAddress()).toBeNull();
+  saveCachedAddress(account);
+  popup.mockResolvedValue({ search: `?nido_submitted=${hash}&kind=tx` });
+  await expect(new TurboLongNidoModule("mainnet").signTransaction("retry")).resolves.toMatchObject({ signedTxXdr: hash });
 });
 
 it("refuses a different signing account before any popup", async () => {
@@ -95,4 +142,6 @@ it("refuses a different signing account before any popup", async () => {
     }),
   ).rejects.toThrow(/different account/);
   expect(popup).not.toHaveBeenCalled();
+  popup.mockResolvedValue({ search: `?nido_submitted=${hash}&kind=tx` });
+  await expect(new TurboLongNidoModule("mainnet").signTransaction("retry")).resolves.toMatchObject({ signedTxXdr: hash });
 });

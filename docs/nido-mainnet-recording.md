@@ -17,7 +17,7 @@ The matching testnet source `GCYVFKNTVZA5AY3KJWPW4NU4247UDDFFOCT4C3WCOKUDQQABIZR
 3. Submit the position. Review and approve the displayed XLM `approve` transaction in Nido. Its allowance is limited to the chosen deposit plus one stroop and expires after 120 ledgers. Review and approve the separate Blend position transaction. Nido requests the primary passkey for each transaction; TurboLong does not ask for a persistent delegation grant.
 4. Wait for the Nido relayer confirmation and TurboLong's mainnet RPC confirmation before calling the position live. Show the returned transaction hash and resulting position. If either approval is cancelled, a simulation or relayer request fails, or confirmation times out, show the error and check the wallet/transaction before retrying. A timeout can happen after a wallet has submitted.
 
-Nido's smart account is a Soroban contract address. Classic Stellar trustline changes and the Stellar Broker mediator swap do not support C-address sources; TurboLong leaves those paths unavailable for Nido and does not submit them through a different account.
+Nido's smart account is a Soroban contract address. This integration supports Blend position operations. Claim & Convert, vault deposit/withdrawal/rebalance, Aquarius receipt-token swaps, classic Stellar trustline changes, and Stellar Broker swaps require a classic wallet. TurboLong rejects these workflows for C-accounts before building a transaction, including before claiming any rewards for Claim & Convert.
 
 ## Human prerequisites and evidence limits
 

@@ -410,7 +410,7 @@ let horizon = new Horizon.Server(MAINNET_CONFIG.horizonUrl);
 
 /** A C-address authorizes contract calls, but cannot source a transaction.
  * Nido's funded public source is used only for simulation; its wallet relays. */
-export async function getSorobanSource(userAddress: string): Promise<Account> {
+async function getSorobanSource(userAddress: string): Promise<Account> {
   return server.getAccount(isContractAccount(userAddress) ? nidoConfig(_activeNet).simulationSource : userAddress);
 }
 
@@ -1325,11 +1325,12 @@ export async function fetchPoolPendingBlnd(
 }
 
 export async function buildClaimXdr(pool: PoolDef, userAddress: string, tokenIds: number[]): Promise<string> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
   const tokenIds_scv = xdr.ScVal.scvVec(tokenIds.map((id) => nativeToScVal(id, { type: "u32" })));
 
-  const acc = await getSorobanSource(userAddress);
+  const acc = await server.getAccount(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,

@@ -15,6 +15,7 @@ import {
 } from "@stellar/stellar-sdk";
 import {
   buildApproveXdr,
+  buildClaimXdr,
   buildOpenPositionXdr,
   buildSwapBlndXdr,
   buildTrustlineXdr,
@@ -25,12 +26,35 @@ import {
   setNetwork,
   verifyContractAccount,
 } from "../src/blend";
-import { buildVaultDepositXdr, getVaults } from "../src/defindex";
+import { buildVaultDepositXdr, buildVaultWithdrawXdr, buildVaultRebalanceXdr, getVaults } from "../src/defindex";
+import { buildAquariusSwapXdr } from "../src/aquarius_trade";
 import { nidoConfig } from "../src/nido";
 
 const contractAccount = StrKey.encodeContract(Buffer.alloc(32, 7));
 const classicAccount = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 8));
 const hash = "a".repeat(64);
+const listing = {
+  shareToken: StrKey.encodeContract(Buffer.alloc(32, 1)),
+  pairedWith: StrKey.encodeContract(Buffer.alloc(32, 2)),
+  poolIndex: "a".repeat(64),
+  tokens: [StrKey.encodeContract(Buffer.alloc(32, 1)), StrKey.encodeContract(Buffer.alloc(32, 2))] as [string, string],
+};
+const classicBuilders: [string, (owner: string) => Promise<string>, string][] = [
+  ["claim before conversion", (owner) => buildClaimXdr(getKnownPools()[0], owner, [0, 1]), "claim"],
+  ["vault deposit", (owner) => buildVaultDepositXdr(getVaults()[0], owner, 1), "deposit"],
+  ["vault withdrawal", (owner) => buildVaultWithdrawXdr(getVaults()[0], owner, 1), "withdraw"],
+  ["vault rebalance", (owner) => buildVaultRebalanceXdr(getVaults()[0], owner), "rebalance"],
+  [
+    "receipt-token sale",
+    (owner) => buildAquariusSwapXdr(owner, listing, listing.shareToken, listing.pairedWith, 10n, 9n),
+    "swap_chained",
+  ],
+  [
+    "receipt-token purchase",
+    (owner) => buildAquariusSwapXdr(owner, listing, listing.pairedWith, listing.shareToken, 10n, 9n),
+    "swap_chained",
+  ],
+];
 
 beforeEach(() => {
   vi.spyOn(rpc.Server.prototype, "getAccount").mockImplementation(async (address) => new Account(address, "42"));
@@ -50,9 +74,11 @@ beforeEach(() => {
       transactionData: new SorobanDataBuilder(),
       result: {
         retval: nativeToScVal(null),
-        auth: [
+        auth: args.functionName().toString() === "rebalance" ? [] : [
           new xdr.SorobanAuthorizationEntry({
-            credentials: xdr.SorobanCredentials.sorobanCredentialsAddress(
+            credentials: (tx as Transaction).source === classicAccount
+              ? xdr.SorobanCredentials.sorobanCredentialsSourceAccount()
+              : xdr.SorobanCredentials.sorobanCredentialsAddress(
               new xdr.SorobanAddressCredentials({
                 address: new Address(contractAccount).toScAddress(),
                 nonce: xdr.Int64.fromString("1"),
@@ -118,18 +144,32 @@ describe.each(["mainnet", "testnet"] as const)("%s smart-account builders", (net
     });
     expect(rpc.Server.prototype.simulateTransaction).not.toHaveBeenCalled();
   });
+
+  it.each(classicBuilders)("rejects %s before any RPC for a contract account", async (_name, build) => {
+    setNetwork(network);
+    await expect(build(contractAccount)).rejects.toThrow(/classic Stellar wallet/);
+    expect(rpc.Server.prototype.getAccount).not.toHaveBeenCalled();
+    expect(rpc.Server.prototype.simulateTransaction).not.toHaveBeenCalled();
+  });
 });
 
-it("uses the same contract-account source for testnet vault deposits", async () => {
+it.each(classicBuilders)("preserves classic-wallet %s", async (_name, build, method) => {
   setNetwork("testnet");
-  const tx = TransactionBuilder.fromXDR(
-    await buildVaultDepositXdr(getVaults()[0], contractAccount, 1),
-    Networks.TESTNET,
-  ) as Transaction;
-  expect(tx.source).toBe(nidoConfig("testnet").simulationSource);
+  const tx = TransactionBuilder.fromXDR(await build(classicAccount), Networks.TESTNET) as Transaction;
+  expect(tx.source).toBe(classicAccount);
+  expect(rpc.Server.prototype.getAccount).toHaveBeenCalledWith(classicAccount);
   const op = tx.operations[0];
   if (op.type !== "invokeHostFunction") throw new Error("Expected Soroban operation");
-  expect(scValToNative(op.func.invokeContract().args()[1])).toBe(contractAccount);
+  expect(op.func.invokeContract().functionName().toString()).toBe(method);
+  const args = op.func.invokeContract().args().map(scValToNative);
+  if (method === "claim") expect(args).toEqual([classicAccount, [0, 1], classicAccount]);
+  if (method === "deposit") expect(args).toEqual([10000000n, classicAccount]);
+  if (method === "withdraw") expect(args).toEqual([10000000n, classicAccount, classicAccount]);
+  if (method === "rebalance") {
+    expect(args).toEqual([]);
+    expect(op.auth).toEqual([]);
+  }
+  if (method === "swap_chained") expect(args[0]).toBe(classicAccount);
 });
 
 it("propagates approval simulation failure", async () => {

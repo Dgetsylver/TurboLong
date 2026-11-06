@@ -18,7 +18,7 @@ type Dict = Record<string, string>;
 
 const en: Dict = {
   "wallet.classicUnsupported":
-    "This operation needs a classic Stellar wallet. Nido supports Soroban contract operations.",
+    "This operation needs a classic Stellar wallet. Nido supports Blend position operations here.",
   "wallet.accountUnavailable":
     "This contract account is unavailable on the selected network. Check the network and reconnect.",
   "wallet.reconnect": "Reconnect your wallet on the selected network.",
@@ -425,7 +425,7 @@ const en: Dict = {
 
 const es: Dict = {
   "wallet.classicUnsupported":
-    "Esta operación requiere una billetera Stellar clásica. Nido admite operaciones de contratos Soroban.",
+    "Esta operación requiere una billetera Stellar clásica. Aquí Nido admite operaciones de posiciones Blend.",
   "wallet.accountUnavailable":
     "Esta cuenta de contrato no está disponible en la red seleccionada. Revisa la red y vuelve a conectar.",
   "wallet.reconnect": "Vuelve a conectar tu billetera en la red seleccionada.",
@@ -827,7 +827,7 @@ const es: Dict = {
 
 const pt: Dict = {
   "wallet.classicUnsupported":
-    "Esta operação exige uma carteira Stellar clássica. Nido suporta operações de contratos Soroban.",
+    "Esta operação exige uma carteira Stellar clássica. Aqui, Nido suporta operações de posições Blend.",
   "wallet.accountUnavailable":
     "Esta conta de contrato não está disponível na rede selecionada. Confira a rede e reconecte.",
   "wallet.reconnect": "Reconecte sua carteira na rede selecionada.",

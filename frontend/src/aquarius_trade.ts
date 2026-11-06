@@ -31,7 +31,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 
-import { server as blendServer, getSorobanSource, getNetworkPassphrase } from "./blend.ts";
+import { server as blendServer, getNetworkPassphrase } from "./blend.ts";
+import { isContractAccount } from "./nido";
+import { t } from "./i18n";
 import { aquariusRouter } from "./aquarius.ts";
 import type { AquariusListing } from "./aquarius_listings.ts";
 
@@ -196,7 +198,8 @@ export async function buildAquariusSwapXdr(
   amountIn: bigint,
   minOut: bigint,
 ): Promise<string> {
-  const account = await getSorobanSource(userAddress);
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
+  const account = await blendServer.getAccount(userAddress);
   const router = new Contract(aquariusRouter());
 
   const tx = new TransactionBuilder(account, {

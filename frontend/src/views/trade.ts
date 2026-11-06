@@ -65,6 +65,8 @@ import { fetchSnapshotSeries } from "../history";
 import { getState, setState, subscribe } from "../app/state";
 import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
+import { isContractAccount } from "../nido";
+import { t } from "../i18n";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
@@ -1130,7 +1132,9 @@ export function tradeScreen(): HTMLElement {
 
     // BLND rewards row — Claim & Convert (compound via Add Funds; NO Resupply).
     const compoundBtn = Button({ variant: "secondary", size: "sm", children: "Claim & Convert" });
-    compoundBtn.disabled = ts.pendingBlnd <= 0;
+    const unsupportedClaim = isContractAccount(getState().userAddress ?? "");
+    compoundBtn.disabled = unsupportedClaim || ts.pendingBlnd <= 0;
+    if (unsupportedClaim) compoundBtn.title = t("wallet.classicUnsupported");
     on(compoundBtn, "click", () => void claimAndConvert());
     const blndRow = el("div", { class: "trade-blnd" }, [
       el("div", { class: "trade-blnd__left" }, [
@@ -1428,6 +1432,10 @@ export function tradeScreen(): HTMLElement {
   async function claimAndConvert(): Promise<void> {
     const addr = getState().userAddress;
     if (!addr) return;
+    if (isContractAccount(addr)) {
+      toast(t("wallet.classicUnsupported"), "info");
+      return;
+    }
     const pos = posFor(ts.asset);
     if (!pos) return;
 
