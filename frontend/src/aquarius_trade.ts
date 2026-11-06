@@ -31,7 +31,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 
-import { server as blendServer, getNetworkPassphrase } from "./blend.ts";
+import { server as blendServer, getSorobanSource, getNetworkPassphrase } from "./blend.ts";
 import { aquariusRouter } from "./aquarius.ts";
 import type { AquariusListing } from "./aquarius_listings.ts";
 
@@ -196,7 +196,7 @@ export async function buildAquariusSwapXdr(
   amountIn: bigint,
   minOut: bigint,
 ): Promise<string> {
-  const account = await blendServer.getAccount(userAddress);
+  const account = await getSorobanSource(userAddress);
   const router = new Contract(aquariusRouter());
 
   const tx = new TransactionBuilder(account, {

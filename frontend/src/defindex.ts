@@ -17,6 +17,7 @@ import {
 
 import {
   server as blendServer,
+  getSorobanSource,
   getNetworkPassphrase,
   getActiveNetwork,
   fetchAllReserves,
@@ -464,7 +465,7 @@ export async function buildVaultDepositXdr(vault: VaultConfig, userAddress: stri
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await blendServer.getAccount(userAddress);
+  const account = await getSorobanSource(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -498,7 +499,7 @@ export async function buildVaultWithdrawXdr(vault: VaultConfig, userAddress: str
   const scalar = 10 ** vault.decimals;
   const amountStroops = BigInt(Math.round(amount * scalar));
 
-  const account = await blendServer.getAccount(userAddress);
+  const account = await getSorobanSource(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {
@@ -532,7 +533,7 @@ export async function buildVaultWithdrawXdr(vault: VaultConfig, userAddress: str
  * (and is a harmless no-op above it).
  */
 export async function buildVaultRebalanceXdr(vault: VaultConfig, userAddress: string): Promise<string> {
-  const account = await blendServer.getAccount(userAddress);
+  const account = await getSorobanSource(userAddress);
   const contract = new Contract(vault.vaultId);
 
   const tx = new TransactionBuilder(account, {

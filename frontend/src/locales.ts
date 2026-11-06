@@ -17,6 +17,13 @@ export const LANG_NAMES: Record<Lang, string> = {
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "wallet.classicUnsupported":
+    "This operation needs a classic Stellar wallet. Nido supports Soroban contract operations.",
+  "wallet.accountUnavailable":
+    "This contract account is unavailable on the selected network. Check the network and reconnect.",
+  "wallet.reconnect": "Reconnect your wallet on the selected network.",
+  "wallet.changedWhileSigning": "Wallet or network changed during signing. Check the wallet before retrying.",
+  "wallet.missingConfirmation": "Nido returned no transaction confirmation. Check the wallet before retrying.",
   // nav
   "nav.dashboard": "Dashboard",
   "nav.trade": "Trade",
@@ -417,6 +424,15 @@ const en: Dict = {
 };
 
 const es: Dict = {
+  "wallet.classicUnsupported":
+    "Esta operación requiere una billetera Stellar clásica. Nido admite operaciones de contratos Soroban.",
+  "wallet.accountUnavailable":
+    "Esta cuenta de contrato no está disponible en la red seleccionada. Revisa la red y vuelve a conectar.",
+  "wallet.reconnect": "Vuelve a conectar tu billetera en la red seleccionada.",
+  "wallet.changedWhileSigning":
+    "La billetera o la red cambió durante la firma. Revisa la billetera antes de reintentar.",
+  "wallet.missingConfirmation":
+    "Nido no devolvió confirmación de la transacción. Revisa la billetera antes de reintentar.",
   "nav.dashboard": "Panel",
   "nav.trade": "Operar",
   "nav.vault": "Bóveda",
@@ -810,6 +826,15 @@ const es: Dict = {
 };
 
 const pt: Dict = {
+  "wallet.classicUnsupported":
+    "Esta operação exige uma carteira Stellar clássica. Nido suporta operações de contratos Soroban.",
+  "wallet.accountUnavailable":
+    "Esta conta de contrato não está disponível na rede selecionada. Confira a rede e reconecte.",
+  "wallet.reconnect": "Reconecte sua carteira na rede selecionada.",
+  "wallet.changedWhileSigning":
+    "A carteira ou a rede mudou durante a assinatura. Confira a carteira antes de tentar novamente.",
+  "wallet.missingConfirmation":
+    "Nido não retornou confirmação da transação. Confira a carteira antes de tentar novamente.",
   "nav.dashboard": "Painel",
   "nav.trade": "Operar",
   "nav.vault": "Cofre",
