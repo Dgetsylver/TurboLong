@@ -73,12 +73,12 @@ so a parity harness pins them together.
 (the E2E harness installs a fake signer so CI needs no real wallet/extension):
 
 1. Boots under the E2E harness and installs the mock seam.
-2. Registers all five wallets **plus Ledger** (Freighter, xBull, Albedo, Lobstr,
-   Hana, Ledger).
+2. Checks mainnet wallet registration from
+   [`baseWalletModules`](../frontend/src/app/wallet.ts).
 3. Exposes a submitted-tx ledger so `sign → submit` can be asserted on both
    classic and Soroban operations.
 
-- **Run:** `cd frontend && npm run test:e2e`.
+- **Run:** `cd frontend/e2e && npm run test:e2e`.
 - **Gate:** `frontend-ci.yml` e2e job (installs Chromium, runs the mock-harness
   suite). The parity vitest run excludes `e2e/**` so the two never collide.
 

@@ -17,7 +17,7 @@
 
 /** Shape of the test hook a runner may set before the app boots. */
 export interface E2EHook {
-  /** Which mock wallet is "connected". Mirrors the kit module ids + LEDGER. */
+  /** Which classic wallet the mock signer represents; Nido uses separate unit mocks. */
   wallet?: "freighter" | "xbull" | "albedo" | "lobstr" | "hana" | "LEDGER";
   /** Override the mock account address. */
   address?: string;

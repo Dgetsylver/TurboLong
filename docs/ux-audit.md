@@ -7,7 +7,7 @@ Turbolong is a **leveraged trading platform built on Stellar's Blend Protocol**.
 - **Up to 12.9× leverage** on supported assets across multiple Blend pools (Etherfuse, Fixed, YieldBlox)
 - **Vault automation** (DeFindex-powered) for managed, auto-rebalancing leverage positions
 - **APY alerts** via Cloudflare Workers + D1 subscriptions
-- **Multi-wallet support** (Freighter, xBull, Albedo, Lobstr, Hana)
+- **Multi-wallet support** (see the wallet registration in [`wallet.ts`](../frontend/src/app/wallet.ts))
 - **Sub-5-second finality** thanks to Stellar's fast settlement
 - Built with a TypeScript/Vite frontend, Soroban (Rust) smart contracts, and a responsive CSS-only UI
 

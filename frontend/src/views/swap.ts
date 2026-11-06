@@ -25,6 +25,7 @@ import { aquariusBestRateResult } from "../aquarius";
 import { compareQuotes } from "../swap_metrics";
 import { fetchAssetBalance, getActiveNetwork } from "../blend";
 import { getState } from "../app/state";
+import { isContractAccount } from "../nido";
 import { signXdr } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { t } from "../i18n";
@@ -458,6 +459,8 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
     } else if (ui.quote && ui.quote.status === "success") {
       if (!getState().userAddress) {
         setBtn(tx("nav.connect", "Connect Wallet"), true);
+      } else if (isContractAccount(getState().userAddress ?? "")) {
+        setBtn(t("wallet.classicUnsupported"), true);
       } else if (!swapExecuteAvailable()) {
         setBtn(tx("swap.mainnetOnly", "Swap execution is mainnet-only"), true);
       } else {
@@ -639,6 +642,10 @@ function renderCard(ui: SwapUiState, root: HTMLElement): HTMLElement {
   async function executeSwap() {
     const addr = getState().userAddress;
     if (!addr || !ui.quote || ui.quote.status !== "success" || executing) return;
+    if (isContractAccount(getState().userAddress ?? "")) {
+      toast(t("wallet.classicUnsupported"), "info");
+      return;
+    }
     if (!swapExecuteAvailable()) {
       toast(tx("swap.mainnetOnly", "Swap execution is only available on mainnet."), "info");
       return;

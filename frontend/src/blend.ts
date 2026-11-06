@@ -18,6 +18,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 
+import { isContractAccount, nidoConfig } from "./nido";
+import { t } from "./i18n";
+
 // ── Types & constants ────────────────────────────────────────────────────────
 
 export type NetworkMode = "mainnet" | "testnet";
@@ -404,6 +407,17 @@ export function getPoolAssets(pool: PoolDef): AssetInfo[] {
 
 export let server = new SorobanRpc.Server(MAINNET_CONFIG.rpcUrl);
 let horizon = new Horizon.Server(MAINNET_CONFIG.horizonUrl);
+
+/** A C-address authorizes contract calls, but cannot source a transaction.
+ * Nido's funded public source is used only for simulation; its wallet relays. */
+async function getSorobanSource(userAddress: string): Promise<Account> {
+  return server.getAccount(isContractAccount(userAddress) ? nidoConfig(_activeNet).simulationSource : userAddress);
+}
+
+/** Validate a contract account on the active chain instead of querying Horizon. */
+export async function verifyContractAccount(address: string): Promise<void> {
+  await server.getContractData(address, xdr.ScVal.scvLedgerKeyContractInstance());
+}
 
 // ── ScVal helpers ─────────────────────────────────────────────────────────────
 
@@ -1133,7 +1147,7 @@ export async function buildApproveXdr(
   const ledger = await server.getLatestLedger();
   const expiry = ledger.sequence + 120;
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1162,7 +1176,7 @@ export async function buildOpenPositionXdr(
   const addrScVal = new Address(userAddress).toScVal();
   const requests = buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
 
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1208,7 +1222,7 @@ export async function buildCloseSubmitXdr(pool: PoolDef, userAddress: string, po
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1242,7 +1256,7 @@ export async function buildRepayXdr(pool: PoolDef, userAddress: string, pos: Ass
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1268,7 +1282,7 @@ export async function buildWithdrawXdr(pool: PoolDef, userAddress: string, asset
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1311,6 +1325,7 @@ export async function fetchPoolPendingBlnd(
 }
 
 export async function buildClaimXdr(pool: PoolDef, userAddress: string, tokenIds: number[]): Promise<string> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
   const tokenIds_scv = xdr.ScVal.scvVec(tokenIds.map((id) => nativeToScVal(id, { type: "u32" })));
@@ -1384,7 +1399,7 @@ export async function buildIncreaseLeverageXdr(
   const requests = buildRequestsVec(items);
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1429,7 +1444,7 @@ export async function buildDecreaseLeverageXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1526,7 +1541,7 @@ export async function buildRemoveFundsXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1560,7 +1575,7 @@ export async function buildResupplyXdr(
 
   const poolContract = new Contract(pool.id);
   const addrScVal = new Address(userAddress).toScVal();
-  const acc = await server.getAccount(userAddress);
+  const acc = await getSorobanSource(userAddress);
   const tx = new TransactionBuilder(acc, {
     fee: (BigInt(BASE_FEE) * 10n).toString(),
     networkPassphrase: _cfg.passphrase,
@@ -1591,6 +1606,7 @@ export async function buildSwapBlndXdr(
   destAssetId: string,
   slippage = 0.02,
 ): Promise<{ xdr: string; estimate: string }> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const destAsset = _cfg.classicAssets[destAssetId];
   if (!destAsset) throw new Error(`No classic asset mapping for ${destAssetId}`);
 
@@ -1666,13 +1682,20 @@ export async function submitSignedXdr(signedXdr: string): Promise<string> {
   const result = await withRetry(() => server.sendTransaction(tx));
   if (result.status === "ERROR") throw new Error(`Send failed: ${result.errorResult?.toXDR("base64")}`);
 
+  return confirmSubmittedTransaction(result.hash);
+}
+
+/** Read back a wallet-submitted hash on this network; never broadcast it. */
+export async function confirmSubmittedTransaction(hash: string): Promise<string> {
+  if (!/^[a-f0-9]{64}$/i.test(hash)) throw new Error("Invalid transaction hash");
+  const rpcServer = server;
   for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 3000));
-    const poll = await withRetry(() => server.getTransaction(result.hash));
-    if (poll.status === "SUCCESS") return result.hash;
+    if (i > 0) await new Promise((r) => setTimeout(r, 3000));
+    const poll = await withRetry(() => rpcServer.getTransaction(hash));
+    if (poll.status === "SUCCESS") return hash;
     if (poll.status === "FAILED") throw new Error(`On-chain failure: ${poll.resultXdr?.toXDR("base64")}`);
   }
-  throw new Error("Confirmation timed out");
+  throw new Error(`Confirmation timed out: ${hash}. Check the wallet before retrying.`);
 }
 
 /** Submit a classic (non-Soroban) transaction via Horizon. */
@@ -1750,15 +1773,15 @@ export async function fetchPositionEvents(
 // ── Trustline auto-setup ──────────────────────────────────────────────────────
 
 /**
- * Determine which of the three required classic assets (b_token, d_token, BLND)
- * are missing trustlines on the user's Stellar account.
+ * Determine which required classic assets are missing trustlines on a G-account.
+ * Contract accounts return an empty result without RPC or Horizon queries;
+ * they hold SAC balances directly and cannot create classic trustlines.
  *
- * Queries the pool contract for the reserve's b_token and d_token contract IDs,
- * calls symbol() and issuer() on each to derive the classic Asset, then loads
- * the user's Horizon account to find which assets lack a trustline.
+ * For G-accounts, derives classic Assets from b_token/d_token contract IDs when
+ * the reserve exposes them, adds BLND, then checks the user's Horizon account.
  *
  * @param pool        Active pool definition
- * @param userAddress Stellar account G-address
+ * @param userAddress Stellar G-address or contract C-address
  * @param assetId     Soroban contract ID of the underlying asset being deposited
  * @returns           Missing assets + current trustline count
  * @throws            If Horizon account load fails or reserve data is unavailable
@@ -1768,6 +1791,8 @@ export async function getMissingTrustlines(
   userAddress: string,
   assetId: string,
 ): Promise<MissingTrustlineResult> {
+  if (isContractAccount(userAddress)) return { missing: [], currentCount: 0 };
+
   // Fetch reserve config to get b_token and d_token contract IDs
   const poolContract = new Contract(pool.id);
   const reserveRaw = await simulate(poolContract.call("get_reserve", new Address(assetId).toScVal()));
@@ -1831,6 +1856,7 @@ export async function getMissingTrustlines(
  */
 export async function buildTrustlineXdr(missingAssets: Asset[], userAddress: string): Promise<string | null> {
   if (missingAssets.length === 0) return null;
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
 
   const MAX_TRUSTLINE_LIMIT = "922337203685.4775807"; // Stellar i64::MAX in stroops / 1e7
 
