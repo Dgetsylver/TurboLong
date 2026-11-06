@@ -1773,15 +1773,15 @@ export async function fetchPositionEvents(
 // ── Trustline auto-setup ──────────────────────────────────────────────────────
 
 /**
- * Determine which of the three required classic assets (b_token, d_token, BLND)
- * are missing trustlines on the user's Stellar account.
+ * Determine which required classic assets are missing trustlines on a G-account.
+ * Contract accounts return an empty result without RPC or Horizon queries;
+ * they hold SAC balances directly and cannot create classic trustlines.
  *
- * Queries the pool contract for the reserve's b_token and d_token contract IDs,
- * calls symbol() and issuer() on each to derive the classic Asset, then loads
- * the user's Horizon account to find which assets lack a trustline.
+ * For G-accounts, derives classic Assets from b_token/d_token contract IDs when
+ * the reserve exposes them, adds BLND, then checks the user's Horizon account.
  *
  * @param pool        Active pool definition
- * @param userAddress Stellar account G-address
+ * @param userAddress Stellar G-address or contract C-address
  * @param assetId     Soroban contract ID of the underlying asset being deposited
  * @returns           Missing assets + current trustline count
  * @throws            If Horizon account load fails or reserve data is unavailable
@@ -1791,7 +1791,6 @@ export async function getMissingTrustlines(
   userAddress: string,
   assetId: string,
 ): Promise<MissingTrustlineResult> {
-  // Contract accounts hold SAC balances directly and have no classic trustlines.
   if (isContractAccount(userAddress)) return { missing: [], currentCount: 0 };
 
   // Fetch reserve config to get b_token and d_token contract IDs

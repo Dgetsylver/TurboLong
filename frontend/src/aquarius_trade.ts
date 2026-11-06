@@ -103,12 +103,7 @@ export function applySlippage(amountOut: bigint, slippageBps: number): bigint {
  * Returns null when either leg is unusable, so callers can omit the figure
  * rather than print a misleading zero.
  */
-export function priceImpactBps(
-  probeIn: bigint,
-  probeOut: bigint,
-  amountIn: bigint,
-  amountOut: bigint,
-): number | null {
+export function priceImpactBps(probeIn: bigint, probeOut: bigint, amountIn: bigint, amountOut: bigint): number | null {
   if (probeIn <= 0n || probeOut <= 0n || amountIn <= 0n || amountOut <= 0n) return null;
   const refRate = Number(probeOut) / Number(probeIn);
   const sizedRate = Number(amountOut) / Number(amountIn);

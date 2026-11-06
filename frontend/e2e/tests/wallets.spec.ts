@@ -2,8 +2,7 @@ import { expect, test } from "@playwright/test";
 
 /**
  * Wallet-kit E2E: boots the real app under the mock-wallet harness (`?e2e=1`)
- * and verifies the kit registers all six signing modules — the five supported
- * wallets plus the new Ledger hardware module — and that the harness installs
+ * and verifies mainnet wallet registration and that the harness installs
  * cleanly (the seam the app routes sign/submit through is active).
  *
  * No browser extension, hardware wallet, or live RPC is touched. Per-operation

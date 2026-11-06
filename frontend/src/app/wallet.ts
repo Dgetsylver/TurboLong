@@ -1,7 +1,7 @@
 /**
  * Wallet layer — Stellar Wallets Kit init, connect/switch/disconnect, and the
- * sign→submit helpers. Ported verbatim from the original main.ts so the
- * money-path behaviour is unchanged; only the UI wiring moved to state + chrome.
+ * sign→submit helpers. Nido's wallet submits its own transactions; the shared
+ * confirmation path must not broadcast a returned transaction hash as XDR.
  */
 import { StellarWalletsKit } from "@creit-tech/stellar-wallets-kit/sdk";
 import { FreighterModule } from "@creit-tech/stellar-wallets-kit/modules/freighter";
@@ -219,7 +219,7 @@ async function sign(xdr: string): Promise<WalletSignResult> {
 }
 
 /**
- * Sign-only helper for flows that submit elsewhere (e.g. the Stellar Broker
+ * Classic-wallet sign-only helper for flows that submit elsewhere (e.g. the Stellar Broker
  * mediator, which submits through its own Horizon call). Returns the signed XDR.
  */
 export async function signXdr(xdr: string): Promise<string> {
@@ -229,7 +229,7 @@ export async function signXdr(xdr: string): Promise<string> {
   return result.signedTxXdr;
 }
 
-/** Sign a Soroban tx and submit via RPC. Toasts through the flow. Returns the tx hash. */
+/** Confirm a Soroban tx via RPC, submitting signed XDR only if the wallet has not already submitted it. */
 export async function signAndSubmit(xdr: string, label: string): Promise<string> {
   toast(t("toast.signInWallet", { label }), "info");
   const contractAccount = isContractAccount(getState().userAddress ?? "");

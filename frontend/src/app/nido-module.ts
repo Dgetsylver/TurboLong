@@ -11,6 +11,7 @@ import { nidoConfig } from "../nido";
 import type { NetworkMode } from "../blend";
 
 export interface WalletSignResult {
+  /** The kit's XDR slot contains a transaction hash when `submitted` is true. */
   signedTxXdr: string;
   signerAddress?: string;
   submitted?: true;
@@ -18,11 +19,15 @@ export interface WalletSignResult {
 
 /** Compatibility with the live wallet's `nido_submitted` response, already
  * supported by Nido's upstream module but absent from published version 0.1.0.
- * Reuse the package's picker, origin-checked popup and URL helpers. Remove this
- * override when a published module includes the upstream submitted flag.
+ * Reuse the package's picker, origin-checked popup and URL helpers. Replacing
+ * this override requires preserving the account/network checks and shared
+ * approval exclusion covered by frontend/test/nido-module.test.ts, as well as
+ * support for the submitted flag.
  * https://github.com/nidohq/nido/blob/main/packages/stellar-wallets-kit-module/src/module.ts
  */
 export class TurboLongNidoModule extends NidoModule {
+  // The package reuses the named nido-wallet popup and accepts origin-only replies.
+  // Share this guard across instances so one approval cannot confirm another call.
   private static signing = false;
   private readonly deployment;
 

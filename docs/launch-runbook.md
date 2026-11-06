@@ -53,9 +53,11 @@ capture hashes. The vault-view "Trade on Aquarius" CTA goes live automatically.
 ## 3. Ship the frontend
 
 - [ ] `npm run build` (emits `index.html` + `status.html`); deploy `dist/`.
-- [ ] Smoke-test on mainnet: connect (each of 5 wallets + Ledger), Compare view
-      loads no-wallet, Vault deposit/withdraw, Swap quote (Broker + Aquarius),
-      language switch (EN/ES/PT-BR), first-visit onboarding tour.
+- [ ] Smoke-test on mainnet: connect each wallet configured in
+      [`wallet.ts`](../frontend/src/app/wallet.ts), Compare view loads no-wallet,
+      Vault deposit/withdraw with a classic wallet, Swap quote (Broker + Aquarius),
+      language switch (EN/ES/PT-BR), first-visit onboarding tour. Use the
+      [Nido recording guide](nido-mainnet-recording.md) for its supported flow.
 - [ ] `/status.html` shows all services operational.
 - [ ] `npx tsx scripts/aquarius_rate_report.ts` — verdict table all PASS with
       ≥ 5 pairs priced; commit the refreshed
