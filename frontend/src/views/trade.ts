@@ -1,3 +1,4 @@
+import type { xdr } from "@stellar/stellar-sdk";
 import "./trade.css";
 /**
  * Trade screen — open / adjust / monitor a leveraged Blend loop position, on the
@@ -53,6 +54,8 @@ import {
   getMissingTrustlines,
   buildTrustlineXdr,
   submitClassicXdr,
+  grantOpenPlan,
+  grantClosePlan,
   type PoolDef,
   type AssetInfo,
   type ReserveStats,
@@ -65,6 +68,11 @@ import { fetchSnapshotSeries } from "../history";
 import { getState, setState, subscribe } from "../app/state";
 import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
+import { isContractAccount } from "../nido";
+import { t } from "../i18n";
+import { GrantScopeError, prepareFailure } from "../grant";
+import { GrantRefusedError, submitUnderGrant } from "../grant-session";
+import { confirmFallback, grantPanel } from "./grant-panel";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
@@ -162,7 +170,9 @@ export function tradeScreen(): HTMLElement {
   const histEl = el("div", { class: "trade-hist" });
   const warnEl = el("div", { class: "trade-warn" });
   const colsEl = el("div", { class: "trade-cols" });
-  root.append(selectorEl, statsEl, ratesEl, histEl, warnEl, colsEl);
+  // Grant mode (Nido accounts, mainnet and testnet): renders nothing for classic wallets.
+  const grant = grantPanel({ pool: () => ts.pool });
+  root.append(selectorEl, statsEl, ratesEl, histEl, warnEl, grant.el, colsEl);
 
   // ── Derived helpers ──────────────────────────────────────────────────────
   const rsFor = (a: AssetInfo) => ts.reserves.find((r) => r.asset.id === a.id);
@@ -198,6 +208,7 @@ export function tradeScreen(): HTMLElement {
       ts.loading = false;
       renderAll();
       void loadHistory();
+      void grant.refresh();
     }
   }
 
@@ -1130,7 +1141,9 @@ export function tradeScreen(): HTMLElement {
 
     // BLND rewards row — Claim & Convert (compound via Add Funds; NO Resupply).
     const compoundBtn = Button({ variant: "secondary", size: "sm", children: "Claim & Convert" });
-    compoundBtn.disabled = ts.pendingBlnd <= 0;
+    const unsupportedClaim = isContractAccount(getState().userAddress ?? "");
+    compoundBtn.disabled = unsupportedClaim || ts.pendingBlnd <= 0;
+    if (unsupportedClaim) compoundBtn.title = t("wallet.classicUnsupported");
     on(compoundBtn, "click", () => void claimAndConvert());
     const blndRow = el("div", { class: "trade-blnd" }, [
       el("div", { class: "trade-blnd__left" }, [
@@ -1217,6 +1230,15 @@ export function tradeScreen(): HTMLElement {
 
     const initialStroops = BigInt(Math.round(initial * 1e7));
 
+    // Grant mode: TurboLong's session key signs one plain submit; on a refusal
+    // the owner may fall back to the main-wallet flow below.
+    if (grant.active()) {
+      const via = await viaGrant(`Open ${liveAsset.symbol} position`, () =>
+        grantOpenPlan(liveAsset, initialStroops, leverage),
+      );
+      if (via !== "fallback") return;
+    }
+
     // Trustline check (getMissingTrustlines).
     let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
     try {
@@ -1272,6 +1294,10 @@ export function tradeScreen(): HTMLElement {
   async function closePosition(pos: AssetPosition): Promise<void> {
     const addr = getState().userAddress;
     if (!addr) return;
+    if (grant.active()) {
+      const via = await viaGrant(`Close ${pos.asset.symbol} position`, () => grantClosePlan(pos));
+      if (via !== "fallback") return;
+    }
     txShow(["Close Position", "Confirmed"]);
     try {
       const submitXdr = await buildCloseSubmitXdr(ts.pool, addr, pos);
@@ -1372,6 +1398,12 @@ export function tradeScreen(): HTMLElement {
       return;
     }
     const additionalStroops = BigInt(Math.round(additional * 1e7));
+    if (grant.active()) {
+      const via = await viaGrant(`Add ${fmt(additional)} ${liveAsset.symbol} at ${leverage.toFixed(1)}×`, () =>
+        grantOpenPlan(liveAsset, additionalStroops, leverage),
+      );
+      if (via !== "fallback") return;
+    }
     txShow(["Approve", "Submit", "Confirmed"]);
     try {
       // buildApproveXdr (additionalStroops + 1n) → signAndSubmit
@@ -1428,6 +1460,10 @@ export function tradeScreen(): HTMLElement {
   async function claimAndConvert(): Promise<void> {
     const addr = getState().userAddress;
     if (!addr) return;
+    if (isContractAccount(addr)) {
+      toast(t("wallet.classicUnsupported"), "info");
+      return;
+    }
     const pos = posFor(ts.asset);
     if (!pos) return;
 
@@ -1569,18 +1605,67 @@ export function tradeScreen(): HTMLElement {
   }
 
   /** Friendly message for Blend error codes (mirrors old-main mapping). */
+  /**
+   * Run an open or close under TurboLong's grant: no wallet prompt. The account
+   * checks the grant in an enforcing simulation first, so a refusal sends
+   * nothing; the owner then chooses whether to use the main Nido wallet.
+   */
+  async function viaGrant(label: string, plan: () => xdr.ScVal): Promise<"done" | "fallback" | "stopped"> {
+    const addr = getState().userAddress;
+    if (!addr) return "stopped";
+    txShow(["Session key signs", "Account checks grant", "Confirmed"]);
+    let step = 0;
+    try {
+      const hash = await submitUnderGrant({
+        account: addr,
+        pool: ts.pool,
+        requests: plan(),
+        // Stage 2 (sending, confirming): the transaction may be on chain.
+        onStage: (stage) => {
+          step = stage === "signing" ? 0 : stage === "checking" ? 1 : 2;
+          txStep(step);
+        },
+      });
+      txStep(2);
+      txHide();
+      grant.clearRefusal();
+      toast(`${label}: signed under TurboLong's grant, no passkey prompt`, "success", hash);
+      await loadAll();
+      return "done";
+    } catch (e) {
+      txStep(step, true);
+      txHide();
+      if (step === 2) {
+        // Sent already: retrying with the main wallet could act twice.
+        toast(`${txErr(e)} Check the transaction before retrying.`, "error");
+        await loadAll();
+        return "stopped";
+      }
+      const refused = e instanceof GrantRefusedError || e instanceof GrantScopeError;
+      const raw = (e as Error)?.message ?? String(e);
+      const { reason, details } = refused ? { reason: raw, details: undefined } : prepareFailure(raw, txErr(e));
+      if (refused) grant.noteRefusal(reason);
+      toast(reason, "error");
+      void grant.refresh();
+      return (await confirmFallback(reason, label, details)) ? "fallback" : "stopped";
+    }
+  }
+
   function txErr(e: unknown): string {
     const msg = (e as Error)?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf"))
       return "Health factor too low — reduce leverage or deposit more.";
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate"))
       return "Pool utilization limit reached — not enough liquidity.";
+    if (msg.includes("#1206"))
+      return "This pool is not taking new borrows right now (on ice or frozen). Open at 1× (supply only) or pick another pool.";
     return msg.slice(0, 200);
   }
 
   // React to Expert-mode toggles (changes min-HF → max leverage, the slider's
   // Maxi-degen zone, HF precision). Self-unsubscribes once this screen unmounts.
   let lastExpert = getState().expert;
+  let lastAddress = getState().userAddress;
   let wasMounted = false;
   const unsub = subscribe((s) => {
     const inDoc = document.contains(root);
@@ -1593,6 +1678,10 @@ export function tradeScreen(): HTMLElement {
     if (s.expert !== lastExpert) {
       lastExpert = s.expert;
       renderAll();
+    }
+    if (s.userAddress !== lastAddress) {
+      lastAddress = s.userAddress;
+      void grant.refresh();
     }
   });
 

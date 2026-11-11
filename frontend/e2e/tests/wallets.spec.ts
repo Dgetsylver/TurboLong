@@ -2,8 +2,7 @@ import { expect, test } from "@playwright/test";
 
 /**
  * Wallet-kit E2E: boots the real app under the mock-wallet harness (`?e2e=1`)
- * and verifies the kit registers all six signing modules — the five supported
- * wallets plus the new Ledger hardware module — and that the harness installs
+ * and verifies mainnet wallet registration and that the harness installs
  * cleanly (the seam the app routes sign/submit through is active).
  *
  * No browser extension, hardware wallet, or live RPC is touched. Per-operation
@@ -11,7 +10,7 @@ import { expect, test } from "@playwright/test";
  * next E2E increment (the harness + TxSeam already support them).
  */
 
-const EXPECTED_WALLET_COUNT = 6; // Freighter, xBull, Albedo, Lobstr, Hana, Ledger
+const EXPECTED_WALLET_COUNT = 7; // Existing classic wallets plus Nido
 
 test.describe("Stellar Wallets Kit", () => {
   test("boots under the E2E harness and installs the mock seam", async ({ page }) => {
@@ -23,7 +22,7 @@ test.describe("Stellar Wallets Kit", () => {
     expect(installed).toBe(true);
   });
 
-  test("registers all five wallets plus Ledger", async ({ page }) => {
+  test("registers classic wallets and Nido on mainnet", async ({ page }) => {
     await page.goto("/?e2e=1");
     await page.waitForFunction(
       () => Array.isArray(window.__E2E__?.registeredWallets),
@@ -32,8 +31,9 @@ test.describe("Stellar Wallets Kit", () => {
     );
     const registered = await page.evaluate(() => window.__E2E__?.registeredWallets ?? []);
 
-    // All six modules registered (the five base wallets + the Ledger module).
+    // Nido joins the six supported classic wallets on mainnet.
     expect(registered.length).toBe(EXPECTED_WALLET_COUNT);
+    expect(registered).toContain("nido");
     // Ledger must be present — it is the deliverable's new hardware module.
     expect(registered.some((id) => /ledger/i.test(id))).toBe(true);
   });

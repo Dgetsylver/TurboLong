@@ -4,6 +4,7 @@
  */
 import "./chrome.css";
 import { el, TxStepper } from "../ui";
+import { getActiveNetwork } from "../blend";
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 let toastStack: HTMLElement | null = null;
@@ -27,7 +28,7 @@ export function toast(msg: string, type: ToastType = "info", hash?: string): voi
       "a",
       {
         class: "tl-toast__link",
-        href: `https://stellar.expert/explorer/public/tx/${hash}`,
+        href: `https://stellar.expert/explorer/${getActiveNetwork() === "testnet" ? "testnet" : "public"}/tx/${hash}`,
         target: "_blank",
         rel: "noopener",
       },

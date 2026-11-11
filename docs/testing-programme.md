@@ -73,12 +73,12 @@ so a parity harness pins them together.
 (the E2E harness installs a fake signer so CI needs no real wallet/extension):
 
 1. Boots under the E2E harness and installs the mock seam.
-2. Registers all five wallets **plus Ledger** (Freighter, xBull, Albedo, Lobstr,
-   Hana, Ledger).
+2. Checks mainnet wallet registration from
+   [`baseWalletModules`](../frontend/src/app/wallet.ts).
 3. Exposes a submitted-tx ledger so `sign → submit` can be asserted on both
    classic and Soroban operations.
 
-- **Run:** `cd frontend && npm run test:e2e`.
+- **Run:** `cd frontend/e2e && npm run test:e2e`.
 - **Gate:** `frontend-ci.yml` e2e job (installs Chromium, runs the mock-harness
   suite). The parity vitest run excludes `e2e/**` so the two never collide.
 
@@ -133,7 +133,7 @@ sessions weighted toward LatAm and DeFi-native users, with findings triaged into
 - [ ] `cargo build --locked --target wasm32v1-none --release` produces the final WASM, its hash matching CI's `Wasm hash`.
 - [ ] Parity suite green (`rate_calc` ↔ `projectRates`, ≥20 fixtures).
 - [ ] `npm run lint` + `npm run build` clean (frontend + alerts).
-- [ ] Playwright e2e green for 5 wallets + Ledger × {classic, Soroban}.
+- [ ] Playwright e2e green (Layer 4).
 - [ ] `cargo audit` passing; gitleaks blocks a planted secret.
 - [ ] For contract changes: upgrade-parity fixture test passes within 1e-7.
 - [ ] For mainnet deploys: Layer 6 checklist completed with captured tx hashes.

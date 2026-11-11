@@ -32,6 +32,8 @@ import {
 } from "@stellar/stellar-sdk";
 
 import { server as blendServer, getNetworkPassphrase } from "./blend.ts";
+import { isContractAccount } from "./nido";
+import { t } from "./i18n";
 import { aquariusRouter } from "./aquarius.ts";
 import type { AquariusListing } from "./aquarius_listings.ts";
 
@@ -101,12 +103,7 @@ export function applySlippage(amountOut: bigint, slippageBps: number): bigint {
  * Returns null when either leg is unusable, so callers can omit the figure
  * rather than print a misleading zero.
  */
-export function priceImpactBps(
-  probeIn: bigint,
-  probeOut: bigint,
-  amountIn: bigint,
-  amountOut: bigint,
-): number | null {
+export function priceImpactBps(probeIn: bigint, probeOut: bigint, amountIn: bigint, amountOut: bigint): number | null {
   if (probeIn <= 0n || probeOut <= 0n || amountIn <= 0n || amountOut <= 0n) return null;
   const refRate = Number(probeOut) / Number(probeIn);
   const sizedRate = Number(amountOut) / Number(amountIn);
@@ -196,6 +193,7 @@ export async function buildAquariusSwapXdr(
   amountIn: bigint,
   minOut: bigint,
 ): Promise<string> {
+  if (isContractAccount(userAddress)) throw new Error(t("wallet.classicUnsupported"));
   const account = await blendServer.getAccount(userAddress);
   const router = new Contract(aquariusRouter());
 
