@@ -133,7 +133,7 @@ sessions weighted toward LatAm and DeFi-native users, with findings triaged into
 - [ ] `cargo build --locked --target wasm32v1-none --release` produces the final WASM, its hash matching CI's `Wasm hash`.
 - [ ] Parity suite green (`rate_calc` ↔ `projectRates`, ≥20 fixtures).
 - [ ] `npm run lint` + `npm run build` clean (frontend + alerts).
-- [ ] Playwright e2e green for 5 wallets + Ledger × {classic, Soroban}.
+- [ ] Playwright e2e green (Layer 4).
 - [ ] `cargo audit` passing; gitleaks blocks a planted secret.
 - [ ] For contract changes: upgrade-parity fixture test passes within 1e-7.
 - [ ] For mainnet deploys: Layer 6 checklist completed with captured tx hashes.
