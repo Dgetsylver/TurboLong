@@ -85,6 +85,9 @@ const chain = {
   sent: [] as string[],
   pendingCharges: [] as [number, bigint][],
   ownerPrompts: 0,
+  /** Make the next sent transaction trap on chain (a stale footprint). */
+  trapNext: false,
+  failed: new Set<string>(),
 };
 
 /** Nido's grant page: read TurboLong's request and install its rules, as one
@@ -296,7 +299,16 @@ const success = (retval: xdr.ScVal, auth: xdr.SorobanAuthorizationEntry[] = []) 
   }) as unknown as rpc.Api.SimulateTransactionResponse;
 
 beforeEach(() => {
-  Object.assign(chain, { ledger: 1_000, rules: [], spends: new Map(), sent: [], pendingCharges: [], ownerPrompts: 0 });
+  Object.assign(chain, {
+    ledger: 1_000,
+    rules: [],
+    spends: new Map(),
+    sent: [],
+    pendingCharges: [],
+    ownerPrompts: 0,
+    trapNext: false,
+    failed: new Set(),
+  });
   keys.clear();
   const store = new Map<string, string>();
   vi.stubGlobal("window", { location: { origin: ORIGIN, href: `${ORIGIN}/` } });
@@ -354,13 +366,36 @@ beforeEach(() => {
   });
   vi.spyOn(rpc.Server.prototype, "sendTransaction").mockImplementation(async () => {
     const hash = (chain.sent.length + 1).toString(16).padStart(64, "0");
+    if (chain.trapNext) {
+      // Rolled back: no spend recorded, no nonce consumed.
+      chain.trapNext = false;
+      chain.failed.add(hash);
+      chain.sent.push(hash);
+      chain.ledger += 1;
+      return { status: "PENDING", hash } as never;
+    }
     for (const [id, amount] of chain.pendingCharges)
       chain.spends.set(id, [...(chain.spends.get(id) ?? []), { amount, ledger: chain.ledger }]);
     chain.sent.push(hash);
     chain.ledger += 10;
     return { status: "PENDING", hash } as never;
   });
-  vi.spyOn(rpc.Server.prototype, "getTransaction").mockResolvedValue({ status: "SUCCESS" } as never);
+  vi.spyOn(rpc.Server.prototype, "getTransaction").mockImplementation(async (hash) =>
+    chain.failed.has(hash)
+      ? ({
+          status: "FAILED",
+          resultXdr: new xdr.TransactionResult({
+            feeCharged: xdr.Int64.fromString("100"),
+            result: xdr.TransactionResultResult.txFailed([
+              xdr.OperationResult.opInner(
+                xdr.OperationResultTr.invokeHostFunction(xdr.InvokeHostFunctionResult.invokeHostFunctionTrapped()),
+              ),
+            ]),
+            ext: new xdr.TransactionResultExt(0),
+          }),
+        } as never)
+      : ({ status: "SUCCESS" } as never),
+  );
 });
 
 afterEach(() => {
@@ -420,6 +455,17 @@ describe("grant mode demo (emulated Perch dev account)", () => {
     expect(chain.sent).toHaveLength(2); // nothing was sent
     const unchanged = await grantStatus(ACCOUNT, pool);
     expect(unchanged.state === "active" && unchanged.used).toBe(after.used);
+  });
+
+  it("re-simulates and resends once when the chain traps on a stale footprint", async () => {
+    await approveOnce();
+    chain.trapNext = true;
+    const hash = await open(5n, 2);
+    expect(chain.sent).toHaveLength(2);
+    expect(chain.failed.has(chain.sent[0])).toBe(true);
+    expect(hash).toBe(chain.sent[1]);
+    const status = await grantStatus(ACCOUNT, pool);
+    expect(status.state === "active" && status.used).toBe(100_000_000n); // charged once
   });
 
   it("refuses an out-of-scope token before signing", async () => {

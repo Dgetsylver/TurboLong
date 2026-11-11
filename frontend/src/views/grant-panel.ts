@@ -58,6 +58,8 @@ export interface GrantPanel {
 export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   const root = el("div", { class: "grant-slot" });
   let status: GrantStatus | undefined;
+  /** The account and pool `status` was read for. */
+  let statusFor = "";
   let key: SessionKey | undefined;
   let refusal: string | undefined;
   let busy = false;
@@ -90,9 +92,11 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
       return;
     }
     try {
-      const next = await grantStatus(addr, ctx.pool());
+      const pool = ctx.pool();
+      const next = await grantStatus(addr, pool);
       if (mine !== generation) return;
       status = next;
+      statusFor = `${addr}:${pool.id}`;
       if (next.state !== "unavailable" && !key) key = await prepareSessionKey(addr);
     } catch (e) {
       if (mine !== generation) return;
@@ -243,7 +247,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
           class: "grant-card",
           children: [
             el("p", {}, [
-              "Approve once in Nido with your passkey. After that, TurboLong opens and closes XLM positions in this pool with its own session key: no passkey prompt, and your account refuses anything outside the grant.",
+              "Approve once in Nido with your passkey. After that, TurboLong opens, adds to and closes XLM positions in this pool with its own session key: no passkey prompt, and your account refuses anything outside the grant.",
             ]),
             scopeRows(pool, `up to ${capXlm || "…"} XLM per ${PERIOD_LABEL[capPeriod]}`),
             el("div", { class: "grant-form" }, [
@@ -293,7 +297,10 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
           scopeRows(pool, capText),
           keyLine,
           refusal ? el("p", { class: "grant-refusal", role: "alert", id: "grant-refusal" }, [refusal]) : null,
-          el("label", { class: "grant-toggle" }, [useBox, " Sign opens and closes in this pool with the grant"]),
+          el("label", { class: "grant-toggle" }, [
+            useBox,
+            " Sign opens, add-funds and closes in this pool with the grant",
+          ]),
           el("div", { class: "grant-actions" }, [
             s.state === "expired"
               ? Button({ variant: "primary", size: "sm", children: "Approve again", onClick: () => void approve() })
@@ -332,7 +339,12 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   return {
     el: root,
     refresh,
-    active: () => grantsSupported() && status?.state === "active" && useGrantPref() && isContractAccount(account()),
+    active: () =>
+      grantsSupported() &&
+      status?.state === "active" &&
+      statusFor === `${account()}:${ctx.pool().id}` &&
+      useGrantPref() &&
+      isContractAccount(account()),
     noteRefusal(text: string) {
       refusal = text;
       render();
@@ -362,7 +374,7 @@ export function confirmFallback(reason: string, action: string): Promise<boolean
       el("div", { class: "trade-modal__body" }, [
         el("p", { class: "grant-refusal" }, [reason]),
         el("p", {}, [
-          `Nothing was sent. You can ${action.toLowerCase()} with your main Nido wallet instead: Nido asks for your passkey for each transaction.`,
+          `Nothing was sent. You can run “${action}” with your main Nido wallet instead: Nido asks for your passkey for each transaction.`,
         ]),
       ]),
       el("div", { class: "trade-modal__foot" }, [

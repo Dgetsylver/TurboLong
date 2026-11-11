@@ -1,13 +1,11 @@
 import {
   NidoModule,
   AccountSwitchRequestedError,
-  accountOrigin,
   clearCachedAddress,
   openCeremonyPopup,
   parseSignReturn,
-  signTransactionUrl,
 } from "@nidohq/stellar-wallets-kit-module";
-import { nidoConfig } from "../nido";
+import { nidoAccountOrigin, nidoConfig } from "../nido";
 import type { NetworkMode } from "../blend";
 
 export interface WalletSignResult {
@@ -52,15 +50,16 @@ export class TurboLongNidoModule extends NidoModule {
       if (opts?.address && opts.address !== address) {
         throw new Error("Nido: reconnect before signing with a different account.");
       }
-      const url = signTransactionUrl({
-        base: this.deployment.base,
-        account: address,
-        xdr: txXdr,
-        networkPassphrase,
-        dappOrigin: window.location.origin,
-        returnUrl: window.location.href,
-      });
-      const { search } = await openCeremonyPopup(url, accountOrigin(this.deployment.base, address));
+      // The package's signTransactionUrl, on the account origin of the current
+      // module (numbered preview hosts such as the testnet grants preview).
+      const origin = nidoAccountOrigin(this.deployment.base, address);
+      const url = new URL("/sign/", origin);
+      url.searchParams.set("kind", "tx");
+      url.searchParams.set("xdr", txXdr);
+      url.searchParams.set("network", networkPassphrase);
+      url.searchParams.set("dapp", window.location.origin);
+      url.searchParams.set("return", window.location.href);
+      const { search } = await openCeremonyPopup(url.toString(), origin);
       const params = new URLSearchParams(search);
       const hash = params.get("nido_submitted");
       if (hash !== null) {

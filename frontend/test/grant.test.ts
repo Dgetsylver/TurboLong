@@ -433,3 +433,16 @@ describe("grant-mode Blend plans", () => {
     expect(grantClosePlan({ ...pos, dTokens: 0n }).pull).toBe(0n);
   });
 });
+
+describe("Nido account origins", () => {
+  it("puts preview accounts one subdomain level under the apex, like Nido's current module", async () => {
+    const { nidoAccountOrigin } = await import("../src/nido");
+    const acc = ACCOUNT.toLowerCase();
+    expect(nidoAccountOrigin("https://356.test.nido.fyi", ACCOUNT)).toBe(`https://${acc}--356.test.nido.fyi`);
+    expect(nidoAccountOrigin("https://pr-356.test.nido.fyi", ACCOUNT)).toBe(`https://${acc}--356.test.nido.fyi`);
+    expect(nidoAccountOrigin("https://nido.fyi", ACCOUNT)).toBe(`https://${acc}.nido.fyi`);
+    expect(nidoAccountOrigin("http://localhost:4321", ACCOUNT)).toBe(`http://${acc}.localhost:4321`);
+    expect(nidoAccountOrigin("http://127.0.0.1:4321", ACCOUNT)).toBe(`http://${acc}.127.0.0.1:4321`);
+    expect(() => nidoAccountOrigin("https://nido.fyi", StrKey.encodeEd25519PublicKey(Buffer.alloc(32)))).toThrow();
+  });
+});

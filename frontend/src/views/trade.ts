@@ -1621,6 +1621,7 @@ export function tradeScreen(): HTMLElement {
         account: addr,
         pool: ts.pool,
         requests,
+        // Stage 2 (sending, confirming): the transaction may be on chain.
         onStage: (stage) => {
           step = stage === "signing" ? 0 : stage === "checking" ? 1 : 2;
           txStep(step);
@@ -1634,6 +1635,12 @@ export function tradeScreen(): HTMLElement {
     } catch (e) {
       txStep(step, true);
       txHide();
+      if (step === 2) {
+        // Sent already: retrying with the main wallet could act twice.
+        toast(`${txErr(e)} Check the transaction before retrying.`, "error");
+        await loadAll();
+        return "stopped";
+      }
       const refused = e instanceof GrantRefusedError || e instanceof GrantScopeError;
       const reason = refused ? (e as Error).message : txErr(e);
       if (refused) grant.noteRefusal(reason);

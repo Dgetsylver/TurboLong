@@ -11,7 +11,7 @@
  * runs without a relayer. The fee payer pays fees and nothing else; the
  * account's rules name the session key, not it.
  */
-import { accountOrigin, openCeremonyPopup } from "@nidohq/stellar-wallets-kit-module";
+import { openCeremonyPopup } from "@nidohq/stellar-wallets-kit-module";
 import {
   Account,
   Address,
@@ -26,7 +26,6 @@ import {
 } from "@stellar/stellar-sdk";
 import {
   type PoolDef,
-  confirmSubmittedTransaction,
   getActiveNetwork,
   getNetworkPassphrase,
   server,
@@ -64,7 +63,7 @@ import {
   type RefusalKind,
 } from "./grant";
 import { deleteSessionKey, loadSessionKey, sessionKeyFor, signAssertion, type SessionKey } from "./grant-key";
-import { isContractAccount, nidoConfig } from "./nido";
+import { isContractAccount, nidoAccountOrigin, nidoConfig } from "./nido";
 
 /** Grants exist on Perch dev, previewed on testnet only. */
 export const grantsSupported = (): boolean => getActiveNetwork() === "testnet";
@@ -214,7 +213,7 @@ export async function requestGrant(args: {
   back.search = "";
   back.hash = "";
   const url = grantRequestUrl({
-    accountOrigin: accountOrigin(base, account),
+    accountOrigin: nidoAccountOrigin(base, account),
     account,
     publicKeyHex: key.publicKeyHex,
     origin: appOrigin(),
@@ -236,7 +235,7 @@ export async function requestGrant(args: {
 /** Nido's page where the owner removes an app (`remove_grant`): Security →
  * Remove app. Nido takes no removal request from an app. */
 export function revokeUrl(account: string): string {
-  return new URL("/security/", accountOrigin(nidoConfig(getActiveNetwork()).base, account)).toString();
+  return new URL("/security/", nidoAccountOrigin(nidoConfig(getActiveNetwork()).base, account)).toString();
 }
 
 /** Forget this browser's session key: nothing here can sign under the grant
@@ -334,28 +333,54 @@ export async function submitUnderGrant(args: {
     signed.push(entry);
   }
 
-  onStage?.("checking");
   const payer = await testnetFeePayer();
-  const tx = new TransactionBuilder(await server.getAccount(payer.publicKey()), {
-    fee: BASE_FEE,
-    networkPassphrase,
-  })
-    .addOperation(Operation.invokeHostFunction({ func, auth: signed }))
-    .setTimeout(60)
-    .build();
-  const enforced = await server.simulateTransaction(tx, undefined, "enforce");
-  if (!rpc.Api.isSimulationSuccess(enforced)) {
-    const error = (enforced as rpc.Api.SimulateTransactionErrorResponse).error;
-    const refusal = accountRefusal(error);
-    if (refusal) throw new GrantRefusedError(refusal.kind, refusal.text);
-    throw new Error(`Simulation failed: ${error}`);
-  }
+  for (let attempt = 1; ; attempt++) {
+    onStage?.("checking");
+    const tx = new TransactionBuilder(await server.getAccount(payer.publicKey()), {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(Operation.invokeHostFunction({ func, auth: signed }))
+      .setTimeout(60)
+      .build();
+    const enforced = await server.simulateTransaction(tx, undefined, "enforce");
+    if (!rpc.Api.isSimulationSuccess(enforced)) {
+      const error = (enforced as rpc.Api.SimulateTransactionErrorResponse).error;
+      const refusal = accountRefusal(error);
+      if (refusal) throw new GrantRefusedError(refusal.kind, refusal.text);
+      throw new Error(`Simulation failed: ${error}`);
+    }
 
-  onStage?.("sending");
-  const ready = rpc.assembleTransaction(tx, enforced).build();
-  ready.sign(payer);
-  const sent = await server.sendTransaction(ready);
-  if (sent.status === "ERROR") throw new Error(`Send failed: ${sent.errorResult?.toXDR("base64")}`);
-  onStage?.("confirming");
-  return confirmSubmittedTransaction(sent.hash);
+    onStage?.("sending");
+    const ready = rpc.assembleTransaction(tx, enforced).build();
+    ready.sign(payer);
+    const sent = await server.sendTransaction(ready);
+    if (sent.status === "ERROR") throw new Error(`Send failed: ${sent.errorResult?.toXDR("base64")}`);
+    onStage?.("confirming");
+    const outcome = await server.pollTransaction(sent.hash, { attempts: 30 });
+    if (outcome.status === rpc.Api.GetTransactionStatus.SUCCESS) return sent.hash;
+    if (outcome.status === rpc.Api.GetTransactionStatus.FAILED && attempt === 1 && trapped(outcome)) continue;
+    throw new Error(
+      outcome.status === rpc.Api.GetTransactionStatus.FAILED
+        ? `On-chain failure: ${sent.hash}`
+        : `Confirmation timed out: ${sent.hash}. Check the account before retrying.`,
+    );
+  }
+}
+
+/**
+ * A footprint drawn by the simulation can miss an entry the call writes one
+ * ledger later (Blend updates its emissions index only when time has passed,
+ * so a close simulated in the ledger of the open leaves `EmisData` out), and
+ * the host traps. A failed transaction rolls back and consumes no nonce, so
+ * the signed authorization can run once more under a fresh simulation.
+ */
+function trapped(outcome: rpc.Api.GetFailedTransactionResponse): boolean {
+  try {
+    const op = outcome.resultXdr.result().results()[0];
+    const name = op?.tr().invokeHostFunctionResult().switch().name;
+    return name === "invokeHostFunctionTrapped" || name === "invokeHostFunctionResourceLimitExceeded";
+  } catch {
+    return false;
+  }
 }
