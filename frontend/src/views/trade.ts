@@ -53,6 +53,9 @@ import {
   getMissingTrustlines,
   buildTrustlineXdr,
   submitClassicXdr,
+  grantOpenPlan,
+  grantClosePlan,
+  type GrantSubmitPlan,
   type PoolDef,
   type AssetInfo,
   type ReserveStats,
@@ -67,6 +70,9 @@ import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { isContractAccount } from "../nido";
 import { t } from "../i18n";
+import { GrantScopeError } from "../grant";
+import { GrantRefusedError, submitUnderGrant } from "../grant-session";
+import { confirmFallback, grantPanel } from "./grant-panel";
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
@@ -164,7 +170,9 @@ export function tradeScreen(): HTMLElement {
   const histEl = el("div", { class: "trade-hist" });
   const warnEl = el("div", { class: "trade-warn" });
   const colsEl = el("div", { class: "trade-cols" });
-  root.append(selectorEl, statsEl, ratesEl, histEl, warnEl, colsEl);
+  // Grant mode (Nido accounts on testnet): renders nothing for classic wallets.
+  const grant = grantPanel({ pool: () => ts.pool });
+  root.append(selectorEl, statsEl, ratesEl, histEl, warnEl, grant.el, colsEl);
 
   // ── Derived helpers ──────────────────────────────────────────────────────
   const rsFor = (a: AssetInfo) => ts.reserves.find((r) => r.asset.id === a.id);
@@ -200,6 +208,7 @@ export function tradeScreen(): HTMLElement {
       ts.loading = false;
       renderAll();
       void loadHistory();
+      void grant.refresh();
     }
   }
 
@@ -1221,6 +1230,15 @@ export function tradeScreen(): HTMLElement {
 
     const initialStroops = BigInt(Math.round(initial * 1e7));
 
+    // Grant mode: TurboLong's session key signs one plain submit; on a refusal
+    // the owner may fall back to the main-wallet flow below.
+    if (grant.active()) {
+      const via = await viaGrant(`Open ${liveAsset.symbol} position`, () =>
+        grantOpenPlan(liveAsset, initialStroops, leverage),
+      );
+      if (via !== "fallback") return;
+    }
+
     // Trustline check (getMissingTrustlines).
     let trustlineResult: MissingTrustlineResult = { missing: [], currentCount: 0 };
     try {
@@ -1276,6 +1294,10 @@ export function tradeScreen(): HTMLElement {
   async function closePosition(pos: AssetPosition): Promise<void> {
     const addr = getState().userAddress;
     if (!addr) return;
+    if (grant.active()) {
+      const via = await viaGrant(`Close ${pos.asset.symbol} position`, () => grantClosePlan(pos));
+      if (via !== "fallback") return;
+    }
     txShow(["Close Position", "Confirmed"]);
     try {
       const submitXdr = await buildCloseSubmitXdr(ts.pool, addr, pos);
@@ -1376,6 +1398,12 @@ export function tradeScreen(): HTMLElement {
       return;
     }
     const additionalStroops = BigInt(Math.round(additional * 1e7));
+    if (grant.active()) {
+      const via = await viaGrant(`Add ${fmt(additional)} ${liveAsset.symbol} at ${leverage.toFixed(1)}×`, () =>
+        grantOpenPlan(liveAsset, additionalStroops, leverage),
+      );
+      if (via !== "fallback") return;
+    }
     txShow(["Approve", "Submit", "Confirmed"]);
     try {
       // buildApproveXdr (additionalStroops + 1n) → signAndSubmit
@@ -1577,6 +1605,44 @@ export function tradeScreen(): HTMLElement {
   }
 
   /** Friendly message for Blend error codes (mirrors old-main mapping). */
+  /**
+   * Run an open or close under TurboLong's grant: no wallet prompt. The account
+   * checks the grant in an enforcing simulation first, so a refusal sends
+   * nothing; the owner then chooses whether to use the main Nido wallet.
+   */
+  async function viaGrant(label: string, plan: () => GrantSubmitPlan): Promise<"done" | "fallback" | "stopped"> {
+    const addr = getState().userAddress;
+    if (!addr) return "stopped";
+    txShow(["Session key signs", "Account checks grant", "Confirmed"]);
+    let step = 0;
+    try {
+      const { requests } = plan();
+      const hash = await submitUnderGrant({
+        account: addr,
+        pool: ts.pool,
+        requests,
+        onStage: (stage) => {
+          step = stage === "signing" ? 0 : stage === "checking" ? 1 : 2;
+          txStep(step);
+        },
+      });
+      txStep(2);
+      txHide();
+      toast(`${label}: signed under TurboLong's grant, no passkey prompt`, "success", hash);
+      await loadAll();
+      return "done";
+    } catch (e) {
+      txStep(step, true);
+      txHide();
+      const refused = e instanceof GrantRefusedError || e instanceof GrantScopeError;
+      const reason = refused ? (e as Error).message : txErr(e);
+      if (refused) grant.noteRefusal(reason);
+      toast(reason, "error");
+      void grant.refresh();
+      return (await confirmFallback(reason, label)) ? "fallback" : "stopped";
+    }
+  }
+
   function txErr(e: unknown): string {
     const msg = (e as Error)?.message ?? "Transaction failed";
     if (msg.includes("#1205") || msg.includes("InvalidHf"))
@@ -1589,6 +1655,7 @@ export function tradeScreen(): HTMLElement {
   // React to Expert-mode toggles (changes min-HF → max leverage, the slider's
   // Maxi-degen zone, HF precision). Self-unsubscribes once this screen unmounts.
   let lastExpert = getState().expert;
+  let lastAddress = getState().userAddress;
   let wasMounted = false;
   const unsub = subscribe((s) => {
     const inDoc = document.contains(root);
@@ -1601,6 +1668,10 @@ export function tradeScreen(): HTMLElement {
     if (s.expert !== lastExpert) {
       lastExpert = s.expert;
       renderAll();
+    }
+    if (s.userAddress !== lastAddress) {
+      lastAddress = s.userAddress;
+      void grant.refresh();
     }
   });
 

@@ -1,0 +1,108 @@
+/* Grant mode panel (Trade screen, Nido accounts) */
+.grant-slot:empty {
+  display: none;
+}
+.grant-slot {
+  margin-bottom: var(--tl-space-3);
+}
+.grant-card p {
+  margin: 0 0 var(--tl-space-2);
+  font-size: var(--tl-text-sm);
+  line-height: 1.5;
+  color: var(--tl-text-2);
+}
+.grant-net {
+  display: flex;
+  gap: var(--tl-space-2);
+}
+.grant-mono {
+  font-family: var(--tl-font-mono);
+  font-size: var(--tl-text-xs);
+}
+.grant-muted {
+  color: var(--tl-text-3);
+  font-size: var(--tl-text-xs);
+}
+.grant-card p.grant-muted {
+  color: var(--tl-text-3);
+  font-size: var(--tl-text-xs);
+}
+.grant-scope {
+  margin: 0 0 var(--tl-space-3);
+  padding-left: 1.1em;
+  font-size: var(--tl-text-sm);
+  line-height: 1.6;
+  color: var(--tl-text-2);
+}
+.grant-scope code {
+  font-family: var(--tl-font-mono);
+  color: var(--tl-text);
+}
+.grant-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tl-space-2) var(--tl-space-4);
+  margin-bottom: var(--tl-space-3);
+}
+.grant-field {
+  display: flex;
+  align-items: center;
+  gap: var(--tl-space-2);
+  font-size: var(--tl-text-sm);
+}
+.grant-input {
+  background: var(--tl-input-bg);
+  color: var(--tl-text);
+  border: 1px solid var(--tl-border);
+  border-radius: var(--tl-radius-sm);
+  padding: 4px 8px;
+  min-width: 0;
+}
+input.grant-input {
+  width: 6em;
+}
+.grant-key {
+  font-size: var(--tl-text-xs);
+}
+.grant-card p.grant-refusal,
+.grant-refusal {
+  color: var(--tl-danger);
+  background: var(--tl-danger-bg);
+  border: 1px solid var(--tl-danger-border);
+  border-radius: var(--tl-radius-sm);
+  padding: 8px 12px;
+  font-size: var(--tl-text-sm);
+}
+.grant-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tl-space-2) var(--tl-space-3);
+  margin-bottom: var(--tl-space-2);
+}
+.grant-meter {
+  height: 6px;
+  border-radius: var(--tl-radius-pill);
+  background: var(--tl-surface-3);
+  overflow: hidden;
+  margin-bottom: var(--tl-space-3);
+}
+.grant-meter span {
+  display: block;
+  height: 100%;
+  background: var(--tl-primary);
+}
+.grant-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--tl-space-2);
+  font-size: var(--tl-text-sm);
+  margin-bottom: var(--tl-space-3);
+}
+.grant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tl-space-2);
+  margin-bottom: var(--tl-space-2);
+}

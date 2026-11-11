@@ -1677,6 +1677,87 @@ export async function estimateBlndSwap(
 
 // ── Submit signed XDR ─────────────────────────────────────────────────────────
 
+// ── Grant mode (a Nido account's grant signs; see grant.ts) ───────────────────
+//
+// A grant can cap and pin only a token's `transfer`, so grant mode calls the
+// pool's plain `submit`: Blend pulls the supplied XLM with the account's own
+// `transfer(account, pool, n)`, which the grant's XLM rule caps and pins to the
+// pool. Plain `submit` does not net the legs (`submit_with_allowance` does): it
+// pulls every supply first, then pays every borrow back in the same
+// transaction. The account needs the gross pull on hand for that moment, and
+// the cap counts it.
+
+/** The network's native XLM Stellar Asset Contract. */
+export function xlmContractId(): string {
+  return Asset.native().contractId(_cfg.passphrase);
+}
+
+export interface GrantSubmitPlan {
+  requests: xdr.ScVal;
+  /** XLM the account's own transfer moves into the pool, in stroops. */
+  pull: bigint;
+}
+
+const amountOf = (request: xdr.ScVal): bigint => BigInt(scValToNative(request).amount as bigint | string | number);
+const typeOf = (request: xdr.ScVal): number => Number(scValToNative(request).request_type);
+
+/** The open loop TurboLong always builds; grant mode pulls every supply leg. */
+export function grantOpenPlan(asset: AssetInfo, initialStroops: bigint, leverage: number): GrantSubmitPlan {
+  const cFactorBn = BigInt(Math.round(asset.cFactor * SCALAR_F));
+  const items = buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage);
+  const pull = items.filter((r) => typeOf(r) === SUPPLY_COLLATERAL).reduce((sum, r) => sum + amountOf(r), 0n);
+  return { requests: buildRequestsVec(items), pull };
+}
+
+/** The current debt in underlying stroops, rounded up. */
+export function debtStroops(pos: Pick<AssetPosition, "dTokens" | "dRate">): bigint {
+  return (pos.dTokens * pos.dRate + RATE_DEC - 1n) / RATE_DEC;
+}
+
+/** Margin over the debt read before the call: covers interest that accrues
+ * before the submit runs. Blend pulls the stated repay amount and refunds what
+ * exceeds the debt in the same submit. */
+export function repayWithMargin(debt: bigint): bigint {
+  return debt + debt / 1000n + 1000n;
+}
+
+/** Close: repay the whole debt with a margin, then withdraw every b-token.
+ * A fixed repay amount keeps the signed `transfer` the one the host runs; the
+ * main-wallet flow's i64::MAX repay would ask the account to pull i64::MAX. */
+export function grantClosePlan(pos: AssetPosition): GrantSubmitPlan {
+  const MAX_AMOUNT = 9_223_372_036_854_775_807n; // i64::MAX: Blend caps WITHDRAW at the b-tokens held
+  const items: xdr.ScVal[] = [];
+  let pull = 0n;
+  if (pos.dTokens > 0n) {
+    pull = repayWithMargin(debtStroops(pos));
+    items.push(buildRequest(pos.asset.id, pull, REPAY));
+  }
+  items.push(buildRequest(pos.asset.id, MAX_AMOUNT, WITHDRAW_COLLATERAL));
+  return { requests: buildRequestsVec(items), pull };
+}
+
+/** Record `pool.submit(user, user, user, requests)` in a simulation: the host
+ * function, its authorization entries (unsigned) and the ledger it ran at. */
+export async function simulateGrantSubmit(
+  pool: PoolDef,
+  userAddress: string,
+  requests: xdr.ScVal,
+): Promise<{ func: xdr.HostFunction; auth: xdr.SorobanAuthorizationEntry[]; latestLedger: number }> {
+  const addr = new Address(userAddress).toScVal();
+  const tx = new TransactionBuilder(await getSorobanSource(userAddress), {
+    fee: BASE_FEE,
+    networkPassphrase: _cfg.passphrase,
+  })
+    .addOperation(new Contract(pool.id).call("submit", addr, addr, addr, requests))
+    .setTimeout(60)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (!SorobanRpc.Api.isSimulationSuccess(sim))
+    throw new Error(`Simulation failed: ${(sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error}`);
+  const op = tx.operations[0] as Operation.InvokeHostFunction;
+  return { func: op.func, auth: sim.result?.auth ?? [], latestLedger: sim.latestLedger };
+}
+
 export async function submitSignedXdr(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, _cfg.passphrase);
   const result = await withRetry(() => server.sendTransaction(tx));

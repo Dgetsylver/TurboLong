@@ -51,7 +51,7 @@ describe.each(["mainnet", "testnet"] as const)("Nido %s handover", (network) => 
     const [request, origin] = popup.mock.calls[0];
     const url = new URL(request);
     expect(url.origin).toBe(origin);
-    expect(url.hostname).toBe(`${account.toLowerCase()}.${network === "mainnet" ? "nido.fyi" : "test.nido.fyi"}`);
+    expect(url.hostname).toBe(`${account.toLowerCase()}.${network === "mainnet" ? "nido.fyi" : "356.test.nido.fyi"}`);
     expect(url.searchParams.get("network")).toBe(config.networkPassphrase);
     expect(url.searchParams.get("xdr")).toBe("unsigned-xdr");
     expect(url.searchParams.get("dapp")).toBe("http://localhost:5173");
