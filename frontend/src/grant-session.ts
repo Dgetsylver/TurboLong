@@ -26,10 +26,13 @@ import {
   TransactionBuilder,
   rpc,
   scValToNative,
+  nativeToScVal,
   xdr,
 } from "@stellar/stellar-sdk";
 import {
   type PoolDef,
+  REPAY,
+  SUPPLY_COLLATERAL,
   getActiveNetwork,
   getNetworkPassphrase,
   server,
@@ -38,6 +41,7 @@ import {
 } from "./blend";
 import {
   AUTH_LIFETIME_LEDGERS,
+  type AuthContext,
   type CapWindow,
   type GrantCap,
   type GrantDuration,
@@ -332,12 +336,32 @@ function testnetFeePayer(): Promise<Keypair> {
 
 export type GrantStage = "signing" | "checking" | "sending" | "confirming";
 
+/** The calls `pool.submit(account, account, account, requests)` has the
+ * account authorize: the submit itself, and one `transfer(account, pool, n)`
+ * per token its supply-collateral and repay legs pull. */
+function plannedContexts(account: string, pool: PoolDef, requests: xdr.ScVal): AuthContext[] {
+  const legs = scValToNative(requests) as { address: string; amount: bigint; request_type: number }[];
+  const pulls = new Map<string, bigint>();
+  for (const leg of legs)
+    if (leg.request_type === SUPPLY_COLLATERAL || leg.request_type === REPAY)
+      pulls.set(leg.address, (pulls.get(leg.address) ?? 0n) + BigInt(leg.amount));
+  const me = new Address(account).toScVal();
+  return [
+    { contract: pool.id, fn: "submit", args: [me, me, me, requests] },
+    ...[...pulls].map(([token, amount]) => ({
+      contract: token,
+      fn: "transfer",
+      args: [me, new Address(pool.id).toScVal(), nativeToScVal(amount, { type: "i128" })],
+    })),
+  ];
+}
+
 /**
  * Run `pool.submit(account, account, account, requests)` signed by TurboLong's
  * session key under its grant. The account checks the signature, the rules and
  * the cap in an enforcing simulation first, so a refused call is never sent and
- * costs nothing; its refusal comes back as `GrantRefusedError`. A call no rule
- * covers throws `GrantScopeError` before anything is signed.
+ * costs nothing; its refusal comes back as `GrantRefusedError`. A plan whose
+ * calls no rule covers throws `GrantScopeError` before it is even simulated.
  */
 export async function submitUnderGrant(args: {
   account: string;
@@ -349,13 +373,14 @@ export async function submitUnderGrant(args: {
   const key = await loadSessionKey(account);
   if (!key) throw new Error("This browser has no session key for the account: approve TurboLong's grant first.");
   const networkPassphrase = getNetworkPassphrase();
-  const [{ func, auth, latestLedger }, grant] = await Promise.all([
-    simulateGrantSubmit(pool, account, requests),
-    readAccountGrant(account),
-  ]);
+  const grant = await readAccountGrant(account);
+  const preferred = Object.values(grantLabels(pool));
+  // Scope first: the pool's own simulation can fail (a balance, say) and hide
+  // that the grant never covered the call.
+  ruleIdsFor(plannedContexts(account, pool, requests), grant.rules, key.publicKeyHex, grant.latestLedger, preferred);
+  const { func, auth, latestLedger } = await simulateGrantSubmit(pool, account, requests);
   onStage?.("signing");
   const validUntil = latestLedger + AUTH_LIFETIME_LEDGERS;
-  const preferred = Object.values(grantLabels(pool));
   const signed: xdr.SorobanAuthorizationEntry[] = [];
   for (const recorded of auth) {
     const creds = recorded.credentials();

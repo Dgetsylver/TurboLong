@@ -70,7 +70,7 @@ import { signAndSubmit, signAndSubmitClassic } from "../app/wallet";
 import { toast, txShow, txStep, txHide } from "../app/chrome";
 import { isContractAccount } from "../nido";
 import { t } from "../i18n";
-import { GrantScopeError } from "../grant";
+import { GrantScopeError, prepareFailure } from "../grant";
 import { GrantRefusedError, submitUnderGrant } from "../grant-session";
 import { confirmFallback, grantPanel } from "./grant-panel";
 
@@ -1642,11 +1642,12 @@ export function tradeScreen(): HTMLElement {
         return "stopped";
       }
       const refused = e instanceof GrantRefusedError || e instanceof GrantScopeError;
-      const reason = refused ? (e as Error).message : txErr(e);
+      const raw = (e as Error)?.message ?? String(e);
+      const { reason, details } = refused ? { reason: raw, details: undefined } : prepareFailure(raw, txErr(e));
       if (refused) grant.noteRefusal(reason);
       toast(reason, "error");
       void grant.refresh();
-      return (await confirmFallback(reason, label)) ? "fallback" : "stopped";
+      return (await confirmFallback(reason, label, details)) ? "fallback" : "stopped";
     }
   }
 

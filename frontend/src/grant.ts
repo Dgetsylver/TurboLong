@@ -494,8 +494,16 @@ export class GrantScopeError extends Error {
   }
 }
 
-/** For each context, the live rule of TurboLong's key that allows that call;
- * TurboLong's own labels win over any other rule on the same contract. */
+/** Whether `context` is a transfer to someone other than the rule's pinned recipient. */
+function offPin(rule: GrantRule, context: AuthContext): boolean {
+  if (rule.to === undefined || context.fn !== "transfer") return false;
+  const to = context.args[1];
+  return !to || to.switch().name !== "scvAddress" || Address.fromScVal(to).toString() !== rule.to;
+}
+
+/** For each context, the live rule of TurboLong's key that allows that call
+ * (a transfer rule only to its pinned recipient); TurboLong's own labels win
+ * over any other rule on the same contract. */
 export function ruleIdsFor(
   contexts: AuthContext[],
   rules: GrantRule[],
@@ -508,6 +516,7 @@ export function ruleIdsFor(
       (r) =>
         r.contract === context.contract &&
         (r.functions === undefined || r.functions.includes(context.fn)) &&
+        !offPin(r, context) &&
         signedBy(r, publicKeyHex) &&
         ruleLive(r, ledger),
     );
@@ -515,6 +524,19 @@ export function ruleIdsFor(
     if (!rule) throw new GrantScopeError(context);
     return rule.id;
   });
+}
+
+const PREPARE_FAILED = "TurboLong couldn't prepare this transaction: the pool or your balance refused it.";
+
+/**
+ * What to show for a grant-path failure that is neither an account refusal nor
+ * a scope refusal. A failed simulation gets a short reason (`friendly` when it
+ * names the cause, which then differs from the raw text) and keeps the raw
+ * host error as details; any other failure is shown as `friendly`.
+ */
+export function prepareFailure(raw: string, friendly: string): { reason: string; details?: string } {
+  if (!raw.startsWith("Simulation failed")) return { reason: friendly };
+  return { reason: raw.startsWith(friendly) ? PREPARE_FAILED : friendly, details: raw };
 }
 
 /** The key's signer entries under `ruleIds`, exactly as installed. */

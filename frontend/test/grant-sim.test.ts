@@ -623,10 +623,30 @@ describe("grant mode demo (emulated Perch dev account)", () => {
     expect(status.state === "active" && status.used).toBe(100_000_000n); // charged once
   });
 
-  it("refuses an out-of-scope token before signing", async () => {
+  /** Simulations of `pool.submit` the RPC was asked for (reads of the account aside). */
+  const submitSimulations = () =>
+    vi.mocked(rpc.Server.prototype.simulateTransaction).mock.calls.filter(([tx]) => {
+      const op = (tx as Transaction).operations[0] as unknown as { func: xdr.HostFunction };
+      return op.func.invokeContract().functionName().toString() === "submit";
+    });
+
+  it("refuses an out-of-scope token before simulating or signing", async () => {
     await approveOnce();
-    await expect(open(10n, 1.5, usdc)).rejects.toBeInstanceOf(GrantScopeError);
+    const refused = open(10n, 1.5, usdc);
+    await expect(refused).rejects.toBeInstanceOf(GrantScopeError);
+    await expect(refused).rejects.toThrow(`does not cover transfer on ${usdc.id}`);
+    expect(submitSimulations()).toHaveLength(0);
     expect(chain.sent).toHaveLength(0);
+    // A covered open is simulated: the filter above does see submit calls.
+    await open(1n, 1.5);
+    expect(submitSimulations().length).toBeGreaterThan(0);
+  });
+
+  it("refuses a pull that would pay another pool than the XLM rule names, before simulating", async () => {
+    await approveOnce();
+    chain.rules.find((r) => r.to)!.to = StrKey.encodeContract(Buffer.alloc(32, 3));
+    await expect(open(1n, 1.5)).rejects.toBeInstanceOf(GrantScopeError);
+    expect(submitSimulations()).toHaveLength(0);
   });
 
   it("is refused by the account once the grant expired", async () => {

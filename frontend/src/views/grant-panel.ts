@@ -363,8 +363,9 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
 }
 
 /** Ask whether to retry an action with the main Nido wallet after the grant
- * path was refused. Resolves true to fall back. */
-export function confirmFallback(reason: string, action: string): Promise<boolean> {
+ * path was refused. `details` (a raw error) stays collapsed under the reason.
+ * Resolves true to fall back. */
+export function confirmFallback(reason: string, action: string, details?: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const overlay = el("div", { class: "trade-modal" });
     let settled = false;
@@ -385,6 +386,12 @@ export function confirmFallback(reason: string, action: string): Promise<boolean
       ]),
       el("div", { class: "trade-modal__body" }, [
         el("p", { class: "grant-refusal" }, [reason]),
+        details
+          ? el("details", { class: "grant-details", id: "grant-fallback-details" }, [
+              el("summary", {}, ["Details"]),
+              el("pre", { class: "grant-raw" }, [details]),
+            ])
+          : null,
         el("p", {}, [
           `Nothing was sent. You can run “${action}” with your main Nido wallet instead: Nido asks for your passkey for each transaction.`,
         ]),

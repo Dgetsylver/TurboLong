@@ -19,6 +19,7 @@ import {
   parseDocRules,
   parseGrantAnswer,
   parseGrantRules,
+  prepareFailure,
   ruleIdsFor,
   ruleLive,
   stroopsToXlm,
@@ -346,6 +347,22 @@ describe("signing under the grant", () => {
     expect(accountRefusal(refusal)?.kind).toBe("refused");
     expect(accountRefusal("HostError: Error(Contract, #3) in __check_auth")?.kind).toBe("stale");
     expect(accountRefusal("HostError: Error(Contract, #1205)")).toBeUndefined();
+  });
+
+  it("shows a failed simulation as a short reason and keeps the raw error for the details", () => {
+    const raw = `Simulation failed: HostError: Error(Contract, #10)\nEvent log (newest first): ${"x".repeat(400)}`;
+    // The caller's friendly text for an error it does not know is the raw text, cut short.
+    const shown = prepareFailure(raw, raw.slice(0, 200));
+    expect(shown.reason).toBe("TurboLong couldn't prepare this transaction: the pool or your balance refused it.");
+    expect(shown.reason).not.toContain("HostError");
+    expect(shown.details).toBe(raw);
+    // A cause the caller can name is the reason; the raw error still goes to the details.
+    expect(prepareFailure("Simulation failed: HostError: Error(Contract, #1206)", "Pool is on ice.")).toEqual({
+      reason: "Pool is on ice.",
+      details: "Simulation failed: HostError: Error(Contract, #1206)",
+    });
+    // Not a simulation failure: shown as it is, with nothing to expand.
+    expect(prepareFailure("Network Error", "Network Error")).toEqual({ reason: "Network Error" });
   });
 });
 
