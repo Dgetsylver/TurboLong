@@ -1692,21 +1692,11 @@ export function xlmContractId(): string {
   return Asset.native().contractId(_cfg.passphrase);
 }
 
-export interface GrantSubmitPlan {
-  requests: xdr.ScVal;
-  /** XLM the account's own transfer moves into the pool, in stroops. */
-  pull: bigint;
-}
-
-const amountOf = (request: xdr.ScVal): bigint => BigInt(scValToNative(request).amount as bigint | string | number);
-const typeOf = (request: xdr.ScVal): number => Number(scValToNative(request).request_type);
-
-/** The open loop TurboLong always builds; grant mode pulls every supply leg. */
-export function grantOpenPlan(asset: AssetInfo, initialStroops: bigint, leverage: number): GrantSubmitPlan {
+/** The open loop TurboLong always builds, as `submit`'s requests; grant mode
+ * pulls every supply leg. */
+export function grantOpenPlan(asset: AssetInfo, initialStroops: bigint, leverage: number): xdr.ScVal {
   const cFactorBn = BigInt(Math.round(asset.cFactor * SCALAR_F));
-  const items = buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage);
-  const pull = items.filter((r) => typeOf(r) === SUPPLY_COLLATERAL).reduce((sum, r) => sum + amountOf(r), 0n);
-  return { requests: buildRequestsVec(items), pull };
+  return buildRequestsVec(buildOpenRequests(asset.id, initialStroops, cFactorBn, leverage));
 }
 
 /** The current debt in underlying stroops, rounded up. */
@@ -1724,16 +1714,12 @@ export function repayWithMargin(debt: bigint): bigint {
 /** Close: repay the whole debt with a margin, then withdraw every b-token.
  * A fixed repay amount keeps the signed `transfer` the one the host runs; the
  * main-wallet flow's i64::MAX repay would ask the account to pull i64::MAX. */
-export function grantClosePlan(pos: AssetPosition): GrantSubmitPlan {
+export function grantClosePlan(pos: AssetPosition): xdr.ScVal {
   const MAX_AMOUNT = 9_223_372_036_854_775_807n; // i64::MAX: Blend caps WITHDRAW at the b-tokens held
   const items: xdr.ScVal[] = [];
-  let pull = 0n;
-  if (pos.dTokens > 0n) {
-    pull = repayWithMargin(debtStroops(pos));
-    items.push(buildRequest(pos.asset.id, pull, REPAY));
-  }
+  if (pos.dTokens > 0n) items.push(buildRequest(pos.asset.id, repayWithMargin(debtStroops(pos)), REPAY));
   items.push(buildRequest(pos.asset.id, MAX_AMOUNT, WITHDRAW_COLLATERAL));
-  return { requests: buildRequestsVec(items), pull };
+  return buildRequestsVec(items);
 }
 
 /** Record `pool.submit(user, user, user, requests)` in a simulation: the host

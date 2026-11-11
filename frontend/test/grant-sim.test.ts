@@ -40,10 +40,12 @@ import {
 } from "../src/grant";
 import { type SessionKey, generateSessionKey } from "../src/grant-key";
 import {
+  debtStroops,
   getKnownPools,
   getPoolAssets,
   grantClosePlan,
   grantOpenPlan,
+  repayWithMargin,
   setNetwork,
   type AssetPosition,
 } from "../src/blend";
@@ -56,10 +58,26 @@ vi.mock("../src/grant-key", async (importOriginal) => {
     loadSessionKey: async (account: string) => keys.get(account),
     saveSessionKey: async (account: string, key: SessionKey) => void keys.set(account, key),
     deleteSessionKey: async (account: string) => void keys.delete(account),
+    sessionKeyFor: async (account: string) => {
+      const key = keys.get(account) ?? (await real.generateSessionKey());
+      keys.set(account, key);
+      return key;
+    },
   };
 });
 
-const { GrantRefusedError, grantStatus, submitUnderGrant } = await import("../src/grant-session");
+/** Nido's grant popup: records the request URL and answers as a closed window. */
+const popups: string[] = [];
+vi.mock("@nidohq/stellar-wallets-kit-module", () => ({
+  openCeremonyPopup: async (url: string) => {
+    popups.push(url);
+    throw new Error("popup closed");
+  },
+}));
+
+const { GrantRefusedError, grantStatus, prepareSessionKey, requestGrant, submitUnderGrant } = await import(
+  "../src/grant-session"
+);
 
 const ORIGIN = "http://localhost:5173";
 const ACCOUNT = StrKey.encodeContract(Buffer.alloc(32, 7));
@@ -71,7 +89,8 @@ const INTERPRETER = "CCLU4UY5D7JLAQJCHBHEFN7ACFZXDPHCQXA7L6MT5ALIHRPQ7BGIVMTC";
 const SPENDING_LIMIT = "CAD75KDQREQCGN3HIKMAVYKZWRGOFQYDZSXB4ILFSR6OHKTJ5UDNSOKU";
 const RELAYER = "https://nido-mainnet.fly.dev";
 
-type Stack = "grant" | "document";
+/** `none`: a contract account that is not a Perch account with app rules. */
+type Stack = "grant" | "document" | "none";
 let passphrase: string = Networks.TESTNET;
 let XLM = Asset.native().contractId(Networks.TESTNET);
 let pool = getKnownPools()[0];
@@ -79,7 +98,7 @@ let xlm = getPoolAssets(pool)[0];
 let usdc = xlm;
 
 /** Testnet's Perch dev preview (`grant`) or mainnet's Perch 0.5.1 (`document`). */
-function useStack(stack: Stack) {
+function useStack(stack: "grant" | "document") {
   chain.stack = stack;
   const net = stack === "grant" ? "testnet" : "mainnet";
   setNetwork(net);
@@ -99,6 +118,8 @@ interface Installed extends GrantRule {
 
 const chain = {
   stack: "grant" as Stack,
+  /** Make every read of the account fail with this simulation error. */
+  readFailure: undefined as string | undefined,
   ledger: 1_000,
   rules: [] as Installed[],
   spends: new Map<number, { amount: bigint; ledger: number }[]>(),
@@ -240,12 +261,19 @@ function documentView(): xdr.ScVal {
   return xdr.ScVal.scvVec([nativeToScVal(3n, { type: "u64" }), nativeToScVal(Buffer.from(JSON.stringify(doc)))]);
 }
 
-/** The account's view functions, as a simulation returns them. */
-function view(fn: string, args: xdr.ScVal[]): xdr.ScVal {
+/** What the host says when a contract has no such function. */
+const missing = (fn: string) =>
+  `HostError: Error(WasmVm, MissingValue)\nEvent log: trying to invoke non-existent contract function, ${fn}`;
+
+/** The account's view functions, as a simulation returns them: a value, or the
+ * simulation's error. */
+function view(fn: string, args: xdr.ScVal[]): xdr.ScVal | string {
+  if (chain.readFailure) return chain.readFailure;
+  if (chain.stack === "none") return missing(fn);
   if (chain.stack === "document") {
     if (fn === "installed_rules") return installedRules();
     if (fn === "document") return documentView();
-    throw new Error(`no ${fn} on Perch 0.5.1`);
+    return missing(fn);
   }
   const ours = appGrantCandidates(ORIGIN)[0];
   const asked = args[0] ? (scValToNative(args[0]) as number) : undefined;
@@ -366,8 +394,14 @@ const success = (retval: xdr.ScVal, auth: xdr.SorobanAuthorizationEntry[] = []) 
     result: { retval, auth },
   }) as unknown as rpc.Api.SimulateTransactionResponse;
 
+const simError = (error: string) =>
+  ({ id: "sim", latestLedger: chain.ledger, error, events: [], _parsed: true }) as never;
+
 beforeEach(() => {
+  popups.length = 0;
   Object.assign(chain, {
+    stack: "grant",
+    readFailure: undefined,
     ledger: 1_000,
     rules: [],
     spends: new Map(),
@@ -451,12 +485,14 @@ beforeEach(() => {
     const call = op.func.invokeContract();
     const contract = Address.fromScAddress(call.contractAddress()).toString();
     const fn = call.functionName().toString();
-    if (contract === ACCOUNT) return success(view(fn, call.args()));
+    if (contract === ACCOUNT) {
+      const answer = view(fn, call.args());
+      return typeof answer === "string" ? simError(answer) : success(answer);
+    }
     if (contract !== pool.id || fn !== "submit") throw new Error(`unexpected call ${fn}`);
     if (authMode !== "enforce") return success(xdr.ScVal.scvVoid(), [submitAuth(call.args()[3])]);
     const verdict = await checkAuth(op.auth![0]);
-    if (typeof verdict === "string")
-      return { id: "sim", latestLedger: chain.ledger, error: verdict, events: [], _parsed: true } as never;
+    if (typeof verdict === "string") return simError(verdict);
     chain.pendingCharges = verdict;
     return success(xdr.ScVal.scvVoid());
   });
@@ -542,7 +578,7 @@ const open = (xlmAmount: bigint, leverage: number, asset = xlm) =>
   submitUnderGrant({
     account: ACCOUNT,
     pool,
-    requests: grantOpenPlan(asset, xlmAmount * 10_000_000n, leverage).requests,
+    requests: grantOpenPlan(asset, xlmAmount * 10_000_000n, leverage),
   });
 
 describe("grant mode demo (emulated Perch dev account)", () => {
@@ -557,13 +593,13 @@ describe("grant mode demo (emulated Perch dev account)", () => {
     await open(10n, 2);
     // 2. Close it: repay ~10 XLM of debt (with margin), withdraw the collateral.
     const debt = { asset: xlm, dTokens: 100_000_000n, dRate: 1_000_000_000_000n } as AssetPosition;
-    await submitUnderGrant({ account: ACCOUNT, pool, requests: grantClosePlan(debt).requests });
+    await submitUnderGrant({ account: ACCOUNT, pool, requests: grantClosePlan(debt) });
     expect(chain.sent).toHaveLength(2);
     expect(chain.ownerPrompts).toBe(1); // no passkey or wallet prompt for either
     const after = await grantStatus(ACCOUNT, pool);
     expect(after.state).toBe("active");
     if (after.state !== "active") return;
-    expect(after.used).toBe(200_000_000n + grantClosePlan(debt).pull);
+    expect(after.used).toBe(200_000_000n + repayWithMargin(debtStroops(debt)));
     expect(after.left).toBe(400_000_000n - after.used);
 
     // 3. Open 10 XLM at 2x again: 20 XLM more is over the 40 XLM/day cap.
@@ -613,11 +649,59 @@ describe("grant mode demo (emulated Perch dev account)", () => {
   });
 
   it("reports no grant before approval and when the browser lost its key", async () => {
-    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none", hasKey: false });
+    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none" });
     await approveOnce();
     keys.clear();
-    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none", hasKey: false });
+    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none" });
     await expect(open(1n, 1.5)).rejects.toThrow(/approve TurboLong's grant first/);
+  });
+
+  it("asks Nido with the key of the account being approved, whatever key was prepared before", async () => {
+    const other = StrKey.encodeContract(Buffer.alloc(32, 9));
+    const first = await prepareSessionKey(ACCOUNT);
+    await requestGrant({ account: other, pool });
+    const asked = new URL(popups[0]);
+    expect(asked.host).toBe(`${other.toLowerCase()}--356.test.nido.fyi`);
+    expect(asked.searchParams.get("pubkey")).toBe(keys.get(other)!.publicKeyHex);
+    expect(asked.searchParams.get("pubkey")).not.toBe(first.publicKeyHex);
+  });
+});
+
+describe("reading the account's rules", () => {
+  beforeEach(() => useStack("grant"));
+
+  it("reports an account with neither grants nor a document as unable to hold app rules", async () => {
+    chain.stack = "none";
+    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "unavailable", reason: "old-account" });
+  });
+
+  it("fails, rather than reporting no grant, when a read fails for another reason", async () => {
+    await approveOnce();
+    chain.readFailure = "HostError: Error(Budget, ExceededLimit)";
+    await expect(grantStatus(ACCOUNT, pool)).rejects.toThrow(/Could not read grant_generation/);
+    await expect(open(1n, 1.5)).rejects.toThrow(/Could not read/);
+    await expect(open(1n, 1.5)).rejects.not.toBeInstanceOf(GrantScopeError);
+
+    vi.mocked(rpc.Server.prototype.simulateTransaction).mockRejectedValueOnce(new Error("429 Too Many Requests"));
+    chain.readFailure = undefined;
+    await expect(grantStatus(ACCOUNT, pool)).rejects.toThrow(/429/);
+    expect(await grantStatus(ACCOUNT, pool)).toMatchObject({ state: "active" });
+    expect(chain.sent).toHaveLength(0);
+  });
+
+  it("does the same on an account whose rules live in its document", async () => {
+    useStack("document");
+    await approveOnce("5");
+    const real = vi.mocked(rpc.Server.prototype.simulateTransaction).getMockImplementation()!;
+    vi.mocked(rpc.Server.prototype.simulateTransaction).mockImplementation(async (tx, ...rest) => {
+      const fn = ((tx as Transaction).operations[0] as unknown as { func: xdr.HostFunction }).func
+        .invokeContract()
+        .functionName()
+        .toString();
+      if (fn === "installed_rules") throw new Error("fetch failed");
+      return real(tx, ...rest);
+    });
+    await expect(grantStatus(ACCOUNT, pool)).rejects.toThrow(/fetch failed/);
   });
 });
 
@@ -650,6 +734,6 @@ describe("mainnet grant mode (emulated Perch 0.5.1 account, Nido relayer)", () =
     await approveOnce("5");
     const other = await generateSessionKey();
     keys.set(ACCOUNT, other);
-    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none", hasKey: true });
+    expect(await grantStatus(ACCOUNT, pool)).toEqual({ state: "none" });
   });
 });

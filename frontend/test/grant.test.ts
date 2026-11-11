@@ -9,8 +9,6 @@ import {
   authContexts,
   authDigest,
   authPayload,
-  capCharges,
-  capFreesAt,
   capLeft,
   capUsed,
   capWindow,
@@ -275,24 +273,6 @@ describe("spending cap", () => {
     expect(capLeft(w, 20_100)).toBe(300_000_000n);
     expect(capLeft(capWindow(cap, undefined), 1)).toBe(500_000_000n);
   });
-
-  it("lets two 20 XLM opens through a 50 XLM/day cap and holds the third until the window frees", () => {
-    let w = capWindow(cap, undefined);
-    const open = 200_000_000n; // 10 XLM at 2x: gross pull 20 XLM
-    for (const ledger of [100, 200]) {
-      expect(capFreesAt(w, open, ledger)).toBe(ledger);
-      w = { ...w, spent: [...w.spent, { amount: open, ledger }] };
-    }
-    expect(capLeft(w, 300)).toBe(100_000_000n);
-    expect(capFreesAt(w, open, 300)).toBe(100 + PERIOD_LEDGERS.day);
-    expect(capFreesAt(w, 600_000_000n, 300)).toBeUndefined();
-  });
-
-  it("charges the capped rule with the transfer amount of each context", () => {
-    const rules = rulesOf();
-    const contexts = authContexts(submitTree(XLM, 123n));
-    expect(capCharges(contexts, [1, 2], rules)).toEqual(new Map([[2, 123n]]));
-  });
 });
 
 describe("signing under the grant", () => {
@@ -410,28 +390,25 @@ describe("grant-mode Blend plans", () => {
     ]);
 
   it("opens with the usual loop and pulls the gross supply", () => {
-    const plan = grantOpenPlan(xlm, 100_000_000n, 2);
-    const legs = types(plan.requests);
+    const legs = types(grantOpenPlan(xlm, 100_000_000n, 2));
     expect(legs[0]).toEqual([2, 100_000_000n]); // supply collateral first
     const supplied = legs.filter(([t]) => t === 2).reduce((s, [, a]) => s + (a as bigint), 0n);
     const borrowed = legs.filter(([t]) => t === 4).reduce((s, [, a]) => s + (a as bigint), 0n);
     expect(borrowed).toBe(100_000_000n);
-    expect(plan.pull).toBe(supplied);
-    expect(plan.pull).toBe(200_000_000n);
+    expect(supplied).toBe(200_000_000n);
   });
 
   it("closes with a fixed repay over the debt, then withdraws everything", () => {
     const pos = { asset: xlm, dTokens: 99_000_000n, dRate: 1_010_000_000_000n } as AssetPosition;
     const debt = debtStroops(pos);
     expect(debt).toBe(99_990_000n);
-    const plan = grantClosePlan(pos);
-    expect(plan.pull).toBe(repayWithMargin(debt));
-    expect(plan.pull).toBeGreaterThan(debt);
-    expect(types(plan.requests)).toEqual([
-      [5, plan.pull],
+    const repay = repayWithMargin(debt);
+    expect(repay).toBeGreaterThan(debt);
+    expect(types(grantClosePlan(pos))).toEqual([
+      [5, repay],
       [3, 9_223_372_036_854_775_807n],
     ]);
-    expect(grantClosePlan({ ...pos, dTokens: 0n }).pull).toBe(0n);
+    expect(types(grantClosePlan({ ...pos, dTokens: 0n }))).toEqual([[3, 9_223_372_036_854_775_807n]]);
   });
 });
 
@@ -440,7 +417,6 @@ describe("Nido account origins", () => {
     const { nidoAccountOrigin } = await import("../src/nido");
     const acc = ACCOUNT.toLowerCase();
     expect(nidoAccountOrigin("https://356.test.nido.fyi", ACCOUNT)).toBe(`https://${acc}--356.test.nido.fyi`);
-    expect(nidoAccountOrigin("https://pr-356.test.nido.fyi", ACCOUNT)).toBe(`https://${acc}--356.test.nido.fyi`);
     expect(nidoAccountOrigin("https://nido.fyi", ACCOUNT)).toBe(`https://${acc}.nido.fyi`);
     expect(nidoAccountOrigin("http://localhost:4321", ACCOUNT)).toBe(`http://${acc}.localhost:4321`);
     expect(nidoAccountOrigin("http://127.0.0.1:4321", ACCOUNT)).toBe(`http://${acc}.127.0.0.1:4321`);

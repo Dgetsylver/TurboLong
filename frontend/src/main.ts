@@ -13,6 +13,7 @@ import "./tokens/styles.css";
 import { initI18n } from "./i18n.ts";
 import { setNetwork, type NetworkMode } from "./blend.ts";
 import { setState } from "./app/state.ts";
+import { applyNetworkLink } from "./app/network-link.ts";
 import { initTheme } from "./app/theme.ts";
 import { initWalletKit, installE2EHarness } from "./app/wallet.ts";
 import { buildShell } from "./app/shell.ts";
@@ -25,13 +26,7 @@ async function boot(): Promise<void> {
 
   // Restore persisted network + wallet session (display state; the kit keeps the
   // selected wallet, so signing still routes through it after a reload).
-  // `?network=testnet` opens a demo link on that network (grant mode runs on
-  // testnet) and is remembered like the header toggle.
-  const linked = new URLSearchParams(window.location.search).get("network");
-  if ((linked === "testnet" || linked === "mainnet") && linked !== localStorage.getItem("networkMode")) {
-    localStorage.setItem("networkMode", linked);
-    localStorage.removeItem("walletAddress");
-  }
+  applyNetworkLink(window.location, window.history, localStorage);
   const savedNet = (localStorage.getItem("networkMode") as NetworkMode | null) ?? "mainnet";
   setNetwork(savedNet);
   initWalletKit(savedNet);

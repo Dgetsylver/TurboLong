@@ -12,7 +12,7 @@ export const NIDO_GRANTS_PREVIEW = "https://356.test.nido.fyi";
 /**
  * The wallet origin of `account` on `base`, where its passkey ceremonies run:
  * `<c-address>.<host>` in production, `<c-address>--<N>.<apex>` on Nido's
- * numbered preview hosts (`<N>.<apex>`, or legacy `pr-<N>.<apex>`). Mirrors
+ * numbered preview hosts (`<N>.<apex>`). Mirrors
  * `accountOrigin` in Nido's current wallets-kit module; the published 0.1.0
  * knows only `pr-<N>` and would send preview ceremonies to a host that does
  * not exist.
@@ -22,7 +22,7 @@ export function nidoAccountOrigin(base: string, account: string): string {
   const url = new URL(base.includes("://") ? base : `https://${base}`);
   const [first, ...rest] = url.host.split(".");
   const ipv4 = /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname);
-  const preview = rest.length && !ipv4 ? /^(?:pr-)?(\d+)$/.exec(first ?? "")?.[1] : undefined;
+  const preview = rest.length && !ipv4 ? /^(\d+)$/.exec(first ?? "")?.[1] : undefined;
   const host = preview
     ? `${account.toLowerCase()}--${preview}.${rest.join(".")}`
     : `${account.toLowerCase()}.${url.host}`;

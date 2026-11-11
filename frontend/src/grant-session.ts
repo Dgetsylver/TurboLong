@@ -84,6 +84,15 @@ const appOrigin = () => window.location.origin;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
+/** The contract has no such function (a different Perch version), as opposed
+ * to a read that failed. */
+class MissingFunctionError extends Error {}
+
+const orMissing = (e: unknown): undefined => {
+  if (e instanceof MissingFunctionError) return undefined;
+  throw e;
+};
+
 async function view(contract: string, method: string, args: xdr.ScVal[] = []) {
   const tx = new TransactionBuilder(new Account(NULL_SOURCE, "0"), {
     fee: BASE_FEE,
@@ -93,6 +102,8 @@ async function view(contract: string, method: string, args: xdr.ScVal[] = []) {
     .setTimeout(30)
     .build();
   const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim) && /non-existent contract function|Error\(WasmVm, MissingValue\)/.test(sim.error))
+    throw new MissingFunctionError(`${contract} has no ${method}`);
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result) throw new Error(`Could not read ${method} of ${contract}`);
   return { value: scValToNative(sim.result.retval) as unknown, latestLedger: sim.latestLedger };
 }
@@ -102,8 +113,6 @@ export interface AccountGrant {
   supported: boolean;
   /** Where they live: a grant (Perch dev) or the account's document (0.5.1). */
   stack?: "grant" | "document";
-  /** This origin's grant id, when it has one. */
-  grantId?: number;
   rules: GrantRule[];
   latestLedger: number;
 }
@@ -114,7 +123,7 @@ export interface AccountGrant {
  * account's) authorizes nothing, so it reads as no rules.
  */
 export async function readAccountGrant(account: string, origin = appOrigin()): Promise<AccountGrant> {
-  const generation = await view(account, "grant_generation").catch(() => undefined);
+  const generation = await view(account, "grant_generation").catch(orMissing);
   if (!generation) return readDocumentRules(account);
   for (const id of appGrantCandidates(origin)) {
     const arg = [xdr.ScVal.scvU32(id)];
@@ -127,11 +136,10 @@ export async function readAccountGrant(account: string, origin = appOrigin()): P
     const ids = signerIds.value as string[] | null | undefined;
     if (!rec || !ids?.length || !grantBelongsTo(ids.map(String), origin)) continue;
     if (BigInt(rec.gen) !== BigInt(generation.value as bigint))
-      return { supported: true, stack: "grant", grantId: id, rules: [], latestLedger: record.latestLedger };
+      return { supported: true, stack: "grant", rules: [], latestLedger: record.latestLedger };
     return {
       supported: true,
       stack: "grant",
-      grantId: id,
       rules: parseGrantRules(rec, ruleSet.value as unknown[]),
       latestLedger: record.latestLedger,
     };
@@ -143,7 +151,7 @@ export async function readAccountGrant(account: string, origin = appOrigin()): P
  * with functions, recipient and cap from its applied document. Only rules
  * signed by TurboLong's key are ever used. */
 async function readDocumentRules(account: string): Promise<AccountGrant> {
-  const read = await Promise.all([view(account, "installed_rules"), view(account, "document")]).catch(() => undefined);
+  const read = await Promise.all([view(account, "installed_rules"), view(account, "document")]).catch(orMissing);
   if (!read) {
     const { sequence } = await server.getLatestLedger();
     return { supported: false, rules: [], latestLedger: sequence };
@@ -191,7 +199,7 @@ export async function readCapWindow(account: string, rule: GrantRule): Promise<C
 
 export type GrantStatus =
   | { state: "unavailable"; reason: "classic" | "old-account" }
-  | { state: "none"; hasKey: boolean }
+  | { state: "none" }
   | {
       state: "active" | "expired";
       view: GrantView;
@@ -211,7 +219,7 @@ export async function grantStatus(account: string, pool: PoolDef): Promise<Grant
   const [key, grant] = await Promise.all([loadSessionKey(account), readAccountGrant(account)]);
   if (!grant.supported) return { state: "unavailable", reason: "old-account" };
   const found = key && turboLongRules(grant.rules, pool.id, xlmContractId(), key.publicKeyHex, grant.latestLedger);
-  if (!found) return { state: "none", hasKey: Boolean(key) };
+  if (!found) return { state: "none" };
   const window = await readCapWindow(account, found.transfer);
   const limit = found.transfer.cap?.limit ?? 0n;
   return {
@@ -229,23 +237,24 @@ export async function grantStatus(account: string, pool: PoolDef): Promise<Grant
 // ── Asking for the grant, and revoking it ─────────────────────────────────────
 
 /** Make (or load) this browser's session key for `account` ahead of a click, so
- * the grant popup can open while the click still counts as a user gesture. */
+ * `requestGrant` finds it stored and its popup opens while the click still
+ * counts as a user gesture. */
 export const prepareSessionKey = (account: string): Promise<SessionKey> => sessionKeyFor(account);
 
 /**
  * Open Nido's grant page for TurboLong's two rules on `pool`. Nido shows each
  * rule (contract, functions, recipient, cap, expiry) and installs them with one
- * confirmation of the owner's passkey. Call from a click handler with a key
- * from `prepareSessionKey`.
+ * confirmation of the owner's passkey. The request names this browser's
+ * session key for `account`. Call from a click handler.
  */
 export async function requestGrant(args: {
   account: string;
   pool: PoolDef;
-  key: SessionKey;
   cap?: GrantCap;
   duration?: GrantDuration;
 }): Promise<GrantAnswer> {
-  const { account, pool, key, cap = defaultCap(), duration = DEFAULT_DURATION } = args;
+  const { account, pool, cap = defaultCap(), duration = DEFAULT_DURATION } = args;
+  const key = await sessionKeyFor(account);
   const base = nidoConfig(getActiveNetwork()).base;
   const back = new URL(window.location.href);
   back.search = "";

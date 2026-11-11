@@ -22,7 +22,7 @@
  * `approve` + `submit_with_allowance` instead, which Perch cannot cap (a capped
  * rule must allow exactly `transfer`) and Nido cannot pin.
  */
-import { Address, StrKey, hash, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Address, StrKey, hash, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -446,22 +446,6 @@ export function capLeft(w: CapWindow, ledger: number): bigint {
   return left > 0n ? left : 0n;
 }
 
-/**
- * The first ledger, from `ledger` on, at which the cap lets `amount` through:
- * `ledger` itself when it fits now, otherwise once enough of the window ages
- * out. `undefined` when `amount` is over the whole cap.
- */
-export function capFreesAt(w: CapWindow, amount: bigint, ledger: number): number | undefined {
-  const entries = counting(w, ledger).sort((a, b) => a.ledger - b.ledger);
-  let total = entries.reduce((sum, e) => sum + e.amount, 0n);
-  if (total + amount <= w.limit) return ledger;
-  for (const e of entries) {
-    total -= e.amount;
-    if (total + amount <= w.limit) return e.ledger + w.periodLedgers;
-  }
-  return undefined;
-}
-
 // ── Signing under a grant ─────────────────────────────────────────────────────
 
 /** One call an auth entry authorizes, as `__check_auth` sees it. */
@@ -603,18 +587,6 @@ export function authPayload(ruleIds: number[], signers: ExternalSigner[], sigDat
       ),
     }),
   ]);
-}
-
-/** The XLM `transfer` amounts each capped rule would be charged for `contexts`. */
-export function capCharges(contexts: AuthContext[], ruleIds: number[], rules: GrantRule[]): Map<number, bigint> {
-  const charges = new Map<number, bigint>();
-  contexts.forEach((context, i) => {
-    const rule = rules.find((r) => r.id === ruleIds[i]);
-    const arg = rule?.cap ? context.args[rule.cap.amountArg] : undefined;
-    if (!rule || !arg) return;
-    charges.set(rule.id, (charges.get(rule.id) ?? 0n) + BigInt(scValToNative(arg) as bigint));
-  });
-  return charges;
 }
 
 // ── Refusals ──────────────────────────────────────────────────────────────────

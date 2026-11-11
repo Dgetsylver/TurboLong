@@ -25,7 +25,6 @@ import { getState } from "../app/state";
 import { toast } from "../app/chrome";
 
 const PERIOD_LABEL: Record<CapPeriod, string> = { day: "day", week: "week", "30d": "30 days" };
-const USE_GRANT_KEY = "turbolong:grant-mode:";
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
 
@@ -52,6 +51,8 @@ export interface GrantPanel {
   active(): boolean;
   /** Show the account's (or TurboLong's) refusal of the last grant-signed call. */
   noteRefusal(text: string): void;
+  /** A later grant-signed call went through: the refusal no longer holds. */
+  clearRefusal(): void;
 }
 
 export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
@@ -59,8 +60,11 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   let status: GrantStatus | undefined;
   /** The account, network and pool `status` was read for. */
   let statusFor = "";
+  /** This browser's session key for `keyFor`, shown in the details. */
   let key: SessionKey | undefined;
+  let keyFor = "";
   let refusal: string | undefined;
+  let readError: string | undefined;
   let busy = false;
   let generation = 0;
   let cap: GrantCap = defaultCap();
@@ -68,20 +72,6 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
 
   const account = () => getState().userAddress ?? "";
   const scope = () => `${account()}:${getActiveNetwork()}:${ctx.pool().id}`;
-  const useGrantPref = () => {
-    try {
-      return localStorage.getItem(USE_GRANT_KEY + account()) !== "off";
-    } catch {
-      return true;
-    }
-  };
-  const setUseGrant = (onOff: boolean) => {
-    try {
-      localStorage.setItem(USE_GRANT_KEY + account(), onOff ? "on" : "off");
-    } catch {
-      /* private mode: keep the default */
-    }
-  };
 
   async function refresh(): Promise<void> {
     const addr = account();
@@ -90,29 +80,38 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
       capNetwork = getActiveNetwork();
       cap = defaultCap();
     }
+    const owner = `${addr}:${capNetwork}`;
+    if (keyFor !== owner) {
+      keyFor = owner;
+      key = undefined;
+    }
     if (!addr || !isContractAccount(addr)) {
       status = undefined;
+      readError = undefined;
       render();
       return;
     }
     try {
       const where = scope();
       const next = await grantStatus(addr, ctx.pool());
+      const nextKey = next.state !== "unavailable" && !key ? await prepareSessionKey(addr) : key;
       if (mine !== generation) return;
+      if (where !== statusFor) refusal = undefined;
       status = next;
       statusFor = where;
-      if (next.state !== "unavailable" && !key) key = await prepareSessionKey(addr);
+      key = nextKey;
+      readError = undefined;
     } catch (e) {
       if (mine !== generation) return;
       status = undefined;
-      refusal = `Could not read TurboLong's access: ${(e as Error)?.message ?? e}`;
+      readError = `Could not read TurboLong's access: ${(e as Error)?.message ?? e}`;
     }
     render();
   }
 
   async function approve(): Promise<void> {
     const addr = account();
-    if (!key || busy) return;
+    if (busy) return;
     try {
       xlmToStroops(cap.xlm);
     } catch (e) {
@@ -125,7 +124,6 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
       const answer = await requestGrant({
         account: addr,
         pool: ctx.pool(),
-        key,
         cap: { xlm: cap.xlm.trim(), period: cap.period },
         duration: DEFAULT_DURATION,
       });
@@ -201,7 +199,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
     const s = status;
     const addr = account();
     if (!addr || !isContractAccount(addr) || !s) {
-      root.replaceChildren(...(refusal && addr && isContractAccount(addr) ? [errorCard(refusal)] : []));
+      root.replaceChildren(...(readError && addr && isContractAccount(addr) ? [errorCard(readError)] : []));
       return;
     }
     if (s.state === "unavailable") {
@@ -286,9 +284,6 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
     }
 
     const capText = `up to ${stroopsToXlm(s.limit)} XLM per ${periodOf(s.periodLedgers)}`;
-    const useBox = el("input", { type: "checkbox", id: "grant-use" }) as HTMLInputElement;
-    useBox.checked = useGrantPref();
-    on(useBox, "change", () => setUseGrant(useBox.checked));
     const pctLeft = s.limit > 0n ? Number((s.left * 1000n) / s.limit) / 10 : 0;
     root.replaceChildren(
       Card({
@@ -314,7 +309,6 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
             el("span", { style: `width:${Math.max(0, Math.min(100, pctLeft))}%` }),
           ]),
           refusal ? el("p", { class: "grant-refusal", role: "alert", id: "grant-refusal" }, [refusal]) : null,
-          el("label", { class: "grant-toggle" }, [useBox, " Use it for opens, add-funds and closes in this pool"]),
           el("div", { class: "grant-actions" }, [
             s.state === "expired"
               ? Button({ variant: "primary", size: "sm", children: "Allow again", onClick: () => void approve() })
@@ -351,9 +345,13 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   return {
     el: root,
     refresh,
-    active: () => status?.state === "active" && statusFor === scope() && useGrantPref() && isContractAccount(account()),
+    active: () => status?.state === "active" && statusFor === scope() && isContractAccount(account()),
     noteRefusal(text: string) {
       refusal = text;
+      render();
+    },
+    clearRefusal() {
+      refusal = undefined;
       render();
     },
   };

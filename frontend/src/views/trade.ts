@@ -1,3 +1,4 @@
+import type { xdr } from "@stellar/stellar-sdk";
 import "./trade.css";
 /**
  * Trade screen — open / adjust / monitor a leveraged Blend loop position, on the
@@ -55,7 +56,6 @@ import {
   submitClassicXdr,
   grantOpenPlan,
   grantClosePlan,
-  type GrantSubmitPlan,
   type PoolDef,
   type AssetInfo,
   type ReserveStats,
@@ -170,7 +170,7 @@ export function tradeScreen(): HTMLElement {
   const histEl = el("div", { class: "trade-hist" });
   const warnEl = el("div", { class: "trade-warn" });
   const colsEl = el("div", { class: "trade-cols" });
-  // Grant mode (Nido accounts on testnet): renders nothing for classic wallets.
+  // Grant mode (Nido accounts, mainnet and testnet): renders nothing for classic wallets.
   const grant = grantPanel({ pool: () => ts.pool });
   root.append(selectorEl, statsEl, ratesEl, histEl, warnEl, grant.el, colsEl);
 
@@ -1610,17 +1610,16 @@ export function tradeScreen(): HTMLElement {
    * checks the grant in an enforcing simulation first, so a refusal sends
    * nothing; the owner then chooses whether to use the main Nido wallet.
    */
-  async function viaGrant(label: string, plan: () => GrantSubmitPlan): Promise<"done" | "fallback" | "stopped"> {
+  async function viaGrant(label: string, plan: () => xdr.ScVal): Promise<"done" | "fallback" | "stopped"> {
     const addr = getState().userAddress;
     if (!addr) return "stopped";
     txShow(["Session key signs", "Account checks grant", "Confirmed"]);
     let step = 0;
     try {
-      const { requests } = plan();
       const hash = await submitUnderGrant({
         account: addr,
         pool: ts.pool,
-        requests,
+        requests: plan(),
         // Stage 2 (sending, confirming): the transaction may be on chain.
         onStage: (stage) => {
           step = stage === "signing" ? 0 : stage === "checking" ? 1 : 2;
@@ -1629,6 +1628,7 @@ export function tradeScreen(): HTMLElement {
       });
       txStep(2);
       txHide();
+      grant.clearRefusal();
       toast(`${label}: signed under TurboLong's grant, no passkey prompt`, "success", hash);
       await loadAll();
       return "done";
