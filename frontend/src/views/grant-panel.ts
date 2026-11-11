@@ -150,7 +150,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   }
 
   /** What the approval installs, for the details toggle. */
-  function details(pool: PoolDef, capText: string): HTMLElement {
+  function details(pool: PoolDef, capText: HTMLElement): HTMLElement {
     const mainnet = getActiveNetwork() === "mainnet";
     return el("details", { class: "grant-details" }, [
       el("summary", {}, ["What you're allowing"]),
@@ -168,7 +168,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
           " of XLM ",
           el("span", { class: "grant-mono" }, [shortAddr(xlmContractId())]),
           ", paying only that pool, ",
-          el("strong", {}, [capText]),
+          capText,
           ".",
         ]),
       ]),
@@ -239,8 +239,12 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
         value: cap.xlm,
         "aria-label": "Spending cap in XLM",
       }) as HTMLInputElement;
+      // The details follow the form as it is edited; a re-render would replace the focused input.
+      const requested = () => `up to ${cap.xlm.trim() || "…"} XLM per ${PERIOD_LABEL[cap.period]}`;
+      const capText = el("strong", {}, [requested()]);
       on(xlmInput, "input", () => {
         cap = { ...cap, xlm: xlmInput.value };
+        capText.textContent = requested();
       });
       const periodSel = el("select", { class: "grant-input", "aria-label": "Cap window" }, [
         ...(["day", "week", "30d"] as CapPeriod[]).map((p) => {
@@ -251,6 +255,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
       ]) as HTMLSelectElement;
       on(periodSel, "change", () => {
         cap = { ...cap, period: periodSel.value as CapPeriod };
+        capText.textContent = requested();
       });
       root.replaceChildren(
         Card({
@@ -276,7 +281,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
                 onClick: () => void approve(),
               }),
             ]),
-            details(pool, `up to ${cap.xlm || "…"} XLM per ${PERIOD_LABEL[cap.period]}`),
+            details(pool, capText),
           ],
         }),
       );
@@ -326,7 +331,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
             ),
             Button({ variant: "ghost", size: "sm", children: "Forget key", onClick: () => void forget() }),
           ]),
-          details(pool, capText),
+          details(pool, el("strong", {}, [capText])),
         ],
       }),
     );

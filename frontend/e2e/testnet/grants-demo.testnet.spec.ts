@@ -148,6 +148,13 @@ test("grant mode: approve once, two in-cap actions without prompts, one refused 
   const approve = page.locator("#grant-approve");
   await expect(approve).toBeEnabled({ timeout: 60_000 });
   await page.getByLabel("Spending cap in XLM").fill(CAP_XLM);
+  // The details describe the cap being requested, not the default one.
+  await page.getByText("What you're allowing").click();
+  await expect(page.locator(".grant-scope")).toContainText(`up to ${CAP_XLM} XLM per day`);
+  await page.getByLabel("Cap window").selectOption("week");
+  await expect(page.locator(".grant-scope")).toContainText(`up to ${CAP_XLM} XLM per week`);
+  await page.getByLabel("Cap window").selectOption("day");
+  await expect(page.getByLabel("Spending cap in XLM")).toHaveValue(CAP_XLM);
   await shot(page, "2-grant-request");
 
   // ── 3. Approve once in Nido ───────────────────────────────────────────────
