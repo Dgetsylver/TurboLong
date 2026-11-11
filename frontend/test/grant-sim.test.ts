@@ -429,7 +429,8 @@ beforeEach(() => {
       const owner = Address.fromScAddress(data.contract()).toString();
       const id = scValToNative(data.key()) as unknown[];
       // Perch dev: the account's SpendRecords(id). Mainnet: the spending-limit
-      // policy's AccountContext(account, id); the interpreter keeps none.
+      // policy's AccountContext(account, id). The interpreter's only key is
+      // Program(account, rule) (Perch c135aca), so it has no such entry.
       const rule =
         chain.stack === "grant"
           ? owner === ACCOUNT
@@ -569,7 +570,7 @@ async function approveOnce(cap = "40") {
       origin: ORIGIN,
       returnUrl: `${ORIGIN}/`,
       duration: "24h",
-      grants: turboLongGrant(pool.id, XLM, { xlm: cap, period: "day" }),
+      grants: turboLongGrant(pool, XLM, { xlm: cap, period: "day" }),
     }),
   );
 }
@@ -728,6 +729,21 @@ describe("mainnet grant mode (emulated Perch 0.5.1 account, Nido relayer)", () =
     await expect(refused).rejects.toMatchObject({ kind: "over-cap" });
     await expect(refused).rejects.toThrow(/over the spending cap/);
     expect(relayed).toHaveLength(2); // nothing went to the relayer
+  });
+
+  it("reads the cap window from the spend record, whatever else the policies hold under that key", async () => {
+    await approveOnce("5");
+    await open(2n, 1);
+    const real = vi.mocked(rpc.Server.prototype.getLedgerEntries).getMockImplementation()!;
+    vi.mocked(rpc.Server.prototype.getLedgerEntries).mockImplementation(async (...asked) => {
+      const answer = await real(...asked);
+      const other = map([["program", xdr.ScVal.scvU32(1)]]);
+      return {
+        ...answer,
+        entries: [{ val: { contractData: () => ({ val: () => other }) } }, ...answer.entries],
+      } as never;
+    });
+    expect(await grantStatus(ACCOUNT, pool)).toMatchObject({ state: "active", used: 20_000_000n, left: 30_000_000n });
   });
 
   it("reads only rules the document lists and the key signs", async () => {

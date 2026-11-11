@@ -14,8 +14,8 @@ For the selected Blend pool, two rules signed by TurboLong's session key:
 
 | Rule | Contract | Functions | Limits |
 | --- | --- | --- | --- |
-| `tl-submit-<pool>` | the Blend pool | `submit` | no cap: `submit` moves no tokens itself |
-| `tl-xlm-<pool>` | XLM | `transfer` | pays only the pool; a rolling cap (40 XLM per day in this script) |
+| the pool's name (`RegionalStarterPack`) | the Blend pool | `submit` | no cap: `submit` moves no tokens itself |
+| `XLM` | XLM | `transfer` | pays only the pool; a rolling cap (40 XLM per day in this script) |
 
 Both rules expire after 24 hours. The owner can change the cap and expiry on Nido's approval sheet.
 
@@ -42,6 +42,7 @@ Plain `submit` settles gross. It pulls every supplied unit first and pays the bo
 ## What to say about the limits
 
 - The pool rule cannot pin `submit`'s `from`, `spender` or `to` arguments, because Nido's grant request has no way to express that yet. Within the pool, a holder of the session key could direct borrows or withdrawals to another address, up to the position's equity. The XLM cap protects the wallet's liquid XLM, not the Blend position. Use throwaway testnet funds.
+- One pool at a time. The XLM rule is named `XLM` for every pool, and Nido replaces a rule of the same name, so allowing TurboLong in a second pool moves the XLM rule and its cap to that pool. The first pool's card then asks for approval again.
 - The session key is presented to Nido as "a passkey the app holds". The account's WebAuthn verifier checks no relying party or origin, so TurboLong assembles the assertion itself and sets the user-verified flag. Nido's own SDK does the same for session keys (`buildSyntheticAssertion`); TurboLong's key differs in staying non-extractable.
 - Grant-signed transactions are paid for by a throwaway fee payer in this browser, funded by Friendbot (the preview runs no relayer). It pays fees and nothing else.
 

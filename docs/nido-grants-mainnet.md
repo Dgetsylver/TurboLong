@@ -14,8 +14,10 @@ This is the mainnet version of the [testnet demo](nido-grants-demo.md), for the 
 
 On a live mainnet account, production Nido renders TurboLong's exact request as two rules:
 
-- `tl-submit-cccciq`: only `submit()` on YieldBlox, no cap.
-- `tl-xlm-cccciq`: only `transfer()` on XLM, *Pays to: Only* YieldBlox, up to 5 XLM per day.
+- `YieldBlox`: only `submit()` on YieldBlox, no cap.
+- `XLM`: only `transfer()` on XLM, *Pays to: Only* YieldBlox, up to 5 XLM per day.
+
+Each rule is named for what it covers: the pool's own name, and `XLM`.
 
 Both expire after about 24 hours, and approval stays enabled. A read-only recording simulation on mainnet shows that a 1× supply of 2 XLM to YieldBlox asks the account to authorize exactly `submit → transfer(account, pool, 2 XLM)`.
 
@@ -39,7 +41,7 @@ All three TurboLong mainnet pools refuse new borrows: Etherfuse is admin-frozen 
 
 1. **Connect → Nido** and pick the mainnet account.
 2. **Trade**: pool **YieldBlox**, asset **XLM**. Drag leverage to **1.0×**.
-3. On the **TurboLong access** card, set *Up to* **5** XLM per **day**. Press **Allow TurboLong to manage positions**. Nido's sheet lists the two rules above and "What changes: … + added tl-submit-cccciq … + added tl-xlm-cccciq". Press **Review & continue**, then approve with your passkey. Nido's relayer submits `apply_doc`. This is the one transaction the passkey signs.
+3. On the **TurboLong access** card, set *Up to* **5** XLM per **day**. Press **Allow TurboLong to manage positions**. Nido's sheet lists the two rules above and "What changes: … + added YieldBlox … + added XLM". Press **Review & continue**, then approve with your passkey. Nido's relayer submits `apply_doc`. This is the one transaction the passkey signs.
 4. The card turns **Active** and shows *5.00 of 5.00 XLM left this day* and the end time.
 5. Deposit **2** XLM at **1.0×** → **Confirm & Open** → confirm. No Nido window opens. The toast says the call was *signed under TurboLong's grant, no passkey prompt*. The card shows *3.00 of 5.00* left.
 6. **Add Funds**: **2** XLM at **1.0×**. Again no window; *1.00 of 5.00* left.
@@ -52,6 +54,7 @@ Mainnet transactions: `apply_doc` (passkey), two supplies and one close (session
 ## What to say about the limits
 
 - **The pool rule is not pinned to the account.** Nido's grant request can pin arguments only on `transfer` (its recipient), so `submit`'s `from`, `spender` and `to` stay open. Whoever holds the session key could move the position itself to another address. The 5 XLM cap protects the XLM in the wallet. Use small amounts.
+- **One pool at a time.** The XLM rule is named `XLM` for every pool, and Nido replaces a rule of the same name. Allowing TurboLong in a second pool moves the XLM rule, and its cap, to that pool; the first pool's card goes back to asking for approval.
 - **The cap counts gross XLM moved into the pool.** At 1× that is the deposit.
 - **Nido calls the session key "a passkey the app holds".** It is a P-256 key made non-extractable in the browser, which signs without a prompt. The rules are its limit.
 

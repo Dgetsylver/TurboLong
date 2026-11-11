@@ -42,6 +42,7 @@ import {
 
 const ACCOUNT = StrKey.encodeContract(Buffer.alloc(32, 7));
 const POOL = "CAPBMXIQTICKWFPWFDJWMAKBXBPJZUKLNONQH3MLPLLBKQ643CYN5PRW";
+const TL_POOL = { id: POOL, name: "RegionalStarterPack" };
 const XLM = Asset.native().contractId(Networks.TESTNET);
 const USDC = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const VERIFIER = "CDPT2W5ZYRHKD7ESV4OXPKYBWCCCAZRKRDAI4EAE7ACXE5ZN76F23OZP";
@@ -55,7 +56,7 @@ const NIDO = `https://${ACCOUNT.toLowerCase()}.356.test.nido.fyi`;
 function liveGrant(opts: { key?: string; validUntil?: number; to?: string; limit?: bigint } = {}) {
   const { key = KEY, validUntil = 10_000, to = POOL, limit = 500_000_000n } = opts;
   const signers = [["External", VERIFIER, fromHex(key)]];
-  const labels = grantLabels(POOL);
+  const labels = grantLabels(TL_POOL);
   return {
     record: {
       gen: 0n,
@@ -109,18 +110,28 @@ const submitTree = (token = XLM, pull = 200_000_000n) =>
 
 describe("what TurboLong asks for", () => {
   it("asks for submit on the pool and a capped XLM transfer paying only that pool", () => {
-    const grants = turboLongGrant(POOL, XLM, { xlm: "50", period: "day" });
+    const grants = turboLongGrant(TL_POOL, XLM, { xlm: "50", period: "day" });
     expect(grants).toEqual([
-      { label: "tl-submit-capbmx", target: POOL, functions: ["submit"], limit: "none" },
+      { label: "RegionalStarterPack", target: POOL, functions: ["submit"], limit: "none" },
       {
-        label: "tl-xlm-capbmx",
+        label: "XLM",
         target: XLM,
         functions: ["transfer"],
         limit: { xlm: "50", period: "day" },
         to: POOL,
       },
     ]);
-    for (const g of grants) expect(new TextEncoder().encode(g.label).length).toBeLessThanOrEqual(20);
+  });
+
+  it("names the pool rule by the pool's own name, cut to 20 bytes on a character boundary", () => {
+    const named = (name: string) => grantLabels({ id: POOL, name });
+    for (const name of ["YieldBlox", "Etherfuse", "Fixed", "RegionalStarterPack", "TestnetV2"])
+      expect(named(name)).toEqual({ submit: name, transfer: "XLM" });
+    expect(named("A".repeat(25)).submit).toBe("A".repeat(20));
+    // 18 one-byte characters, then a three-byte one that would end at byte 21.
+    expect(named(`${"A".repeat(18)}€uro`).submit).toBe("A".repeat(18));
+    const [submit] = turboLongGrant({ id: POOL, name: `${"A".repeat(18)}€uro` }, XLM, { xlm: "5", period: "day" });
+    expect(new TextEncoder().encode(submit.label).length).toBeLessThanOrEqual(20);
   });
 
   it("builds Nido's delegate-doc request with every grant field", () => {
@@ -132,7 +143,7 @@ describe("what TurboLong asks for", () => {
         origin: ORIGIN,
         returnUrl: `${ORIGIN}/`,
         duration: "24h",
-        grants: turboLongGrant(POOL, XLM, { xlm: "50", period: "day" }),
+        grants: turboLongGrant(TL_POOL, XLM, { xlm: "50", period: "day" }),
       }),
     );
     expect(url.origin).toBe(NIDO);
@@ -141,11 +152,11 @@ describe("what TurboLong asks for", () => {
       origin: ORIGIN,
       pubkey: KEY,
       duration: "24h",
-      "grant.0.label": "tl-submit-capbmx",
+      "grant.0.label": "RegionalStarterPack",
       "grant.0.target": POOL,
       "grant.0.functions": "submit",
       "grant.0.limit": "none",
-      "grant.1.label": "tl-xlm-capbmx",
+      "grant.1.label": "XLM",
       "grant.1.target": XLM,
       "grant.1.functions": "transfer",
       "grant.1.limit": "50",
@@ -194,7 +205,7 @@ describe("what TurboLong asks for", () => {
   });
 
   it("refuses a classic account, a malformed key and a return URL on another origin", () => {
-    const grants = turboLongGrant(POOL, XLM, { xlm: "5", period: "week" });
+    const grants = turboLongGrant(TL_POOL, XLM, { xlm: "5", period: "week" });
     const classic = StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 1));
     expect(() => grantRequestUrl({ ...base, grants, account: classic })).toThrow(/smart account/);
     expect(() => grantRequestUrl({ ...base, grants, publicKeyHex: "04ab" })).toThrow(/P-256/);
@@ -245,16 +256,16 @@ describe("what the account installed", () => {
   });
 
   it("finds TurboLong's two rules only for its own key and pinned recipient", () => {
-    expect(turboLongRules(rulesOf(), POOL, XLM, KEY, 100)).toMatchObject({ validUntil: 10_000, expired: false });
-    expect(turboLongRules(rulesOf(), POOL, XLM, OTHER_KEY, 100)).toBeUndefined();
-    expect(turboLongRules(rulesOf(liveGrant({ to: USDC })), POOL, XLM, KEY, 100)).toBeUndefined();
+    expect(turboLongRules(rulesOf(), TL_POOL, XLM, KEY, 100)).toMatchObject({ validUntil: 10_000, expired: false });
+    expect(turboLongRules(rulesOf(), TL_POOL, XLM, OTHER_KEY, 100)).toBeUndefined();
+    expect(turboLongRules(rulesOf(liveGrant({ to: USDC })), TL_POOL, XLM, KEY, 100)).toBeUndefined();
   });
 
   it("treats a rule as expired a margin before its last ledger", () => {
     const [rule] = rulesOf();
     expect(ruleLive(rule, 10_000 - EXPIRY_MARGIN_LEDGERS)).toBe(true);
     expect(ruleLive(rule, 10_000 - EXPIRY_MARGIN_LEDGERS + 1)).toBe(false);
-    expect(turboLongRules(rulesOf(), POOL, XLM, KEY, 9_990)?.expired).toBe(true);
+    expect(turboLongRules(rulesOf(), TL_POOL, XLM, KEY, 9_990)?.expired).toBe(true);
   });
 });
 
@@ -300,7 +311,7 @@ describe("signing under the grant", () => {
     g.ruleSet.unshift({ ...g.ruleSet[0] });
     const contexts = authContexts(submitTree());
     expect(
-      ruleIdsFor(contexts, parseGrantRules(g.record, g.ruleSet), KEY, 100, Object.values(grantLabels(POOL))),
+      ruleIdsFor(contexts, parseGrantRules(g.record, g.ruleSet), KEY, 100, Object.values(grantLabels(TL_POOL))),
     ).toEqual([1, 2]);
   });
 
@@ -429,7 +440,8 @@ describe("mainnet (Perch 0.5.1): app rules in the account's own document", () =>
   const MAIN_XLM = Asset.native().contractId(Networks.PUBLIC);
   const INTERPRETER = "CCLU4UY5D7JLAQJCHBHEFN7ACFZXDPHCQXA7L6MT5ALIHRPQ7BGIVMTC";
   const SPENDING = "CAD75KDQREQCGN3HIKMAVYKZWRGOFQYDZSXB4ILFSR6OHKTJ5UDNSOKU";
-  const labels = grantLabels(MAIN_POOL);
+  const MAIN = { id: MAIN_POOL, name: "YieldBlox" };
+  const labels = grantLabels(MAIN);
   const signers = [["External", VERIFIER, fromHex(KEY)]];
   // `installed_rules()` as a live mainnet account returns it, plus TurboLong's two rules.
   const installed = [
@@ -480,7 +492,7 @@ describe("mainnet (Perch 0.5.1): app rules in the account's own document", () =>
       policies: [INTERPRETER, SPENDING],
       validUntil: 70_000_000,
     });
-    const view = turboLongRules(rules, MAIN_POOL, MAIN_XLM, KEY, 65_000_000);
+    const view = turboLongRules(rules, MAIN, MAIN_XLM, KEY, 65_000_000);
     expect(view?.submit.id).toBe(4);
     expect(view?.transfer.id).toBe(5);
   });

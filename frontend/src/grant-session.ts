@@ -193,8 +193,9 @@ export async function readCapWindow(account: string, rule: GrantRule): Promise<C
       )
     : [entry(account, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("SpendRecords"), xdr.ScVal.scvU32(rule.id)]))];
   const { entries } = await server.getLedgerEntries(...keys);
-  const found = entries[0];
-  return capWindow(rule.cap, found ? scValToNative(found.val.contractData().val()) : undefined);
+  const records = entries.map((e) => scValToNative(e.val.contractData().val()) as unknown);
+  const isWindow = (r: unknown) => typeof r === "object" && r !== null && ("spending_history" in r || "history" in r);
+  return capWindow(rule.cap, records.find(isWindow));
 }
 
 export type GrantStatus =
@@ -218,7 +219,7 @@ export async function grantStatus(account: string, pool: PoolDef): Promise<Grant
   if (!isContractAccount(account)) return { state: "unavailable", reason: "classic" };
   const [key, grant] = await Promise.all([loadSessionKey(account), readAccountGrant(account)]);
   if (!grant.supported) return { state: "unavailable", reason: "old-account" };
-  const found = key && turboLongRules(grant.rules, pool.id, xlmContractId(), key.publicKeyHex, grant.latestLedger);
+  const found = key && turboLongRules(grant.rules, pool, xlmContractId(), key.publicKeyHex, grant.latestLedger);
   if (!found) return { state: "none" };
   const window = await readCapWindow(account, found.transfer);
   const limit = found.transfer.cap?.limit ?? 0n;
@@ -266,7 +267,7 @@ export async function requestGrant(args: {
     origin: appOrigin(),
     returnUrl: back.toString(),
     duration,
-    grants: turboLongGrant(pool.id, xlmContractId(), cap),
+    grants: turboLongGrant(pool, xlmContractId(), cap),
   });
   try {
     const { search } = await openCeremonyPopup(url, new URL(url).origin);
@@ -354,7 +355,7 @@ export async function submitUnderGrant(args: {
   ]);
   onStage?.("signing");
   const validUntil = latestLedger + AUTH_LIFETIME_LEDGERS;
-  const preferred = Object.values(grantLabels(pool.id));
+  const preferred = Object.values(grantLabels(pool));
   const signed: xdr.SorobanAuthorizationEntry[] = [];
   for (const recorded of auth) {
     const creds = recorded.credentials();

@@ -95,23 +95,39 @@ export interface GrantAsk {
   to?: string;
 }
 
-const short = (contract: string) => contract.slice(0, 6).toLowerCase();
+/** A Blend pool as TurboLong's config names it. */
+export interface GrantPool {
+  id: string;
+  name: string;
+}
 
-/** The rule labels TurboLong uses for `pool`: one per pool, so a grant for a
- * second pool installs beside the first instead of replacing it. */
-export function grantLabels(pool: string): { submit: string; transfer: string } {
-  return { submit: `tl-submit-${short(pool)}`, transfer: `tl-xlm-${short(pool)}` };
+/** `name` cut to the account's rule-name limit, on a character boundary. */
+function ruleName(name: string): string {
+  const encoder = new TextEncoder();
+  let out = "";
+  for (const ch of name) {
+    if (encoder.encode(out + ch).length > MAX_LABEL_BYTES) break;
+    out += ch;
+  }
+  return out;
+}
+
+/** The rule names TurboLong uses for `pool`: the pool's own name, and `XLM`.
+ * Nido replaces a rule of the same name, so the one `XLM` rule pays the pool
+ * approved last: TurboLong is allowed in one pool at a time. */
+export function grantLabels(pool: GrantPool): { submit: string; transfer: string } {
+  return { submit: ruleName(pool.name), transfer: "XLM" };
 }
 
 /** The two rules TurboLong's key needs to open and close XLM positions in `pool`. */
-export function turboLongGrant(pool: string, xlmToken: string, cap: GrantCap): GrantAsk[] {
-  if (!StrKey.isValidContract(pool)) throw new Error(`Not a pool contract: ${pool}`);
+export function turboLongGrant(pool: GrantPool, xlmToken: string, cap: GrantCap): GrantAsk[] {
+  if (!StrKey.isValidContract(pool.id)) throw new Error(`Not a pool contract: ${pool.id}`);
   if (!StrKey.isValidContract(xlmToken)) throw new Error(`Not a token contract: ${xlmToken}`);
   xlmToStroops(cap.xlm);
   const labels = grantLabels(pool);
   return [
-    { label: labels.submit, target: pool, functions: ["submit"], limit: "none" },
-    { label: labels.transfer, target: xlmToken, functions: ["transfer"], limit: cap, to: pool },
+    { label: labels.submit, target: pool.id, functions: ["submit"], limit: "none" },
+    { label: labels.transfer, target: xlmToken, functions: ["transfer"], limit: cap, to: pool.id },
   ];
 }
 
@@ -379,15 +395,15 @@ export interface GrantView {
 /** TurboLong's two rules for `pool` among `rules`, signed by its key. */
 export function turboLongRules(
   rules: GrantRule[],
-  pool: string,
+  pool: GrantPool,
   xlmToken: string,
   publicKeyHex: string,
   ledger: number,
 ): GrantView | undefined {
   const labels = grantLabels(pool);
   const mine = rules.filter((r) => signedBy(r, publicKeyHex));
-  const submit = mine.find((r) => r.name === labels.submit && r.contract === pool);
-  const transfer = mine.find((r) => r.name === labels.transfer && r.contract === xlmToken && r.to === pool);
+  const submit = mine.find((r) => r.name === labels.submit && r.contract === pool.id);
+  const transfer = mine.find((r) => r.name === labels.transfer && r.contract === xlmToken && r.to === pool.id);
   if (!submit || !transfer) return undefined;
   const ends = [submit.validUntil, transfer.validUntil].filter((v): v is number => v !== undefined);
   const validUntil = ends.length ? Math.min(...ends) : undefined;
