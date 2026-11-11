@@ -18,6 +18,7 @@ import {
   grantBelongsTo,
   grantLabels,
   grantRequestUrl,
+  parseDocRules,
   parseGrantAnswer,
   parseGrantRules,
   ruleIdsFor,
@@ -444,5 +445,97 @@ describe("Nido account origins", () => {
     expect(nidoAccountOrigin("http://localhost:4321", ACCOUNT)).toBe(`http://${acc}.localhost:4321`);
     expect(nidoAccountOrigin("http://127.0.0.1:4321", ACCOUNT)).toBe(`http://${acc}.127.0.0.1:4321`);
     expect(() => nidoAccountOrigin("https://nido.fyi", StrKey.encodeEd25519PublicKey(Buffer.alloc(32)))).toThrow();
+  });
+});
+
+describe("mainnet (Perch 0.5.1): app rules in the account's own document", () => {
+  const MAIN_POOL = "CCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS";
+  const MAIN_XLM = Asset.native().contractId(Networks.PUBLIC);
+  const INTERPRETER = "CCLU4UY5D7JLAQJCHBHEFN7ACFZXDPHCQXA7L6MT5ALIHRPQ7BGIVMTC";
+  const SPENDING = "CAD75KDQREQCGN3HIKMAVYKZWRGOFQYDZSXB4ILFSR6OHKTJ5UDNSOKU";
+  const labels = grantLabels(MAIN_POOL);
+  const signers = [["External", VERIFIER, fromHex(KEY)]];
+  // `installed_rules()` as a live mainnet account returns it, plus TurboLong's two rules.
+  const installed = [
+    { id: 0, name: "admin", context_type: ["CallContract", ACCOUNT], signers, policies: [] },
+    {
+      id: 4,
+      name: labels.submit,
+      context_type: ["CallContract", MAIN_POOL],
+      signers,
+      policies: [{ policy: INTERPRETER }],
+      valid_until: 70_000_000,
+    },
+    {
+      id: 5,
+      name: labels.transfer,
+      context_type: ["CallContract", MAIN_XLM],
+      signers,
+      policies: [{ policy: INTERPRETER }, { policy: SPENDING }],
+      valid_until: 70_000_000,
+    },
+  ];
+  // `document()` as Nido's delegate-doc writes it (draftToDoc).
+  const doc = {
+    rules: [
+      { name: "admin", scope: { type: "self-admin" } },
+      { name: labels.submit, scope: { type: "contract", address: MAIN_POOL }, functions: ["submit"] },
+      {
+        name: labels.transfer,
+        scope: { type: "contract", address: MAIN_XLM },
+        functions: ["transfer"],
+        args: [{ index: 1, pred: { type: "address-eq", address: MAIN_POOL } }],
+        cap: { limit: "50000000", "period-ledgers": 17280 },
+      },
+    ],
+  };
+
+  it("joins installed rules with the document's functions, recipient, cap and policies", () => {
+    const rules = parseDocRules(installed, doc);
+    // The admin rule is `self-admin` in the document (no contract), so it never joins: TurboLong reads it as allowing nothing.
+    expect(rules[0]).toMatchObject({ id: 0, functions: [], policies: [] });
+    expect(rules[1]).toMatchObject({ id: 4, contract: MAIN_POOL, functions: ["submit"], policies: [INTERPRETER] });
+    expect(rules[2]).toMatchObject({
+      id: 5,
+      contract: MAIN_XLM,
+      functions: ["transfer"],
+      to: MAIN_POOL,
+      cap: { limit: 50_000_000n, periodLedgers: 17_280, amountArg: 2 },
+      policies: [INTERPRETER, SPENDING],
+      validUntil: 70_000_000,
+    });
+    const view = turboLongRules(rules, MAIN_POOL, MAIN_XLM, KEY, 65_000_000);
+    expect(view?.submit.id).toBe(4);
+    expect(view?.transfer.id).toBe(5);
+  });
+
+  it("reads a rule the document does not list as allowing nothing", () => {
+    const rules = parseDocRules(installed, { rules: [] });
+    expect(rules[1].functions).toEqual([]);
+    expect(() => ruleIdsFor(authContexts(invocation(MAIN_POOL, "submit", [])), rules, KEY, 65_000_000)).toThrow(
+      GrantScopeError,
+    );
+  });
+
+  it("reads the cap window from the spending-limit policy's record", () => {
+    const w = capWindow(
+      { limit: 1n, periodLedgers: 1, amountArg: 2 },
+      {
+        spending_limit: 50_000_000n,
+        period_ledgers: 17_280,
+        spending_history: [{ amount: 20_000_000n, ledger_sequence: 100 }],
+        cached_total_spent: 20_000_000n,
+      },
+    );
+    expect(w).toEqual({ limit: 50_000_000n, periodLedgers: 17_280, spent: [{ amount: 20_000_000n, ledger: 100 }] });
+    expect(capLeft(w, 200)).toBe(30_000_000n);
+  });
+
+  it("explains OpenZeppelin refusals", () => {
+    expect(accountRefusal("HostError: Error(Contract, #3221)")).toMatchObject({ kind: "over-cap" });
+    expect(accountRefusal("HostError: Error(Contract, #3002)")?.text).toMatch(/no rule/);
+    expect(accountRefusal("HostError: Error(Contract, #3005)")?.text).toMatch(/expired/);
+    expect(accountRefusal("HostError: Error(Contract, #1) ... __check_auth")?.kind).toBe("refused");
+    expect(accountRefusal("HostError: Error(Contract, #1)")).toBeUndefined();
   });
 });

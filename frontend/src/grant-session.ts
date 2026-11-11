@@ -3,13 +3,16 @@
  * it back from the account, and sign Blend calls under it with TurboLong's
  * session key (grant-key.ts) instead of the owner's passkey.
  *
- * Grants (`apply_grant`) run on Perch dev, which Nido previews on testnet
- * (nidohq/nido#356, https://356.test.nido.fyi). Nido's mainnet accounts run an
- * earlier Perch with no grants, so grant mode is testnet only; everything else
- * keeps the main-wallet flow. Calls signed by the session key are paid for by
- * a throwaway fee payer in this browser, funded by Friendbot: Nido's preview
- * runs without a relayer. The fee payer pays fees and nothing else; the
- * account's rules name the session key, not it.
+ * Nido's grant page is the same on both networks; where the rules land is not.
+ * - Testnet: Nido's preview of Perch dev (nidohq/nido#356) keeps each app's
+ *   rules in a grant (`apply_grant`, read with the `grant_*` views). The
+ *   preview runs no relayer, so a throwaway fee payer in this browser, funded
+ *   by Friendbot, sends the calls.
+ * - Mainnet: Nido runs Perch 0.5.1, which has no grants; Nido writes the app's
+ *   rules into the account's own policy document (`apply_doc`, read with
+ *   `installed_rules` and `document`), and Nido's relayer sends the calls.
+ * Either way the account's rules name the session key, and the account checks
+ * them on every call; a fee payer or relayer only pays.
  */
 import { openCeremonyPopup } from "@nidohq/stellar-wallets-kit-module";
 import {
@@ -19,6 +22,7 @@ import {
   Contract,
   Keypair,
   Operation,
+  type Transaction,
   TransactionBuilder,
   rpc,
   scValToNative,
@@ -52,6 +56,7 @@ import {
   grantRequestUrl,
   ledgerToTime,
   parseGrantAnswer,
+  parseDocRules,
   parseGrantRules,
   ruleIdsFor,
   signaturePayload,
@@ -65,11 +70,10 @@ import {
 import { deleteSessionKey, loadSessionKey, sessionKeyFor, signAssertion, type SessionKey } from "./grant-key";
 import { isContractAccount, nidoAccountOrigin, nidoConfig } from "./nido";
 
-/** Grants exist on Perch dev, previewed on testnet only. */
-export const grantsSupported = (): boolean => getActiveNetwork() === "testnet";
-
-/** The cap and duration TurboLong suggests; the owner can change both on Nido's page. */
-export const DEFAULT_CAP: GrantCap = { xlm: "50", period: "day" };
+/** The cap TurboLong suggests: small on mainnet. The owner can change it, and
+ * the expiry, on Nido's page. */
+export const defaultCap = (): GrantCap =>
+  getActiveNetwork() === "mainnet" ? { xlm: "5", period: "day" } : { xlm: "50", period: "day" };
 export const DEFAULT_DURATION: GrantDuration = "24h";
 
 const NULL_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
@@ -94,8 +98,10 @@ async function view(contract: string, method: string, args: xdr.ScVal[] = []) {
 }
 
 export interface AccountGrant {
-  /** Whether the account has Perch dev's grant views at all. */
+  /** Whether the account can hold app rules at all. */
   supported: boolean;
+  /** Where they live: a grant (Perch dev) or the account's document (0.5.1). */
+  stack?: "grant" | "document";
   /** This origin's grant id, when it has one. */
   grantId?: number;
   rules: GrantRule[];
@@ -109,10 +115,7 @@ export interface AccountGrant {
  */
 export async function readAccountGrant(account: string, origin = appOrigin()): Promise<AccountGrant> {
   const generation = await view(account, "grant_generation").catch(() => undefined);
-  if (!generation) {
-    const { sequence } = await server.getLatestLedger();
-    return { supported: false, rules: [], latestLedger: sequence };
-  }
+  if (!generation) return readDocumentRules(account);
   for (const id of appGrantCandidates(origin)) {
     const arg = [xdr.ScVal.scvU32(id)];
     const [record, signerIds, ruleSet] = await Promise.all([
@@ -124,34 +127,70 @@ export async function readAccountGrant(account: string, origin = appOrigin()): P
     const ids = signerIds.value as string[] | null | undefined;
     if (!rec || !ids?.length || !grantBelongsTo(ids.map(String), origin)) continue;
     if (BigInt(rec.gen) !== BigInt(generation.value as bigint))
-      return { supported: true, grantId: id, rules: [], latestLedger: record.latestLedger };
+      return { supported: true, stack: "grant", grantId: id, rules: [], latestLedger: record.latestLedger };
     return {
       supported: true,
+      stack: "grant",
       grantId: id,
       rules: parseGrantRules(rec, ruleSet.value as unknown[]),
       latestLedger: record.latestLedger,
     };
   }
-  return { supported: true, rules: [], latestLedger: generation.latestLedger };
+  return { supported: true, stack: "grant", rules: [], latestLedger: generation.latestLedger };
 }
 
-/** The spending window the account keeps for a capped rule (`SpendRecords(id)`). */
+/** An account without grants (mainnet's Perch 0.5.1): every installed rule,
+ * with functions, recipient and cap from its applied document. Only rules
+ * signed by TurboLong's key are ever used. */
+async function readDocumentRules(account: string): Promise<AccountGrant> {
+  const read = await Promise.all([view(account, "installed_rules"), view(account, "document")]).catch(() => undefined);
+  if (!read) {
+    const { sequence } = await server.getLatestLedger();
+    return { supported: false, rules: [], latestLedger: sequence };
+  }
+  const [installed, written] = read;
+  const bytes = Array.isArray(written.value) ? written.value[1] : undefined;
+  const doc = bytes instanceof Uint8Array ? JSON.parse(new TextDecoder().decode(bytes)) : undefined;
+  return {
+    supported: true,
+    stack: "document",
+    rules: parseDocRules(installed.value as unknown[], doc),
+    latestLedger: installed.latestLedger,
+  };
+}
+
+/** A capped rule's spending window: in the account (`SpendRecords(id)`,
+ * Perch dev), or in its spending-limit policy (`AccountContext(account, id)`,
+ * mainnet's 0.5.1, whose rules carry their policies). */
 export async function readCapWindow(account: string, rule: GrantRule): Promise<CapWindow | undefined> {
   if (!rule.cap) return undefined;
-  const key = xdr.LedgerKey.contractData(
-    new xdr.LedgerKeyContractData({
-      contract: new Address(account).toScAddress(),
-      key: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("SpendRecords"), xdr.ScVal.scvU32(rule.id)]),
-      durability: xdr.ContractDataDurability.persistent(),
-    }),
-  );
-  const { entries } = await server.getLedgerEntries(key);
-  const entry = entries[0];
-  return capWindow(rule.cap, entry ? scValToNative(entry.val.contractData().val()) : undefined);
+  const entry = (contract: string, key: xdr.ScVal) =>
+    xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract: new Address(contract).toScAddress(),
+        key,
+        durability: xdr.ContractDataDurability.persistent(),
+      }),
+    );
+  const keys = rule.policies?.length
+    ? rule.policies.map((policy) =>
+        entry(
+          policy,
+          xdr.ScVal.scvVec([
+            xdr.ScVal.scvSymbol("AccountContext"),
+            new Address(account).toScVal(),
+            xdr.ScVal.scvU32(rule.id),
+          ]),
+        ),
+      )
+    : [entry(account, xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("SpendRecords"), xdr.ScVal.scvU32(rule.id)]))];
+  const { entries } = await server.getLedgerEntries(...keys);
+  const found = entries[0];
+  return capWindow(rule.cap, found ? scValToNative(found.val.contractData().val()) : undefined);
 }
 
 export type GrantStatus =
-  | { state: "unavailable"; reason: "mainnet" | "classic" | "old-account" }
+  | { state: "unavailable"; reason: "classic" | "old-account" }
   | { state: "none"; hasKey: boolean }
   | {
       state: "active" | "expired";
@@ -168,7 +207,6 @@ export type GrantStatus =
 
 /** What TurboLong's grant for `pool` looks like on `account` right now. */
 export async function grantStatus(account: string, pool: PoolDef): Promise<GrantStatus> {
-  if (!grantsSupported()) return { state: "unavailable", reason: "mainnet" };
   if (!isContractAccount(account)) return { state: "unavailable", reason: "classic" };
   const [key, grant] = await Promise.all([loadSessionKey(account), readAccountGrant(account)]);
   if (!grant.supported) return { state: "unavailable", reason: "old-account" };
@@ -207,7 +245,7 @@ export async function requestGrant(args: {
   cap?: GrantCap;
   duration?: GrantDuration;
 }): Promise<GrantAnswer> {
-  const { account, pool, key, cap = DEFAULT_CAP, duration = DEFAULT_DURATION } = args;
+  const { account, pool, key, cap = defaultCap(), duration = DEFAULT_DURATION } = args;
   const base = nidoConfig(getActiveNetwork()).base;
   const back = new URL(window.location.href);
   back.search = "";
@@ -298,7 +336,6 @@ export async function submitUnderGrant(args: {
   onStage?: (stage: GrantStage) => void;
 }): Promise<string> {
   const { account, pool, requests, onStage } = args;
-  if (!grantsSupported()) throw new Error("Grant mode runs on testnet only");
   const key = await loadSessionKey(account);
   if (!key) throw new Error("This browser has no session key for the account: approve TurboLong's grant first.");
   const networkPassphrase = getNetworkPassphrase();
@@ -333,6 +370,8 @@ export async function submitUnderGrant(args: {
     signed.push(entry);
   }
 
+  const relayer = nidoConfig(getActiveNetwork()).relayer;
+  if (relayer) return submitViaRelayer(relayer, func, signed, onStage);
   const payer = await testnetFeePayer();
   for (let attempt = 1; ; attempt++) {
     onStage?.("checking");
@@ -343,13 +382,7 @@ export async function submitUnderGrant(args: {
       .addOperation(Operation.invokeHostFunction({ func, auth: signed }))
       .setTimeout(60)
       .build();
-    const enforced = await server.simulateTransaction(tx, undefined, "enforce");
-    if (!rpc.Api.isSimulationSuccess(enforced)) {
-      const error = (enforced as rpc.Api.SimulateTransactionErrorResponse).error;
-      const refusal = accountRefusal(error);
-      if (refusal) throw new GrantRefusedError(refusal.kind, refusal.text);
-      throw new Error(`Simulation failed: ${error}`);
-    }
+    const enforced = await enforce(tx);
 
     onStage?.("sending");
     const ready = rpc.assembleTransaction(tx, enforced).build();
@@ -366,6 +399,85 @@ export async function submitUnderGrant(args: {
         : `Confirmation timed out: ${sent.hash}. Check the account before retrying.`,
     );
   }
+}
+
+/** The account's verdict on `tx` in an enforcing simulation: the signed
+ * authorization runs `__check_auth` for real, so a refusal costs nothing. */
+async function enforce(tx: Transaction): Promise<rpc.Api.SimulateTransactionSuccessResponse> {
+  const enforced = await server.simulateTransaction(tx, undefined, "enforce");
+  if (rpc.Api.isSimulationSuccess(enforced)) return enforced;
+  const error = (enforced as rpc.Api.SimulateTransactionErrorResponse).error;
+  const refusal = accountRefusal(error);
+  if (refusal) throw new GrantRefusedError(refusal.kind, refusal.text);
+  throw new Error(`Simulation failed: ${error}`);
+}
+
+type RelayerAnswer = { transactionId?: string | null; hash?: string | null; status?: string | null };
+
+/** One call to Nido's relayer (`POST <relayer>/relay`, OpenZeppelin's
+ * Channels plugin), as Nido's own SDK makes it. */
+async function relayerCall(relayer: string, params: object): Promise<RelayerAnswer> {
+  const response = await fetch(`${relayer}/relay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ params }),
+  });
+  const body = (await response.json().catch(() => ({}))) as {
+    success?: boolean;
+    error?: string | null;
+    data?: { code?: string; result?: RelayerAnswer } & RelayerAnswer;
+  };
+  if (body.success === false || !response.ok)
+    throw new Error(
+      [body.data?.code, body.error ?? `Nido's relayer answered ${response.status}`].filter(Boolean).join(": "),
+    );
+  const answer = body.data?.result ?? body.data;
+  if (!answer) throw new Error("Nido's relayer gave an empty answer");
+  return answer;
+}
+
+/**
+ * Mainnet: check the call in an enforcing simulation (from Nido's public
+ * simulation source), then hand the host function and its signed
+ * authorization to Nido's relayer, which builds, pays for and submits the
+ * transaction, and wait for its verdict.
+ */
+async function submitViaRelayer(
+  relayer: string,
+  func: xdr.HostFunction,
+  auth: xdr.SorobanAuthorizationEntry[],
+  onStage?: (stage: GrantStage) => void,
+): Promise<string> {
+  onStage?.("checking");
+  const { networkPassphrase, simulationSource } = nidoConfig(getActiveNetwork());
+  await enforce(
+    new TransactionBuilder(await server.getAccount(simulationSource), { fee: BASE_FEE, networkPassphrase })
+      .addOperation(Operation.invokeHostFunction({ func, auth }))
+      .setTimeout(60)
+      .build(),
+  );
+  onStage?.("sending");
+  let answer = await relayerCall(relayer, {
+    func: func.toXDR("base64"),
+    auth: auth.map((a) => a.toXDR("base64")),
+    skipWait: true,
+  });
+  onStage?.("confirming");
+  for (let attempt = 0; attempt < 55; attempt++) {
+    if (answer.status === "confirmed" && answer.hash) break;
+    if (answer.status === "failed" || answer.status === "expired")
+      throw new Error(
+        `Nido's relayer reports the transaction ${answer.status}${answer.hash ? `: ${answer.hash}` : ""}`,
+      );
+    if (!answer.transactionId) break;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    answer = await relayerCall(relayer, { getTransaction: { transactionId: answer.transactionId } });
+  }
+  if (!answer.hash)
+    throw new Error("Nido's relayer has not confirmed the transaction yet. Check the account before retrying.");
+  const outcome = await server.pollTransaction(answer.hash, { attempts: 30 });
+  if (outcome.status === rpc.Api.GetTransactionStatus.SUCCESS) return answer.hash;
+  throw new Error(`Transaction ${answer.hash} ${outcome.status.toLowerCase()}. Check the account before retrying.`);
 }
 
 /**

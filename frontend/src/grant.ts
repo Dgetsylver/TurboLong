@@ -3,13 +3,15 @@
  * it reads back what the account installed, and how its session key signs a
  * call under it. Pure: no DOM, storage or network, so it is unit-tested alone.
  *
- * A grant is one app origin's rules on a Perch account (`apply_grant`, Perch
- * dev; Nido's preview of nidohq/nido#356 on testnet). The owner approves it once
- * on Nido's grant page with their passkey. Each rule names one contract, the
- * functions TurboLong's key may call there, and an expiry; a rule on a token's
- * `transfer` also pins the recipient (`to`) and carries a rolling cap. The
- * account enforces all of it in `__check_auth` for every later call, and refuses
- * (`Error(Contract, #5)`, RuleEvalRefused) what the rules do not allow.
+ * A grant is one app origin's rules on a Perch account: an `apply_grant` grant
+ * on Perch dev (Nido's testnet preview, nidohq/nido#356), or rules in the
+ * account's own policy document (`apply_doc`) on mainnet's Perch 0.5.1. The
+ * owner approves it once on Nido's grant page with their passkey. Each rule
+ * names one contract, the functions TurboLong's key may call there, and an
+ * expiry; a rule on a token's `transfer` also pins the recipient (`to`) and
+ * carries a rolling cap. The account enforces all of it in `__check_auth` for
+ * every later call, and refuses what the rules do not allow (Perch dev:
+ * `Error(Contract, #5)`; mainnet: OpenZeppelin's codes, `#3221` over the cap).
  *
  * TurboLong's grant has two rules per Blend pool:
  * - the pool's `submit` (no cap: `submit` moves no tokens itself);
@@ -240,6 +242,9 @@ export interface GrantRule {
   signers: ExternalSigner[];
   /** Last ledger the rule is valid in; `undefined` for no expiry. */
   validUntil: number | undefined;
+  /** Policy contracts on the rule (mainnet's Perch 0.5.1: the interpreter
+   * and, on a capped rule, the spending limit, which keeps the cap window). */
+  policies?: string[];
 }
 
 /** A contract enum as `[tag, ...fields]` from either `scValToNative` shape. */
@@ -305,6 +310,57 @@ export function parseGrantRules(record: { rules: unknown[] }, ruleSet: unknown[]
   });
 }
 
+/** A rule of the account's applied policy document (`document()`), in the
+ * parts TurboLong reads. */
+interface DocRule {
+  name: string;
+  scope: { type: string; address?: string };
+  functions?: string[];
+  args?: { index: number; pred: { type: string; address?: string } }[];
+  cap?: { limit: string; "period-ledgers": number };
+}
+
+/**
+ * Mainnet's Perch 0.5.1 account keeps an app's rules in its own policy
+ * document (Nido writes them with `apply_doc`; there is no `apply_grant`).
+ * `installed_rules()` gives each rule's id, scope, signers, policies and
+ * expiry; `document()` (canonical JSON) gives its functions, recipient pin and
+ * cap. Both `scValToNative` / `JSON.parse` forms.
+ */
+export function parseDocRules(installed: unknown[], doc: { rules: DocRule[] } | undefined): GrantRule[] {
+  return installed.map((raw) => {
+    const rule = raw as {
+      id: number;
+      name: string;
+      context_type: unknown;
+      signers: unknown[];
+      policies?: ({ policy: string } | string)[];
+      valid_until?: number | null;
+    };
+    const scope = variant(rule.context_type);
+    const contract = scope?.[0] === "CallContract" ? String(scope[1]) : undefined;
+    const written = doc?.rules.find((r) => r.name === String(rule.name) && r.scope.address === contract);
+    // SEP-41 transfer(from, to, amount): `to` is argument 1
+    const to = written?.args?.find((a) => a.index === 1 && a.pred.type === "address-eq")?.pred.address;
+    return {
+      id: Number(rule.id),
+      name: String(rule.name),
+      contract,
+      // A rule the document doesn't list is read as allowing nothing.
+      functions: written ? written.functions : [],
+      ...(to ? { to } : {}),
+      ...(written?.cap
+        ? { cap: { limit: BigInt(written.cap.limit), periodLedgers: written.cap["period-ledgers"], amountArg: 2 } }
+        : {}),
+      signers: rule.signers
+        .map(variant)
+        .flatMap((s) => (s?.[0] === "External" ? [{ verifier: String(s[1]), key: bytesHex(s[2]) }] : [])),
+      validUntil: rule.valid_until === null || rule.valid_until === undefined ? undefined : Number(rule.valid_until),
+      policies: (rule.policies ?? []).map((p) => (typeof p === "string" ? p : String(p.policy))),
+    };
+  });
+}
+
 const signedBy = (rule: GrantRule, publicKeyHex: string) => rule.signers.some((s) => s.key === publicKeyHex);
 
 /** A rule is live at `ledger` while it has at least the expiry margin left. */
@@ -345,8 +401,10 @@ export function ledgerToTime(validUntil: number, latestLedger: number, now = Dat
 
 // ── Spending cap ──────────────────────────────────────────────────────────────
 
-/** A capped rule's window: the cap and the spends the account still counts
- * (`SpendRecords(rule id)`: `{ history: [{ amount, ledger }], total }`). */
+/** A capped rule's window: the cap and the spends still counted. Perch dev
+ * keeps them in the account (`SpendRecords(rule id)`: `{ history: [{ amount,
+ * ledger }], total }`); mainnet's 0.5.1 in the spending-limit policy
+ * (`AccountContext(account, rule id)`). */
 export interface CapWindow {
   limit: bigint;
   periodLedgers: number;
@@ -354,12 +412,24 @@ export interface CapWindow {
 }
 
 export function capWindow(cap: GrantCapRule, record: unknown): CapWindow {
-  const history = ((record as { history?: { amount: bigint | string; ledger: number }[] } | undefined)?.history ??
-    []) as { amount: bigint | string; ledger: number }[];
+  const r = (record ?? {}) as {
+    history?: { amount: bigint | string; ledger: number }[];
+    spending_limit?: bigint | string;
+    period_ledgers?: number;
+    spending_history?: { amount: bigint | string; ledger_sequence: number }[];
+  };
+  // Mainnet keeps the window in the spending-limit policy, with its own copy
+  // of the cap: `{ spending_limit, period_ledgers, spending_history }`.
+  if (r.spending_history)
+    return {
+      limit: r.spending_limit === undefined ? cap.limit : BigInt(r.spending_limit),
+      periodLedgers: r.period_ledgers === undefined ? cap.periodLedgers : Number(r.period_ledgers),
+      spent: r.spending_history.map((e) => ({ amount: BigInt(e.amount), ledger: Number(e.ledger_sequence) })),
+    };
   return {
     limit: cap.limit,
     periodLedgers: cap.periodLedgers,
-    spent: history.map((e) => ({ amount: BigInt(e.amount), ledger: Number(e.ledger) })),
+    spent: (r.history ?? []).map((e) => ({ amount: BigInt(e.amount), ledger: Number(e.ledger) })),
   };
 }
 
@@ -549,16 +619,39 @@ export function capCharges(contexts: AuthContext[], ruleIds: number[], rules: Gr
 
 // ── Refusals ──────────────────────────────────────────────────────────────────
 
-export type RefusalKind = "refused" | "stale" | "escalation" | "frozen";
+export type RefusalKind = "refused" | "over-cap" | "stale" | "escalation" | "frozen";
+
+const OVER_CAP = "Your account refused: this would go over the spending cap you gave TurboLong.";
+const NO_RULE =
+  "Your account refused: no rule in TurboLong's grant allows this call. It is outside the grant's scope, or the grant expired.";
+
+/** OpenZeppelin smart-account and spending-limit codes (mainnet's Perch 0.5.1). */
+const OZ_REFUSALS: Record<string, { kind: RefusalKind; text: string }> = {
+  "3221": { kind: "over-cap", text: OVER_CAP },
+  "3223": { kind: "refused", text: NO_RULE },
+  "3000": { kind: "refused", text: NO_RULE },
+  "3002": { kind: "refused", text: NO_RULE },
+  "3003": { kind: "refused", text: "Your account refused: the session key's signature did not verify." },
+  "3005": { kind: "refused", text: "Your account refused: TurboLong's grant expired. Approve it again." },
+  "3014": { kind: "refused", text: NO_RULE },
+  "3016": { kind: "refused", text: "Your account refused: the session key is not a signer of that rule." },
+};
 
 /** The account's refusal, from a simulation or submission error, in words.
- * Perch dev's `PerchAuthError`: 1 ReservedFunction, 2 AccountFrozen,
+ * OpenZeppelin codes (mainnet, Perch 0.5.1) first: #3221 over the cap,
+ * #3000/#3002/#3014 no rule covers the call, #3005 expired, #3003/#3016 the
+ * signer. Then Perch dev's `PerchAuthError`: 1 ReservedFunction, 2 AccountFrozen,
  * 3 StaleGrant, 4 GrantEscalation, 5 RuleEvalRefused (over a cap, no rule
  * covering the call, an expired rule, or a pinned argument that differs). */
 export function accountRefusal(message: string): { kind: RefusalKind; text: string } | undefined {
-  if (!/__check_auth|Error\(Auth/.test(message)) return undefined;
   const code = /Error\(Contract, #(\d+)\)/.exec(message)?.[1];
+  if (code && OZ_REFUSALS[code]) return OZ_REFUSALS[code];
+  if (!/__check_auth|Error\(Auth/.test(message)) return undefined;
   switch (code) {
+    case "1":
+      // Perch dev: ReservedFunction; mainnet's interpreter policy: Denied
+      // (a function or argument check of the rule failed).
+      return { kind: "refused", text: NO_RULE };
     case "5":
       return {
         kind: "refused",

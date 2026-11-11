@@ -1,20 +1,20 @@
 import "./grant-panel.css";
 /**
- * Grant mode panel for the Trade screen: shows TurboLong's grant on the
- * connected Nido account (scope, spending cap left, expiry), asks for it
- * through Nido once, and lets the owner revoke it. Only rendered for Nido
- * (contract) accounts; classic wallets keep the main-wallet flow untouched.
+ * The Trade screen's grant card for Nido accounts: one approval ("Allow
+ * TurboLong to manage positions"), then a status line (spending left, end)
+ * with revoke. What the approval installs (two rules, the session key, the
+ * limits) sits behind a details toggle. Classic wallets get no card and keep
+ * the main-wallet flow.
  */
 import { el, on, Badge, Button, Card } from "../ui";
-import { type PoolDef, xlmContractId } from "../blend";
+import { type PoolDef, getActiveNetwork, xlmContractId } from "../blend";
 import { stroopsToXlm, xlmToStroops, type CapPeriod, type GrantCap } from "../grant";
 import {
-  DEFAULT_CAP,
   DEFAULT_DURATION,
   type GrantStatus,
+  defaultCap,
   forgetSessionKey,
   grantStatus,
-  grantsSupported,
   prepareSessionKey,
   requestGrant,
   revokeUrl,
@@ -22,7 +22,6 @@ import {
 import type { SessionKey } from "../grant-key";
 import { isContractAccount } from "../nido";
 import { getState } from "../app/state";
-import { switchNetwork } from "../app/wallet";
 import { toast } from "../app/chrome";
 
 const PERIOD_LABEL: Record<CapPeriod, string> = { day: "day", week: "week", "30d": "30 days" };
@@ -49,7 +48,7 @@ function periodOf(ledgers: number): string {
 export interface GrantPanel {
   el: HTMLElement;
   refresh(): Promise<void>;
-  /** Whether opens and closes in the current pool should be signed under the grant. */
+  /** Whether opens, add-funds and closes in the current pool should be signed under the grant. */
   active(): boolean;
   /** Show the account's (or TurboLong's) refusal of the last grant-signed call. */
   noteRefusal(text: string): void;
@@ -58,16 +57,17 @@ export interface GrantPanel {
 export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   const root = el("div", { class: "grant-slot" });
   let status: GrantStatus | undefined;
-  /** The account and pool `status` was read for. */
+  /** The account, network and pool `status` was read for. */
   let statusFor = "";
   let key: SessionKey | undefined;
   let refusal: string | undefined;
   let busy = false;
   let generation = 0;
-  let capXlm = DEFAULT_CAP.xlm;
-  let capPeriod: CapPeriod = DEFAULT_CAP.period;
+  let cap: GrantCap = defaultCap();
+  let capNetwork = getActiveNetwork();
 
   const account = () => getState().userAddress ?? "";
+  const scope = () => `${account()}:${getActiveNetwork()}:${ctx.pool().id}`;
   const useGrantPref = () => {
     try {
       return localStorage.getItem(USE_GRANT_KEY + account()) !== "off";
@@ -86,22 +86,26 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   async function refresh(): Promise<void> {
     const addr = account();
     const mine = ++generation;
+    if (capNetwork !== getActiveNetwork()) {
+      capNetwork = getActiveNetwork();
+      cap = defaultCap();
+    }
     if (!addr || !isContractAccount(addr)) {
       status = undefined;
       render();
       return;
     }
     try {
-      const pool = ctx.pool();
-      const next = await grantStatus(addr, pool);
+      const where = scope();
+      const next = await grantStatus(addr, ctx.pool());
       if (mine !== generation) return;
       status = next;
-      statusFor = `${addr}:${pool.id}`;
+      statusFor = where;
       if (next.state !== "unavailable" && !key) key = await prepareSessionKey(addr);
     } catch (e) {
       if (mine !== generation) return;
       status = undefined;
-      refusal = `Could not read the grant: ${(e as Error)?.message ?? e}`;
+      refusal = `Could not read TurboLong's access: ${(e as Error)?.message ?? e}`;
     }
     render();
   }
@@ -109,10 +113,8 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   async function approve(): Promise<void> {
     const addr = account();
     if (!key || busy) return;
-    let cap: GrantCap;
     try {
-      xlmToStroops(capXlm);
-      cap = { xlm: capXlm.trim(), period: capPeriod };
+      xlmToStroops(cap.xlm);
     } catch (e) {
       toast((e as Error).message, "error");
       return;
@@ -120,11 +122,17 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
     busy = true;
     render();
     try {
-      const answer = await requestGrant({ account: addr, pool: ctx.pool(), key, cap, duration: DEFAULT_DURATION });
-      if (answer.outcome === "cancelled") toast("The grant was not approved.", "info");
+      const answer = await requestGrant({
+        account: addr,
+        pool: ctx.pool(),
+        key,
+        cap: { xlm: cap.xlm.trim(), period: cap.period },
+        duration: DEFAULT_DURATION,
+      });
+      if (answer.outcome === "cancelled") toast("Nothing was allowed.", "info");
       else if (answer.outcome === "error" && answer.code !== "closed")
-        toast(`Nido could not apply the grant: ${answer.code}`, "error");
-      else toast("Checking the account for TurboLong's grant…", "info");
+        toast(`Nido could not save it: ${answer.code}`, "error");
+      else toast("Checking your account…", "info");
       refusal = undefined;
     } catch (e) {
       toast(`Could not open Nido: ${(e as Error)?.message ?? e}`, "error");
@@ -133,35 +141,61 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
     }
     // The account's rules are the truth, whatever the popup said.
     await refresh();
-    if (status?.state === "active") toast("TurboLong's grant is active on your account.", "success");
+    if (status?.state === "active") toast("TurboLong can now manage your positions here.", "success");
   }
 
   async function forget(): Promise<void> {
-    const addr = account();
-    await forgetSessionKey(addr);
+    await forgetSessionKey(account());
     key = undefined;
-    toast("This browser's session key is gone. Revoke the grant in Nido to remove it from the account.", "info");
+    toast("This browser can no longer sign for TurboLong. Revoke it in Nido to remove it from your account.", "info");
     await refresh();
   }
 
-  const scopeRows = (pool: PoolDef, capText: string) =>
-    el("ul", { class: "grant-scope" }, [
-      el("li", {}, [
-        el("code", {}, ["submit"]),
-        " on the ",
-        el("strong", {}, [pool.name]),
-        " Blend pool ",
-        el("span", { class: "grant-mono" }, [shortAddr(pool.id)]),
-        ": open and close positions (no cap: the call moves no tokens itself)",
+  /** What the approval installs, for the details toggle. */
+  function details(pool: PoolDef, capText: string): HTMLElement {
+    const mainnet = getActiveNetwork() === "mainnet";
+    return el("details", { class: "grant-details" }, [
+      el("summary", {}, ["What you're allowing"]),
+      el("ul", { class: "grant-scope" }, [
+        el("li", {}, [
+          el("code", {}, ["submit"]),
+          " on the ",
+          el("strong", {}, [pool.name]),
+          " Blend pool ",
+          el("span", { class: "grant-mono" }, [shortAddr(pool.id)]),
+          ": open, add to and close positions. No limit of its own: the call moves no tokens itself.",
+        ]),
+        el("li", {}, [
+          el("code", {}, ["transfer"]),
+          " of XLM ",
+          el("span", { class: "grant-mono" }, [shortAddr(xlmContractId())]),
+          ", paying only that pool, ",
+          el("strong", {}, [capText]),
+          ".",
+        ]),
       ]),
-      el("li", {}, [
-        el("code", {}, ["transfer"]),
-        " on XLM ",
-        el("span", { class: "grant-mono" }, [shortAddr(xlmContractId())]),
-        ", paying only that pool, ",
-        el("strong", {}, [capText]),
+      key
+        ? el("p", { class: "grant-key" }, [
+            "Signed by TurboLong's key ",
+            el("span", { class: "grant-mono" }, [`${key.publicKeyHex.slice(0, 10)}…${key.publicKeyHex.slice(-6)}`]),
+            ", made in this browser and never readable from it. It signs without asking you; these rules are its only limit, and your account checks them on every call.",
+          ])
+        : null,
+      el("p", { class: "grant-muted" }, [
+        "The limit counts every XLM moved into the pool: Blend's plain submit takes each supplied amount, then pays any borrow back in the same transaction (10 XLM at 2× counts 20). Closing counts the debt it repays.",
+      ]),
+      el("p", { class: "grant-muted" }, [
+        mainnet
+          ? "Nido cannot yet pin who receives a submit's withdrawals, so whoever holds this key could move the position itself elsewhere; the limit protects the XLM in your wallet. Use small amounts."
+          : "Nido cannot yet pin who receives a submit's withdrawals, so whoever holds this key could move the position itself elsewhere; the limit protects the XLM in your wallet. Testnet only.",
+      ]),
+      el("p", { class: "grant-muted" }, [
+        mainnet
+          ? "Nido writes these rules into your account's policy (apply_doc); its relayer pays for the calls."
+          : "Nido's grant preview installs them as an app grant (apply_grant); a throwaway Friendbot key in this browser pays for the calls.",
       ]),
     ]);
+  }
 
   function render(): void {
     const s = status;
@@ -171,95 +205,80 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
       return;
     }
     if (s.state === "unavailable") {
-      if (s.reason === "classic") {
-        root.replaceChildren();
-        return;
-      }
-      const body =
-        s.reason === "mainnet"
-          ? [
-              el("p", {}, [
-                "Grant mode runs on testnet, where Nido previews Perch grants (apply_grant). Nido's mainnet accounts run an earlier Perch account without grants, so here every action is signed by your main Nido wallet.",
-              ]),
-              Button({
-                variant: "secondary",
-                size: "sm",
-                children: "Switch to testnet",
-                onClick: () => void switchNetwork("testnet"),
-              }),
-            ]
-          : [
-              el("p", {}, [
-                "This Nido account has no grants (it predates Perch dev). Create an account on Nido's grant preview to try grant mode; this one keeps the main-wallet flow.",
-              ]),
-            ];
       root.replaceChildren(
-        Card({ title: "Grant mode", action: Badge({ tone: "neutral", children: "Unavailable" }), children: body }),
+        ...(s.reason === "classic"
+          ? []
+          : [
+              Card({
+                title: "TurboLong access",
+                action: Badge({ tone: "neutral", children: "Unavailable" }),
+                children: [
+                  el("p", {}, [
+                    "This Nido account cannot hold app permissions, so every action here is signed with your Nido passkey.",
+                  ]),
+                ],
+              }),
+            ]),
       );
       return;
     }
 
     const pool = ctx.pool();
+    const mainnet = getActiveNetwork() === "mainnet";
     const header = el("div", { class: "grant-net" }, [
-      Badge({ tone: "warning", dot: true, children: "Testnet · Perch dev preview" }),
+      Badge({
+        tone: mainnet ? "success" : "warning",
+        dot: true,
+        children: mainnet ? "Mainnet" : "Testnet · Perch dev preview",
+      }),
     ]);
-    const keyLine = key
-      ? el("p", { class: "grant-key" }, [
-          "Signer: TurboLong's session key ",
-          el("span", { class: "grant-mono" }, [`${key.publicKeyHex.slice(0, 10)}…${key.publicKeyHex.slice(-6)}`]),
-          ", a P-256 key kept non-extractable in this browser. It signs without a prompt; the grant's rules are what limit it, and your account checks them on every call.",
-        ])
-      : null;
 
     if (s.state === "none") {
       const xlmInput = el("input", {
         class: "grant-input grant-mono",
         type: "text",
         inputmode: "decimal",
-        value: capXlm,
+        value: cap.xlm,
         "aria-label": "Spending cap in XLM",
       }) as HTMLInputElement;
       on(xlmInput, "input", () => {
-        capXlm = xlmInput.value;
+        cap = { ...cap, xlm: xlmInput.value };
       });
       const periodSel = el("select", { class: "grant-input", "aria-label": "Cap window" }, [
         ...(["day", "week", "30d"] as CapPeriod[]).map((p) => {
           const opt = el("option", { value: p }, [PERIOD_LABEL[p]]) as HTMLOptionElement;
-          opt.selected = p === capPeriod;
+          opt.selected = p === cap.period;
           return opt;
         }),
       ]) as HTMLSelectElement;
       on(periodSel, "change", () => {
-        capPeriod = periodSel.value as CapPeriod;
-      });
-      const approveBtn = Button({
-        variant: "primary",
-        loading: busy,
-        disabled: busy || !key,
-        id: "grant-approve",
-        children: busy ? "Waiting for Nido…" : "Approve grant in Nido",
-        onClick: () => void approve(),
+        cap = { ...cap, period: periodSel.value as CapPeriod };
       });
       root.replaceChildren(
         Card({
-          title: "Grant mode",
+          title: "TurboLong access",
           action: header,
           class: "grant-card",
           children: [
             el("p", {}, [
-              "Approve once in Nido with your passkey. After that, TurboLong opens, adds to and closes XLM positions in this pool with its own session key: no passkey prompt, and your account refuses anything outside the grant.",
+              "Approve once with your Nido passkey, and TurboLong opens, adds to and closes XLM positions in this pool without asking again, within a spending limit you set.",
             ]),
-            scopeRows(pool, `up to ${capXlm || "…"} XLM per ${PERIOD_LABEL[capPeriod]}`),
             el("div", { class: "grant-form" }, [
-              el("label", { class: "grant-field" }, ["Cap ", xlmInput, " XLM per ", periodSel]),
-              el("span", { class: "grant-muted" }, ["Expires after 24 hours. Nido lets you change both."]),
+              el("label", { class: "grant-field" }, ["Up to ", xlmInput, " XLM per ", periodSel]),
+              el("span", { class: "grant-muted" }, ["Ends after 24 hours. You can change both in Nido."]),
             ]),
-            el("p", { class: "grant-muted" }, [
-              "Settlement in grant mode is gross: Blend's plain submit pulls every supplied XLM through the capped transfer, then pays the borrowed XLM back in the same transaction. Opening 10 XLM at 2× counts 20 XLM against the cap and needs 20 XLM on hand. The pool rule cannot pin submit's recipient (Nido has no way to express that yet), so treat this as a testnet demo.",
-            ]),
-            keyLine,
             refusal ? el("p", { class: "grant-refusal", role: "alert" }, [refusal]) : null,
-            el("div", { class: "grant-actions" }, [approveBtn]),
+            el("div", { class: "grant-actions" }, [
+              Button({
+                variant: "primary",
+                loading: busy,
+                disabled: busy || !key,
+                id: "grant-approve",
+                children: busy ? "Waiting for Nido…" : "Allow TurboLong to manage positions",
+                onClick: () => void approve(),
+              }),
+            ]),
+            details(pool, `up to ${cap.xlm || "…"} XLM per ${PERIOD_LABEL[cap.period]}`),
           ],
         }),
       );
@@ -273,7 +292,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
     const pctLeft = s.limit > 0n ? Number((s.left * 1000n) / s.limit) / 10 : 0;
     root.replaceChildren(
       Card({
-        title: "Grant mode",
+        title: "TurboLong access",
         action: header,
         class: "grant-card",
         children: [
@@ -288,22 +307,17 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
               `${stroopsToXlm(s.left)} of ${stroopsToXlm(s.limit)} XLM left this ${periodOf(s.periodLedgers)}`,
             ]),
             el("span", { class: "grant-muted" }, [
-              s.state === "active" ? `Expires ${untilText(s.expiresAt)}` : "Approve it again to keep using grant mode",
+              s.state === "active" ? `Ends ${untilText(s.expiresAt)}` : "Allow it again to keep going",
             ]),
           ]),
           el("div", { class: "grant-meter", role: "meter", "aria-valuenow": String(pctLeft) }, [
             el("span", { style: `width:${Math.max(0, Math.min(100, pctLeft))}%` }),
           ]),
-          scopeRows(pool, capText),
-          keyLine,
           refusal ? el("p", { class: "grant-refusal", role: "alert", id: "grant-refusal" }, [refusal]) : null,
-          el("label", { class: "grant-toggle" }, [
-            useBox,
-            " Sign opens, add-funds and closes in this pool with the grant",
-          ]),
+          el("label", { class: "grant-toggle" }, [useBox, " Use it for opens, add-funds and closes in this pool"]),
           el("div", { class: "grant-actions" }, [
             s.state === "expired"
-              ? Button({ variant: "primary", size: "sm", children: "Approve again", onClick: () => void approve() })
+              ? Button({ variant: "primary", size: "sm", children: "Allow again", onClick: () => void approve() })
               : null,
             Button({ variant: "secondary", size: "sm", children: "Refresh", onClick: () => void refresh() }),
             el(
@@ -318,9 +332,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
             ),
             Button({ variant: "ghost", size: "sm", children: "Forget key", onClick: () => void forget() }),
           ]),
-          el("p", { class: "grant-muted" }, [
-            "Revoke: Nido → Security → Remove app removes the grant from your account (remove_grant). Forget key stops this browser from signing right away.",
-          ]),
+          details(pool, capText),
         ],
       }),
     );
@@ -328,7 +340,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
 
   function errorCard(text: string): HTMLElement {
     return Card({
-      title: "Grant mode",
+      title: "TurboLong access",
       children: [
         el("p", { class: "grant-refusal", role: "alert" }, [text]),
         Button({ variant: "secondary", size: "sm", children: "Retry", onClick: () => void refresh() }),
@@ -339,12 +351,7 @@ export function grantPanel(ctx: { pool(): PoolDef }): GrantPanel {
   return {
     el: root,
     refresh,
-    active: () =>
-      grantsSupported() &&
-      status?.state === "active" &&
-      statusFor === `${account()}:${ctx.pool().id}` &&
-      useGrantPref() &&
-      isContractAccount(account()),
+    active: () => status?.state === "active" && statusFor === scope() && useGrantPref() && isContractAccount(account()),
     noteRefusal(text: string) {
       refusal = text;
       render();
@@ -370,7 +377,9 @@ export function confirmFallback(reason: string, action: string): Promise<boolean
     };
     document.addEventListener("keydown", onKey);
     const card = el("div", { class: "trade-modal__card", role: "dialog", "aria-modal": "true", id: "grant-fallback" }, [
-      el("div", { class: "trade-modal__head" }, [el("h2", { class: "trade-modal__title" }, ["Not under the grant"])]),
+      el("div", { class: "trade-modal__head" }, [
+        el("h2", { class: "trade-modal__title" }, ["Not allowed for TurboLong"]),
+      ]),
       el("div", { class: "trade-modal__body" }, [
         el("p", { class: "grant-refusal" }, [reason]),
         el("p", {}, [

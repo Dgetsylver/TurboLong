@@ -4,9 +4,9 @@ The owner approves TurboLong's grant once with their Nido passkey. After that, T
 
 ## Where it runs
 
-Testnet only. Perch grants (`apply_grant`) exist on Perch dev, which Nido previews at **https://356.test.nido.fyi** ([nidohq/nido#356](https://github.com/nidohq/nido/pull/356)). Nido's mainnet accounts run an earlier Perch account with no grants, so on mainnet TurboLong keeps the main-wallet flow (an `approve` and a Blend transaction, each confirmed with the passkey). Classic wallets keep that flow on both networks.
+This script runs on testnet, against Perch grants (`apply_grant`) on Perch dev, which Nido previews at **https://356.test.nido.fyi** ([nidohq/nido#356](https://github.com/nidohq/nido/pull/356)). On testnet, TurboLong's Nido wallet is that preview (`nidoConfig` in [`frontend/src/nido.ts`](../frontend/src/nido.ts)). Accounts made on the earlier testnet wallet do not carry over to it.
 
-On testnet, TurboLong's Nido wallet is the grants preview (`nidoConfig` in [`frontend/src/nido.ts`](../frontend/src/nido.ts)). Accounts made on the earlier testnet wallet do not carry over to it.
+Mainnet works too, with the same request to Nido: Nido's mainnet accounts (Perch 0.5.1) have no grants, so Nido writes TurboLong's two rules into the account's own policy document (`apply_doc`). Nido's relayer sends the calls. See [the mainnet walkthrough](nido-grants-mainnet.md). Classic wallets, and Nido accounts that haven't allowed TurboLong, keep the main-wallet flow (an `approve` and a Blend transaction, each confirmed with the passkey).
 
 ## What the grant allows
 

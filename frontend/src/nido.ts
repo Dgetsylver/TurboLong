@@ -37,6 +37,9 @@ export function nidoConfig(network: NetworkMode) {
       (import.meta.env.VITE_NIDO_BASE as string | undefined) ??
       (network === "mainnet" ? "https://nido.fyi" : NIDO_GRANTS_PREVIEW),
     networkPassphrase: network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET,
+    /** Nido's relayer (OpenZeppelin Channels), which pays for and sends app
+     * calls signed under a grant. The testnet grants preview runs none. */
+    relayer: network === "mainnet" ? "https://nido-mainnet.fly.dev" : undefined,
     simulationSource:
       network === "mainnet"
         ? "GB62GN4DMXIPFGZMGITUP2XIGIVDV3IBK263LMEVQ7AEBHF6KWXLIM6V"

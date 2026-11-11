@@ -1656,6 +1656,8 @@ export function tradeScreen(): HTMLElement {
       return "Health factor too low — reduce leverage or deposit more.";
     if (msg.includes("#1207") || msg.includes("InvalidUtilRate"))
       return "Pool utilization limit reached — not enough liquidity.";
+    if (msg.includes("#1206"))
+      return "This pool is not taking new borrows right now (on ice or frozen). Open at 1× (supply only) or pick another pool.";
     return msg.slice(0, 200);
   }
 
